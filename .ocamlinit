@@ -1,0 +1,13 @@
+#require "uri";;
+#require "lwt";;
+#require "cohttp.lwt";;
+#require "sha";;
+#require "qcheck";;
+#load "bits.cmo";;
+#load "bcode.cmo";;
+#load "torrent.cmo";;
+#load "process.cmo";;
+#load "tracker.cmo";;
+#load "status.cmo";;
+#load "mltorrent.cmo";;
+#install_printer Torrent.Digest.pp;;
