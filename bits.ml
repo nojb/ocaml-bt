@@ -4,11 +4,19 @@ type t =
 external get_byte: string -> int -> int = "%string_unsafe_get"
 external set_byte: string -> int -> int -> unit = "%string_unsafe_set"
 
-let zero len =
+let create len =
   String.make len '\000'
 
 let length v =
   String.length v
+
+let count v =
+  let rec loop acc i =
+    if i >= String.length v then acc
+    else
+      if get_byte v i <> 0 then loop (acc+1) (i+1)
+      else loop acc (i+1)
+  in loop 0 0
 
 let equal v1 v2 =
   let len = String.length v1 in
@@ -26,25 +34,19 @@ let equal v1 v2 =
 let check_args name i len =
   if i < 0 || i >= len then invalid_arg name
 
-let set i v =
+let set v i =
   check_args "Bits.set" i (String.length v);
-  let v' = String.copy v in
-  set_byte v' i 1;
-  v'
+  set_byte v i 1
 
-let unset i v =
+let unset v i =
   check_args "Bits.unset" i (String.length v);
-  let v' = String.copy v in
-  set_byte v' i 0;
-  v'
+  set_byte v i 0
 
-let toggle i v =
+let toggle v i =
   check_args "Bits.toggle" i (String.length v);
-  let v' = String.copy v in
-  set_byte v' i (lnot (get_byte v' i));
-  v'
+  set_byte v i (lnot (get_byte v i))
 
-let is_set i v =
+let is_set v i =
   check_args "Bits.is_set" i (String.length v);
   get_byte v i <> 0
 
@@ -86,6 +88,13 @@ let map f v =
     set_byte s i (if f (get_byte s i <> 0) then 1 else 0)
   done;
   s
+
+let fold_left_i f x v =
+  let n = String.length v in
+  let rec loop acc i =
+    if i >= n then acc
+    else loop (f acc i (get_byte v i <> 0)) (i+1)
+  in loop x 0
 
 let to_string v =
   let n = String.length v in
@@ -136,7 +145,7 @@ let to_bin v =
   done;
   b
 
-let pad n v =
+let pad v n =
   let len = String.length v in
   let r = len mod n in
   let len' = len / n + (if r <> 0 then 1 else 0) in

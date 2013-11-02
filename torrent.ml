@@ -78,11 +78,14 @@ type info = {
 (*   Array.fold_left (fun acc piece -> Int64.add acc piece.len) 0L info.pieces *)
 
 let bytes_left have (pieces : piece_info array) =
-  let rec loop acc i =
-    if i >= Array.length pieces then acc
-    else if Bits.is_set i have then loop (Int64.add acc (Int64.of_int pieces.(i).piece_length)) (i+1)
-    else loop acc (i+1)
-  in loop 0L 0
+  Bits.fold_left_i (fun acc i has ->
+    if has then Int64.add acc (Int64.of_int pieces.(i).piece_length)
+    else acc) 0L have
+  (* let rec loop acc i = *)
+  (*   if i >= Array.length pieces then acc *)
+  (*   else if Bits.is_set have i then loop (Int64.add acc (Int64.of_int pieces.(i).piece_length)) (i+1) *)
+  (*   else loop acc (i+1) *)
+  (* in loop 0L 0 *)
 
 exception Bad_format
 

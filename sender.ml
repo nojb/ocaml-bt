@@ -1,3 +1,4 @@
+open Printf
 open Messages
 open Monitor
 
@@ -15,7 +16,12 @@ let (>>=) = Lwt.(>>=)
 
 let string_of_msg = function
   | SendMsg msg ->
-    "SendMsg: " ^ string_of_peer_msg msg
+    sprintf "SendMsg: %s" (string_of_peer_msg msg)
+  | SendPiece (index, Block (offset, length)) ->
+    sprintf "SendPiece: index: %d offset: %d length: %d" index offset length
+  | SendCancel (index, Block (offset, length)) ->
+    sprintf "SendCancel: index: %d offset: %d length: %d"
+      index offset length
 
 let write_int8 oc n : unit Lwt.t =
   Lwt_io.write_char oc (char_of_int n)
@@ -49,7 +55,7 @@ let send_msg id oc msg : int Lwt.t =
     Lwt_io.BE.write_int oc index >>
     Lwt.return 9
   | BitField bits ->
-    let bits = Bits.pad 8 bits in
+    let bits = Bits.pad bits 8 in
     let len = Bits.length bits in
     Lwt_io.BE.write_int oc (1 + len) >>
     write_int8 oc 5 >>
@@ -90,6 +96,8 @@ let handle_message id oc send_peer_mgr msg =
     lwt sz = send_msg id oc msg in
     send_peer_mgr (FromSender sz);
     Lwt.return ()
+  | msg ->
+    debug id "unhandled message: %s" (string_of_msg msg)
 
 let start ~monitor oc sender_ch send_peer_mgr =
   let event_loop id =

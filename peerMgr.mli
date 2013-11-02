@@ -1,6 +1,4 @@
 open Messages
-(* open Supervisor *)
-(* open Spawn *)
 
 val max_peers : int ref
 

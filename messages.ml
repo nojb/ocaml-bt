@@ -1,5 +1,8 @@
 open Printf
 
+type torrent_mgr_msg =
+  | AddedTorrent of string
+
 type tracker_msg =
   | Stop
   | TrackerTick of int
@@ -33,16 +36,6 @@ type status_msg =
 
 type peer =
   Unix.inet_addr * int
-
-type peer_mgr_msg =
-  | PeersFromTracker    of Torrent.digest * peer list
-  | NewIncoming         of Lwt_unix.file_descr
-  | NewTorrent          of Torrent.digest
-  | StopTorrent         of Torrent.digest
-
-type mgr_msg =
-  | Connect     of Torrent.digest * Monitor.id
-  | Disconnect  of Monitor.id
 
 type block =
   | Block of int * int
@@ -97,9 +90,31 @@ let string_of_peer_msg = function
 (*   | Cancel _ -> 17 *)
 (*   | Port -> 7 *)
 
+type piece_mgr_msg =
+  | GrabBlocks of int * Bits.t * (int * block) list Lwt_mvar.t
+  | PutbackBlocks of (int * block) list
+
+type torrent_local = {
+  msg_piece_mgr : piece_mgr_msg -> unit;
+  pieces : Torrent.piece_info array
+}
+
+type peer_mgr_msg =
+  | PeersFromTracker    of Torrent.digest * peer list
+  | NewIncoming         of Lwt_unix.file_descr
+  | NewTorrent          of Torrent.digest * torrent_local
+  | StopTorrent         of Torrent.digest
+
+type mgr_msg =
+  | Connect     of Torrent.digest * Monitor.id
+  | Disconnect  of Monitor.id
+
 type msg_ty =
   | FromPeer    of peer_msg
   | FromSender  of int
+  | FromTimer
 
 type sender_msg =
   | SendMsg     of peer_msg
+  | SendPiece   of int * block
+  | SendCancel  of int * block

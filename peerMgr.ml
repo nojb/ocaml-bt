@@ -14,7 +14,7 @@ let string_of_peer_msg = function
       (List.length peers)
   | NewIncoming _ ->
     "NewIncoming"
-  | NewTorrent ih ->
+  | NewTorrent (ih, _) ->
     sprintf "NewTorrent: info_hash: %s" (Torrent.Digest.to_string ih)
   | StopTorrent ih ->
     sprintf "StopTorrent: info_hash: %s" (Torrent.Digest.to_string ih)
@@ -37,8 +37,11 @@ let string_of_msg = function
   | PeerMgrMsg msg ->
     string_of_peer_msg msg
 
+module TorrentTbl = Hashtbl.Make (Torrent.Digest)
+
 type state = {
-  pending_peers : (Torrent.digest * peer) list;
+  torrents : torrent_local TorrentTbl.t;
+  mutable pending_peers : (Torrent.digest * peer) list;
   peers : unit M.t;
   peer_id : Torrent.peer_id;
   (* chan : msg_source Lwt_stream.t; *)
@@ -53,6 +56,7 @@ let junk n ic =
   Lwt_io.read_into_exactly ic buf 0 n
 
 exception BadHandShake of string
+exception InfoHashNotFound of Torrent.Digest.t
 
 let recv_handshake id st ic ih : Torrent.peer_id Lwt.t =
   try_lwt
@@ -68,7 +72,7 @@ let recv_handshake id st ic ih : Torrent.peer_id Lwt.t =
       if Torrent.Digest.equal ih' ih then
         Torrent.PeerId.of_input_channel ic
       else
-        raise_lwt (BadHandShake "unknown info hash")
+        raise_lwt (BadHandShake "bad info hash")
     else
       raise_lwt (BadHandShake "wrong protocol")
   with
@@ -87,11 +91,15 @@ let handshake id st ic oc ih =
 let handle_good_handshake id st ic oc ih peer_id : unit Lwt.t =
   debug id "good handshake received from: %S"
     (Torrent.PeerId.to_string peer_id) >>= fun () ->
-  Peer.start st.pool ic oc st.w_mgr_ch ih;
-  (* let children = Peer.start ic oc st.w_mgr_ch ih in *)
-  (* st.w_pool (SpawnNew (Supervisor *)
-  (*   (Supervisor.start ~policy:AllForOne ~name:"PeerSup" ~children))); *)
-  Lwt.return ()
+  try_lwt
+    let tl = TorrentTbl.find st.torrents ih in
+    let pieces = tl.pieces in
+    let msg_piece_mgr = tl.msg_piece_mgr in
+    Peer.start ~monitor:st.pool ic oc st.w_mgr_ch ih ~pieces ~msg_piece_mgr;
+    Lwt.return ()
+  with
+  | Not_found ->
+    raise_lwt (InfoHashNotFound ih)
 
 let connect id st (addr, port) ih =
   let connector id =
@@ -115,26 +123,28 @@ let list_split n xs =
       in List.hd xs :: ys, xs'
   in loop 0 xs
 
-let fill_peers id st : state Lwt.t =
+let fill_peers id st : unit Lwt.t =
   let no_peers = M.cardinal st.peers in
   if no_peers < !max_peers then
     let to_add, rest =
       list_split (!max_peers - no_peers) st.pending_peers in
     List.iter (add_peer id st) to_add;
-    Lwt.return {st with pending_peers = rest}
+    st.pending_peers <- rest;
+    Lwt.return ()
   else
-    Lwt.return st
+    Lwt.return ()
 
-let handle_message id msg st : state Lwt.t =
-  (* lwt msg = Lwt_stream.next st.chan in *)
+let handle_message id st msg : unit Lwt.t =
   debug id "%s" (string_of_msg msg) >>
   match msg with
   | PeerMgrMsg (PeersFromTracker (ih, peers)) ->
-    let st = {st with pending_peers = st.pending_peers @
-      List.map (fun p -> (ih, p)) peers} in
+    st.pending_peers <- st.pending_peers @ List.map (fun p -> (ih, p)) peers;
     fill_peers id st
-  | _ ->
-    fill_peers id st
+  | PeerMgrMsg (NewTorrent (ih, tl)) ->
+    TorrentTbl.add st.torrents ih tl;
+    Lwt.return ()
+  | msg ->
+    debug id "Unhandled: %s" (string_of_msg msg)
 
 let start ~monitor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
   (* supervisor_ch w_supervisor_ch = *)
@@ -148,6 +158,7 @@ let start ~monitor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
   let pool = Monitor.create ~parent:monitor Monitor.OneForOne "PeerMgrPool"
   in
   let st = {
+    torrents = TorrentTbl.create 17;
     pending_peers = [];
     peers = M.empty;
     peer_id;
@@ -156,7 +167,6 @@ let start ~monitor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
     pool }
   in
   let event_loop id =
-    Lwt_stream.fold_s (handle_message id) chan st >>= fun _ ->
-    Lwt.return ()
+    Lwt_stream.iter_s (handle_message id st) chan
   in
   Monitor.spawn ~parent:monitor ~name:"PeerMgr" event_loop
