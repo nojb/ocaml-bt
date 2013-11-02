@@ -49,10 +49,10 @@ type state = {
   (* peer_mgr_ch   : peer_mgr_msg Lwt_tream.t; *)
   torrent_info  : Torrent.info;
   peer_id       : Torrent.peer_id;
-  announce_list : Uri.t list list;
-  status        : status;
+  announce_list : Uri.t list list; (* shoudl use array list FIXME *)
   local_port    : int;
-  next_tick     : int
+  mutable status        : status;
+  mutable next_tick     : int
 }
 
 let decode_http_response (d : Bcode.t) =
@@ -104,20 +104,20 @@ let decode_http_response (d : Bcode.t) =
 of [st] and launches a asynchronous thread to ping the tracker thread
 after [st.interval] seconds.
 @returns [st] updated with the new [tick] counter *)
-let timer_update id (st, interval, _) : state Lwt.t = (* (interval, min_interval) = *)
+let timer_update id st (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
   match st.status with
   | Running ->
     let t = st.next_tick in
-    let st = {st with next_tick = t+1} in
+    st.next_tick <- t+1;
     (* run *)
     spawn ~name:"TrackerTimer"
       (fun _ ->
         Lwt_unix.sleep (float interval) >>
         (st.w_tracker_ch (TrackerTick t); Lwt.return ()));
     debug id "Set Timer to: %d" interval >>
-    Lwt.return st
+    Lwt.return ()
   | _ ->
-    Lwt.return st
+    Lwt.return ()
 
 (** [build_request_uri c st ss url] builds the HTTP request URI.
 It uses information from a variety of sources, the peer id, info_hash,
@@ -161,7 +161,8 @@ let tracker_request id st uri =
 
 let bubble_up_url st url tier =
   (* FIXME *)
-  st
+  (* st *)
+  ()
   (* let rec loop = function *)
   (* | [] -> [] *)
   (* | x :: xs -> *)
@@ -186,8 +187,8 @@ let rec try_this_tier' id st ss = function
 
 let try_this_tier id st ss p =
   lwt url, resp = try_this_tier' id st ss p in
-  let st = bubble_up_url st url p in
-  Lwt.return (st, resp)
+  bubble_up_url st url p;
+  Lwt.return (resp)
   (* try_this_tier' ss p >>= fun (url, resp) -> *)
   (* FIXME *)
   (* put (fun st -> {st with announce_list = bubble_up_url url ...}) >| *)
@@ -197,7 +198,7 @@ let try_this_tier id st ss p =
 @returns the new state (with the tier rearranged to reflect
 success) and the tracker response.
 *)
-let query_trackers id st ss : (state * response) Lwt.t =
+let query_trackers id st ss : response Lwt.t =
   (* TODO have to reload the state in each loop iteration? *)
   let rec loop = function
   | [] -> raise_lwt EmptyAnnounceList
@@ -212,20 +213,19 @@ bytes are left to download. If the tracker request is successful,
 a new timer is setup for the interval time requested by the tracker,
 otherwise a default is used.
 @returns st the state updated with new interval times and [status] *)
-let poke_tracker id st : (state * int * int option) Lwt.t =
+let poke_tracker id st : (int * int option) Lwt.t =
   let v = Lwt_mvar.create_empty () in
   let ih = st.torrent_info.Torrent.info_hash in
   st.w_status_ch (RequestStatus (ih, v));
   lwt ss = Lwt_mvar.take v in
   try_lwt
-    lwt st, msg = query_trackers id st ss in
-    match msg with
+    match_lwt query_trackers id st ss with
     | Warning warn ->
       debug id "Tracker Warning Response: %s" warn >>
-      Lwt.return (st, fail_timer_interval, None)
+      Lwt.return (fail_timer_interval, None)
     | Error err ->
       debug id "Tracker Error Response: %s" err >>
-      Lwt.return (st, fail_timer_interval, None)
+      Lwt.return (fail_timer_interval, None)
     | Success ok ->
       lwt () = debug id "Received %d peers" (List.length ok.new_peers) in
       st.w_peer_mgr_ch (PeersFromTracker (ih, ok.new_peers));
@@ -235,40 +235,41 @@ let poke_tracker id st : (state * int * int option) Lwt.t =
         track_incomplete = ok.incomplete
       } in
       st.w_status_ch (TrackerStat stats);
-      let new_status = match st.status with
-        | Running -> Running
-        | Stopped -> Stopped
-        | Completed -> Running
-        | Started -> Running
-      in
-      Lwt.return ({st with status = new_status}, ok.interval, ok.min_interval)
+      begin match st.status with
+      | Running   -> st.status <- Running
+      | Stopped   -> st.status <- Stopped
+      | Completed -> st.status <- Running
+      | Started   -> st.status <- Running
+      end;
+      Lwt.return (ok.interval, ok.min_interval)
   with
   | HTTPError err ->
     debug id "Tracker HTTP Error: %s" err >>
-    Lwt.return (st, fail_timer_interval, None)
+    Lwt.return (fail_timer_interval, None)
   | DecodeError ->
     debug id "Response Decode Error" >>
-    Lwt.return (st, fail_timer_interval, None)
+    Lwt.return (fail_timer_interval, None)
 
-let handle_message id msg st : state Lwt.t =
-  (* lwt msg = Lwt_stream.next st.tracker_ch in *)
+let handle_message id st msg : unit Lwt.t =
   debug id "%s" (string_of_msg msg) >>
   match msg with
   | TrackerTick x ->
     debug id "ticking: %d" x >>
     if x+1 = st.next_tick then
-      poke_tracker id st >>= timer_update id
+      poke_tracker id st >>= timer_update id st
     else
-      Lwt.return st
+      Lwt.return ()
   | Stop ->
-    let st = {st with status = Stopped} in
-    poke_tracker id st >>= timer_update id
+    st.status <- Stopped;
+    poke_tracker id st >>= timer_update id st
   | Start ->
-    let st = {st with status = Started} in
-    poke_tracker id st >>= timer_update id
+    st.status <- Started;
+    (* let st = {st with status = Started} in *)
+    poke_tracker id st >>= timer_update id st
   | Complete ->
-    let st = {st with status = Completed} in
-    poke_tracker id st >>= timer_update id
+    st.status <- Completed;
+    (* let st = {st with status = Completed} in *)
+    poke_tracker id st >>= timer_update id st
 
 let start ~monitor ~torrent_info ~peer_id ~local_port ~w_status_ch
   ~tracker_ch ~w_tracker_ch ~w_peer_mgr_ch =
@@ -286,14 +287,13 @@ let start ~monitor ~torrent_info ~peer_id ~local_port ~w_status_ch
     (* torrent_info; *)
     announce_list = torrent_info.Torrent.announce_list;
     (* peer_id; *)
-    status        = Stopped;
     local_port;
+    status        = Stopped;
     next_tick     = 0
   }
   in
   let event_loop id =
-    Lwt_stream.fold_s (handle_message id) tracker_ch st >>= fun _ ->
-    Lwt.return ()
+    Lwt_stream.iter_s (handle_message id st) tracker_ch
   in
   (* handle_message id st >>= event_loop id *)
   Monitor.spawn ~parent:monitor ~name:"Tracker" event_loop

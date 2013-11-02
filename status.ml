@@ -1,8 +1,6 @@
 open Printf
 open Messages
 open Monitor
-(* open Spawn *)
-(* open Lwt *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
