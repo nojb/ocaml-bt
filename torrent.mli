@@ -17,6 +17,7 @@ module Digest : sig
   val to_bin : t -> string
   val from_bin : string -> t
   val of_input_channel : Lwt_io.input_channel -> t Lwt.t
+  val string : string -> t
 end
 
 type digest =

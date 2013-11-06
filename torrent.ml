@@ -40,6 +40,8 @@ module Digest = struct
     let buf = String.create 20 in
     Lwt.bind (Lwt_io.read_into_exactly ic buf 0 20)
       (fun _ -> Lwt.return buf)
+  let string s =
+    Sha1.to_bin (Sha1.string s)
 end
 
 type digest =

@@ -1,54 +1,133 @@
-let rec project_file_descrs ~file_descrs ~offset ~size =
-  if size < 0 then failwith "project_file_descrs: negative size"
-  else match file_descrs with
-  | [] -> failwith "projecti_file_descrs: tring to read beyond torrent length"
-  | (fd, size1) :: fds ->
-      if offset >= size1 then project_file_descrs fds (offset - size1) size
+open Messages
+open Printf
+open Monitor
+
+let (>>=) = Lwt.(>>=)
+
+let safe_to_int n =
+  let n' = Int64.to_int n in
+  assert (Int64.(compare (of_int n') n) = 0);
+  n'
+
+let rec get_chunks handles ~offset ~size =
+  if size < 0 then
+    invalid_arg "Fs.get_chunks"
+  else
+    match handles with
+    | [] ->
+      failwith "get_chunks: tring to read beyond torrent length"
+    | (ic, oc, size1) :: handles ->
+      let open Int64 in
+      if compare offset size1 >= 0 then
+        get_chunks handles ~offset:(sub offset size1) ~size
       else begin
-        let size1 = size1 - offset in
-        if size1 >= size then [(fd, offset, size)]
+        let size1 = sub size1 offset in
+        if compare size1 (of_int size) >= 0 then
+          [ic, oc, offset, size]
         else
-          [fd, offset, size1] :: project_file_descrs fds 0 (size-size1)
+          let size1 = safe_to_int size1 in
+          (ic, oc, offset, size1) :: get_chunks handles ~offset:0L ~size:(size - size1)
       end
 
-let really_read len fd =
-  let buf = String.create len in
-  let rec loop rem off =
-    Lwt_unix.read fd buf off rem >>= fun actually_read ->
-    if actually_read = 0 && rem > 0 then failwith "end of file"
-    else if actually_read < rem then loop (rem - actually_read) (off + actually_read)
-    else Lwt.return buf
-  in loop len 0
+let string_of_msg = function
+  | CheckPiece (pn, _) ->
+    sprintf "CheckPiece: %d" pn
+  | ReadBlock (pn, Block (boff, blen), _) ->
+    sprintf "ReadBlock: piece: %d offset: %d length: %d" pn boff blen
+  | WriteBlock (pn, Block (boff, blen), _) ->
+    sprintf "WriteBlock: piece: %d offset: %d length: %d" pn boff blen
 
-let check_piece handles pi : bool Lwt.t =
-  let chunks = project_file_descrs handles pi.piece_offset pi.piece_length in
-  lwt chunks = Lwt_list.map_s (fun (fd, off, size) -> (* FIXME: Lwt_map *)
-    Lwt_unix.LargeFile.lseek fd off Lwt_unix.SEEK_SET >>= fun _ ->
-    let buf = String.create size in
-    really_read fd buf ofs size >>= fun _ ->
-    return buf) chunks in
-    (* Lwt_unix.read fd buf ofs size; (* FIXME really_read *) *)
-    (* buf) chunks in *)
-  let digest = Sha1.string (String.concat "" chunks) in
-  return (Digest.equal digest pi.piece_digest)
+let read_block id handles pi (Block (boff, blen)) : string Lwt.t =
+  let data = String.create blen in
+  let read_chunk doff (ic, _, off, len) =
+    Lwt_io.set_position ic off >>
+    Lwt_io.read_into_exactly ic data doff len >>
+    Lwt.return (doff + len)
+  in
+  let start = Int64.(add pi.Torrent.piece_offset (of_int boff)) in
+  lwt n = Lwt_list.fold_left_s read_chunk 0
+    (get_chunks handles ~offset:start ~size:blen)
+  in
+  assert (n = blen);
+  debug id "read_block: offset: %d length: %d" boff blen >>
+  Lwt.return data
 
-let check_file handles pieces : Bits.t Lwt.t =
-  let have = Bits.zero (Array.length pieces) in
-  let rec loop have i =
-    if i >= Array.length pieces then Lwt.return have
-    else
-      check_piece handles pieces.(i) >>= fun valid ->
-      if valid then
-        loop (Bits.set i have) (i+1)
+let write_block id handles pi (Block (boff, blen)) data : unit Lwt.t =
+  assert (String.length data = blen);
+  let write_chunk doff (_, oc, off, len) =
+    Lwt_io.set_position oc off >>
+    Lwt_io.write_from_exactly oc data doff len >>
+    Lwt.return (doff + len)
+  in
+  let start = Int64.(add pi.Torrent.piece_offset (of_int boff)) in
+  lwt n = Lwt_list.fold_left_s write_chunk 0 
+    (get_chunks handles ~offset:start ~size:blen) in
+  assert (n = blen);
+  debug id "write_block: offset: %d length: %d" boff blen >>
+  Lwt.return ()
+
+(** raises End_of_file if [pi] refers to a piece beyond the
+ * end of file *)
+let check_piece id handles (pi : Torrent.piece_info) : bool Lwt.t =
+  let data = String.create pi.Torrent.piece_length in
+  let read_chunk doff (ic, _, off, len) =
+    Lwt_io.set_position ic off >>
+    Lwt_io.read_into_exactly ic data doff len >>
+    Lwt.return (doff + len)
+  in
+  lwt n = Lwt_list.fold_left_s read_chunk 0
+    (get_chunks handles ~offset:pi.Torrent.piece_offset ~size:pi.Torrent.piece_length)
+  in
+  assert (n = pi.Torrent.piece_length);
+  let digest = Torrent.Digest.string data in
+  Lwt.return (Torrent.Digest.equal digest pi.Torrent.piece_digest)
+
+let check_file id handles pieces : Bits.t Lwt.t =
+  let n = Array.length pieces in
+  let have = Bits.create n in
+  try_lwt
+    let rec loop i =
+      if i >= n then Lwt.return have
       else
-        loop have (i+1)
-  in loop have 0
+        lwt valid = check_piece id handles pieces.(i) in
+        if valid then Bits.set have i;
+        loop (i+1)
+    in loop 0
+  with
+  | End_of_file -> Lwt.return have
 
-let open_and_check_file info : ((Lwt_unix.file_descr * int64) list * Bits.t) Lwt.t =
+let handle_message id handles pieces msg : unit Lwt.t =
+  debug id "%s" (string_of_msg msg) >>
+  match msg with
+  | CheckPiece (pn, mv) ->
+    check_piece id handles pieces.(pn) >>= Lwt_mvar.put mv
+  | ReadBlock (n, bl, mv) ->
+    read_block id handles pieces.(n) bl >>= Lwt_mvar.put mv
+  | WriteBlock (n, bl, data) ->
+    write_block id handles pieces.(n) bl data
+
+let start ~monitor ~handles ~pieces ~fs =
+  let event_loop id =
+    Lwt_stream.iter_s (handle_message id handles pieces) fs
+  in
+  Monitor.spawn ~parent:monitor ~name:"FS" event_loop
+
+(* let safe_map path f = *)
+(*   lwt fd = Lwt_unix.openfile path [...] in *)
+(*   try_lwt *)
+(*     f (Lwt_bytes.map_file fd ...) *)
+(*   with *)
+(*   | exn -> *)
+(*     Lwt_unix.close fd; *)
+(*     raise_lwt exn *)
+
+let open_and_check_file id info : 'a Lwt.t =
   lwt handles = Lwt_list.map_s (fun fi ->
     let path = String.concat "/" fi.Torrent.file_path in
-    (* FIXME *)
-    lwt fd = Lwt_unix.openfile path [Unix.O_RDRW; Unix.O_NONBLOCK; Unix.O_CREAT] 644 in
-    Lwt.return (fd, fi.Torrent.file_size)) info.Torrent.files in
-  check_file handles info.Torrent.pieces >>= fun have ->
+    lwt oc = Lwt_io.open_file ~mode:Lwt_io.Output path in
+    lwt ic = Lwt_io.open_file ~mode:Lwt_io.Input path in
+    Lwt.return (ic, oc, fi.Torrent.file_size)) info.Torrent.files in
+  lwt have = check_file id handles info.Torrent.pieces in
+  debug id "Torrent data check successful" >>
   Lwt.return (handles, have)
+
