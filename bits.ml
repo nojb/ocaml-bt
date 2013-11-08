@@ -159,12 +159,12 @@ let arbitrary len =
   in
   QCheck.Arbitrary.(string_len (int_multiples 8 len))
 
-let _ =
-  let test = QCheck.mk_test ~n:100 ~name:"Binary encoding/decoding"
-    ~pp:to_string
-    (arbitrary QCheck.Arbitrary.(int_range ~start:0 ~stop:100))
-    (fun b -> equal (of_bin (to_bin b)) b && equal (to_bin (of_bin b)) b) in
-  QCheck.run test
+(* let _ = *)
+(*   let test = QCheck.mk_test ~n:100 ~name:"Binary encoding/decoding" *)
+(*     ~pp:to_string *)
+(*     (arbitrary QCheck.Arbitrary.(int_range ~start:0 ~stop:100)) *)
+(*     (fun b -> equal (of_bin (to_bin b)) b && equal (to_bin (of_bin b)) b) in *)
+(*   QCheck.run test *)
 
 (* type t = { *)
 (*   data : string; *)

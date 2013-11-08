@@ -1,11 +1,12 @@
 open Printf
 open Messages
-open Monitor
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-module M = Map.Make (ThreadId)
+let debug = Supervisor.debug
+
+module M = Map.Make (Supervisor.Id)
 
 let string_of_peer_msg = function
   | PeersFromTracker (ih, peers) ->
@@ -23,9 +24,9 @@ let string_of_mgr_msg = function
   | Connect (ih, tid) ->
     sprintf "Connect: info_hash: %s id: %s"
       (Torrent.Digest.to_string ih)
-      (ThreadId.to_string tid)
+      (Supervisor.Id.to_string tid)
   | Disconnect tid ->
-    sprintf "Disconnect: id: %s" (ThreadId.to_string tid)
+    sprintf "Disconnect: id: %s" (Supervisor.Id.to_string tid)
 
 type msg_source =
   | FromPeer of mgr_msg
@@ -46,7 +47,7 @@ type state = {
   peer_id : Torrent.peer_id;
   (* chan : msg_source Lwt_stream.t; *)
   w_mgr_ch : mgr_msg -> unit;
-  pool : Monitor.t
+  msg_pool : (Supervisor.supervisor_msg -> unit)
 }
 
 let max_peers = ref 40
@@ -95,7 +96,8 @@ let handle_good_handshake id st ic oc ih peer_id : unit Lwt.t =
     let tl = TorrentTbl.find st.torrents ih in
     let pieces = tl.pieces in
     let msg_piece_mgr = tl.msg_piece_mgr in
-    Peer.start ~monitor:st.pool ic oc st.w_mgr_ch ih ~pieces ~msg_piece_mgr;
+    Peer.start ~msg_supervisor:st.msg_pool ic oc st.w_mgr_ch ih
+      ~pieces ~msg_piece_mgr;
     Lwt.return ()
   with
   | Not_found ->
@@ -109,7 +111,7 @@ let connect id st (addr, port) ih =
       (Unix.string_of_inet_addr addr) port >>
     handshake id st ic oc ih >>= handle_good_handshake id st ic oc ih
   in
-  Monitor.spawn ~name:"Connector" connector
+  ignore (Supervisor.spawn "Connector" connector) (* FIXME *)
 
 let add_peer id st (ih, paddr) : unit =
   connect id st paddr ih
@@ -146,7 +148,7 @@ let handle_message id st msg : unit Lwt.t =
   | msg ->
     debug id "Unhandled: %s" (string_of_msg msg)
 
-let start ~monitor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
+let start ~msg_supervisor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
   (* supervisor_ch w_supervisor_ch = *)
   let chan = Lwt_stream.choose [
     Lwt_stream.map (fun msg -> PeerMgrMsg msg) peer_mgr_ch;
@@ -155,7 +157,8 @@ let start ~monitor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
   in
   (* FIXME register pool thread with my supervisor so that
    * it gets automatically finished when the supervisor goes away *)
-  let pool = Monitor.create ~parent:monitor Monitor.OneForOne "PeerMgrPool"
+  let msg_pool = Supervisor.spawn_supervisor msg_supervisor
+    "PeerMgrPool" Supervisor.OneForOne
   in
   let st = {
     torrents = TorrentTbl.create 17;
@@ -164,9 +167,9 @@ let start ~monitor ~peer_mgr_ch ~mgr_ch ~w_mgr_ch ~peer_id =
     peer_id;
     (* chan; *)
     w_mgr_ch;
-    pool }
+    msg_pool }
   in
   let event_loop id =
     Lwt_stream.iter_s (handle_message id st) chan
   in
-  Monitor.spawn ~parent:monitor ~name:"PeerMgr" event_loop
+  Supervisor.spawn_worker msg_supervisor "PeerMgr" event_loop

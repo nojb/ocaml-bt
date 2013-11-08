@@ -1,11 +1,10 @@
 open Printf
-(* open Lwt *)
-(* open Spawn *)
-open Monitor
 open Messages
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+let debug = Supervisor.debug
 
 let string_of_msg = function
   | Stop -> "Stop"
@@ -110,10 +109,10 @@ let timer_update id st (interval, _) : unit Lwt.t = (* (interval, min_interval) 
     let t = st.next_tick in
     st.next_tick <- t+1;
     (* run *)
-    spawn ~name:"TrackerTimer"
+    let _ = Supervisor.spawn "TrackerTimer"
       (fun _ ->
         Lwt_unix.sleep (float interval) >>
-        (st.w_tracker_ch (TrackerTick t); Lwt.return ()));
+        (st.w_tracker_ch (TrackerTick t); Lwt.return ())) in
     debug id "Set Timer to: %d" interval >>
     Lwt.return ()
   | _ ->
@@ -271,7 +270,7 @@ let handle_message id st msg : unit Lwt.t =
     (* let st = {st with status = Completed} in *)
     poke_tracker id st >>= timer_update id st
 
-let start ~monitor ~torrent_info ~peer_id ~local_port ~w_status_ch
+let start ~msg_supervisor ~torrent_info ~peer_id ~local_port ~w_status_ch
   ~tracker_ch ~w_tracker_ch ~w_peer_mgr_ch =
   let st = {
     w_status_ch;
@@ -295,11 +294,6 @@ let start ~monitor ~torrent_info ~peer_id ~local_port ~w_status_ch
   let event_loop id =
     Lwt_stream.iter_s (handle_message id st) tracker_ch
   in
-  (* handle_message id st >>= event_loop id *)
-  Monitor.spawn ~parent:monitor ~name:"Tracker" event_loop
-  (* Supervisor.spawn "Tracker" w_supervisor_ch event_loop *)
-  (* (fun id -> event_loop id) *)
-  (* spawn ~name:"Tracker" st (loop ()) *)
+  Supervisor.spawn_worker msg_supervisor "Tracker" event_loop
   (* FIXME cleanup *)
-  (* Supervisor.spawn ~name:"Tracker" w_supervisor_ch st (loop ()) *)
 

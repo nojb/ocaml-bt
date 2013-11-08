@@ -1,10 +1,11 @@
 open Messages
-open Monitor
 
 let _ = Lwt_log.Section.set_level Lwt_log.Section.main Lwt_log.Debug
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+let debug = Supervisor.debug
 
 let create_stream () =
   let s, w = Lwt_stream.create () in
@@ -19,10 +20,11 @@ let download path =
   let torrent_mgr, msg_torrent_mgr = create_stream () in
   let peer_mgr, msg_peer_mgr = create_stream () in
   let mgr, msg_mgr = create_stream () in
-  let monitor = Monitor.create Monitor.AllForOne "MainSup" in
-  TorrentMgr.start ~monitor ~torrent_mgr ~msg_status ~peer_id ~msg_peer_mgr;
-  Status.start ~monitor ~status_ch:status;
-  PeerMgr.start ~monitor ~peer_mgr_ch:peer_mgr ~mgr_ch:mgr ~w_mgr_ch:msg_mgr ~peer_id;
+  let msg_supervisor = Supervisor.top_level "MainSup" Supervisor.AllForOne in
+  TorrentMgr.start ~msg_supervisor ~torrent_mgr ~msg_status ~peer_id ~msg_peer_mgr;
+  Status.start ~msg_supervisor ~status_ch:status;
+  PeerMgr.start ~msg_supervisor ~peer_mgr_ch:peer_mgr ~mgr_ch:mgr
+    ~w_mgr_ch:msg_mgr ~peer_id;
   msg_torrent_mgr (AddedTorrent path);
   Lwt_main.run (fst (Lwt.wait ()))
 

@@ -1,8 +1,9 @@
 open Messages
 open Printf
-open Monitor
 
 let (>>=) = Lwt.(>>=)
+
+let debug = Supervisor.debug
 
 let safe_to_int n =
   let n' = Int64.to_int n in
@@ -106,11 +107,11 @@ let handle_message id handles pieces msg : unit Lwt.t =
   | WriteBlock (n, bl, data) ->
     write_block id handles pieces.(n) bl data
 
-let start ~monitor ~handles ~pieces ~fs =
+let start ~msg_supervisor ~handles ~pieces ~fs =
   let event_loop id =
     Lwt_stream.iter_s (handle_message id handles pieces) fs
   in
-  Monitor.spawn ~parent:monitor ~name:"FS" event_loop
+  Supervisor.spawn_worker msg_supervisor "FS" event_loop
 
 (* let safe_map path f = *)
 (*   lwt fd = Lwt_unix.openfile path [...] in *)

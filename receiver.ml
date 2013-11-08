@@ -1,5 +1,4 @@
 open Messages
-open Monitor
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -75,7 +74,6 @@ let event_loop id ic w_ch =
   (* | End_of_file -> *)
   (*   raise_lwt Stop *)
 
-let start ~monitor ic w_ch =
-  Monitor.spawn ~parent:monitor ~name:"Receiver"
+let start ~msg_supervisor ic w_ch =
+  Supervisor.spawn_worker msg_supervisor "Receiver"
     (fun id -> event_loop id ic w_ch)
-  (* Supervisor.spawn "Receiver" sup_ch (fun id -> event_loop id ic w_ch) *)

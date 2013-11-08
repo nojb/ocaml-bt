@@ -1,9 +1,10 @@
 open Messages
 open Printf
-open Monitor
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+let debug = Supervisor.debug
 
 let create_stream () =
   let s, w = Lwt_stream.create () in
@@ -180,7 +181,7 @@ let handle_msg id st msg : unit Lwt.t =
     handle_timer_tick id st;
     Lwt.return ()
 
-let start_peer ~monitor w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr =
+let start_peer ~msg_supervisor w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr =
   let st =
     { we_interested = true;
       we_choking = false;
@@ -201,13 +202,15 @@ let start_peer ~monitor w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr =
     Lwt_stream.iter_s (handle_msg id st) in_ch
   in
   (* Add a cleanup operation *)
-  Monitor.spawn ~parent:monitor ~name:"Peer"
+  Supervisor.spawn_worker msg_supervisor "Peer"
     (fun id -> startup id >> event_loop id)
 
-let start ~monitor ic oc w_pmc ih ~pieces ~msg_piece_mgr =
+let start ~msg_supervisor ic oc w_pmc ih ~pieces ~msg_piece_mgr =
   let sender_ch, msg_sender = create_stream () in
   let in_ch, w_in = create_stream () in
-  let monitor = Monitor.create ~parent:monitor Monitor.AllForOne "PeerSup" in
-  Sender.start ~monitor oc sender_ch w_in;
-  Receiver.start ~monitor ic w_in;
-  start_peer ~monitor w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr
+  let msg_peer_sup = Supervisor.spawn_supervisor msg_supervisor "PeerSup"
+    Supervisor.AllForOne
+  in
+  Sender.start ~msg_supervisor:msg_peer_sup oc sender_ch w_in;
+  Receiver.start ~msg_supervisor:msg_peer_sup ic w_in;
+  start_peer ~msg_supervisor:msg_peer_sup w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr

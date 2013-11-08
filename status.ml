@@ -1,9 +1,10 @@
 open Printf
 open Messages
-open Monitor
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+let debug = Supervisor.debug
 
 module M = Map.Make (Torrent.Digest)
 
@@ -62,10 +63,9 @@ let handle_message id msg m : Messages.state M.t Lwt.t =
   | _ ->
     failwith "unhandled message"
 
-let start ~monitor ~status_ch =
+let start ~msg_supervisor ~status_ch =
   let event_loop id =
     Lwt_stream.fold_s (handle_message id) status_ch M.empty >>= fun _ ->
     Lwt.return ()
   in
-  Monitor.spawn ~parent:monitor ~name:"Status" event_loop
-  (* Supervisor.spawn "Status" w_supervisor_ch event_loop *)
+  Supervisor.spawn_worker msg_supervisor "Status" event_loop

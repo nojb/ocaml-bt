@@ -1,6 +1,6 @@
 open Printf
 open Messages
-open Monitor
+(* open Monitor *)
 
 (* let event_loop id oc v = *)
 (*   let rec loop () = *)
@@ -13,6 +13,8 @@ open Monitor
 (*   (* Supervisor.spawn "Sender" sup_ch (fun id -> event_loop id oc v) *) *)
 
 let (>>=) = Lwt.(>>=)
+
+let debug = Supervisor.debug
 
 let string_of_msg = function
   | SendMsg msg ->
@@ -97,10 +99,11 @@ let handle_message id oc send_peer_mgr msg =
     send_peer_mgr (FromSender sz);
     Lwt.return ()
   | msg ->
-    debug id "unhandled message: %s" (string_of_msg msg)
+    debug id "Unhandled: %s" (string_of_msg msg)
 
-let start ~monitor oc sender_ch send_peer_mgr =
+let start ~msg_supervisor oc sender_ch send_peer_mgr =
   let event_loop id =
     Lwt_stream.iter_s (handle_message id oc send_peer_mgr) sender_ch
   in
-  Monitor.spawn ~parent:monitor ~name:"Sender" event_loop
+  Supervisor.spawn_worker msg_supervisor "Sender" event_loop
+  (* Monitor.spawn ~parent:monitor ~name:"Sender" event_loop *)

@@ -108,8 +108,8 @@ type peer_mgr_msg =
   | StopTorrent         of Torrent.digest
 
 type mgr_msg =
-  | Connect     of Torrent.digest * Monitor.id
-  | Disconnect  of Monitor.id
+  | Connect     of Torrent.digest * Supervisor.thread_id
+  | Disconnect  of Supervisor.thread_id
 
 type msg_ty =
   | FromPeer    of peer_msg

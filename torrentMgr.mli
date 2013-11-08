@@ -1,7 +1,8 @@
 open Messages
 
 val start :
-  monitor:Monitor.t -> 
+  (* monitor:Monitor.t ->  *)
+  msg_supervisor:(Supervisor.supervisor_msg -> unit) -> 
   torrent_mgr:torrent_mgr_msg Lwt_stream.t ->
   msg_status:(status_msg -> unit) ->
   peer_id:Torrent.peer_id ->
