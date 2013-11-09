@@ -89,7 +89,6 @@ let try_udp_server id st ss url =
     | None -> failwith "Empty Port"
     | Some port -> port
   in
-  debug id "Trying to find out about host: %S" host >>
   lwt he = Lwt_unix.gethostbyname host in
   let iaddr = he.Lwt_unix.h_addr_list.(0) in
   let saddr = Lwt_unix.ADDR_INET (iaddr, port) in
@@ -191,39 +190,50 @@ let try_udp_server id st ss url =
   in request_connect 0
 
 let decode_http_response (d : Bcode.t) =
-  let co = Bcode.search_int' "complete" d in
-  let ic = Bcode.search_int' "incomplete" d in
-  let iv = Bcode.search_int' "interval" d in
-  let mi = Bcode.search_maybe_int' "min interval" d in
-  let peers =
-    try
-      match Bcode.search "peers" d with
-      | Bcode.BList pr ->
-        List.map (fun d ->
-          let ip = Bcode.search_string "ip" d in
-          let port = Bcode.search_int' "port" d in
-          let addr = Unix.inet_addr_of_string ip in
-          (addr, port)) pr
-      | Bcode.BString pr ->
-        let rec loop i =
-          if i >= String.length pr then []
-          else
-            (Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d"
-              (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
-              (int_of_char pr.[i+2]) (int_of_char pr.[i+3])),
-              (int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5])) :: loop (i+6)
-        in loop 0
-      | _ ->
-        raise DecodeError
-    with
-    | _ -> raise DecodeError
+  let decode_success () =
+    let co = Bcode.search_int' "complete" d in
+    let ic = Bcode.search_int' "incomplete" d in
+    let iv = Bcode.search_int' "interval" d in
+    let mi = Bcode.search_maybe_int' "min interval" d in
+    let peers =
+      try
+        match Bcode.search "peers" d with
+        | Bcode.BList pr ->
+          List.map (fun d ->
+            let ip = Bcode.search_string "ip" d in
+            let port = Bcode.search_int' "port" d in
+            let addr = Unix.inet_addr_of_string ip in
+            (addr, port)) pr
+        | Bcode.BString pr ->
+          let rec loop i =
+            if i >= String.length pr then []
+            else
+              (Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d"
+                (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
+                (int_of_char pr.[i+2]) (int_of_char pr.[i+3])),
+                (int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5])) :: loop (i+6)
+          in loop 0
+        | _ ->
+          raise DecodeError
+      with
+      | _ -> raise DecodeError
+    in
+    Success
+      { new_peers = peers;
+        complete = Some co;
+        incomplete = Some ic;
+        interval = iv;
+        min_interval = mi }
   in
-  Success
-    { new_peers = peers;
-      complete = Some co;
-      incomplete = Some ic;
-      interval = iv;
-      min_interval = mi }
+  try
+    Warning (Bcode.search_string "warning" d)
+  with
+  | Not_found ->
+    try
+      Error (Bcode.search_string "error" d)
+    with
+    | Not_found ->
+      decode_success ()
 
 let try_http_server id st ss (uri : Uri.t) : response Lwt.t =
   let uri =
