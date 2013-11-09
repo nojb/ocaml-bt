@@ -25,23 +25,41 @@ let add_torrent id msg_supervisor st path : unit Lwt.t =
     { msg_piece_mgr = (fun _ -> ()); pieces = torrent_info.Torrent.pieces }
   in
   (* FIXME check that it doesn't already exist *)
-  let tracker, msg_tracker = create_stream () in
   let fs, msg_fs = create_stream () in
   let msg_supervisor = Supervisor.spawn_supervisor
     msg_supervisor (* FIXME *)
     (sprintf "TorrentSup [%s]" torrent_info.Torrent.name)
     Supervisor.AllForOne
   in
-  Tracker.start ~msg_supervisor ~torrent_info ~peer_id:st.peer_id
-    ~local_port:6881 ~w_status_ch:st.msg_status
-    ~tracker_ch:tracker
-    ~w_tracker_ch:msg_tracker
-    ~w_peer_mgr_ch:st.msg_peer_mgr;
+  let msg_tracker_sup =
+    Supervisor.spawn_supervisor
+    msg_supervisor
+    (sprintf "TrackerSup [%s]" torrent_info.Torrent.name)
+    Supervisor.OneForOne (* FIXME Restartable *)
+  in
+  let msg_trackers = List.map (fun tier ->
+    Tracker.start
+      ~msg_supervisor:msg_tracker_sup
+      ~info_hash:ih
+      ~tier
+      ~peer_id:st.peer_id
+      ~local_port:6881
+      ~w_status_ch:st.msg_status
+      ~w_peer_mgr_ch:st.msg_peer_mgr) torrent_info.Torrent.announce_list
+  in
+  (* let msg_tracker = Tracker.start *)
+  (*   ~msg_supervisor *)
+  (*   ~info_hash:ih *)
+  (*   ~announce_list:torrent_info.Torrent.announce_list *)
+  (*   ~peer_id:st.peer_id *)
+  (*   ~local_port:6881 ~w_status_ch:st.msg_status *)
+  (*   ~w_peer_mgr_ch:st.msg_peer_mgr *)
+  (* in *)
   lwt handles, have = Fs.open_and_check_file id torrent_info in
   Fs.start ~msg_supervisor ~handles ~pieces:torrent_info.Torrent.pieces ~fs;
   st.msg_status (InsertTorrent (ih, torrent_info.Torrent.total_length));
   st.msg_peer_mgr (NewTorrent (ih, tl));
-  msg_tracker Start;
+  List.iter (fun msg_tracker -> msg_tracker Start) msg_trackers;
   Lwt.return ()
 
 let start ~msg_supervisor ~torrent_mgr ~msg_status ~peer_id ~msg_peer_mgr =

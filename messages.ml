@@ -18,14 +18,15 @@ type state = {
   state           : Torrent.state
 }
 
-type tracker_stats = {
-  track_info_hash   : Torrent.digest;
-  track_incomplete  : int option;
-  track_complete    : int option
-}
+(* type tracker_stats = { *)
+(*   track_info_hash   : Torrent.digest; *)
+(*   track_incomplete  : int option; *)
+(*   track_complete    : int option *)
+(* } *)
 
 type status_msg =
-  | TrackerStat         of tracker_stats
+  | TrackerStat         of Torrent.digest * int option * int option (*
+  tracker_stats *)
   | CompletedPiece      of Torrent.digest * int
   | InsertTorrent       of Torrent.digest * int64
   | RemoveTorrent       of Torrent.digest

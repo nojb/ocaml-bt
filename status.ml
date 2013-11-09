@@ -9,13 +9,13 @@ let debug = Supervisor.debug
 module M = Map.Make (Torrent.Digest)
 
 let string_of_msg = function
-  | TrackerStat stats ->
+  | TrackerStat (ih, complete, incomplete) ->
     sprintf "TrackerStat: info_hash: %s%s%s"
-      (Torrent.Digest.to_string stats.track_info_hash)
+      (Torrent.Digest.to_string ih)
       (Util.map_some "" (fun ic -> " incomplete: " ^ string_of_int ic)
-        stats.track_incomplete)
+        incomplete)
       (Util.map_some "" (fun co -> " complete: " ^ string_of_int co)
-        stats.track_complete)
+        complete)
   | CompletedPiece _ -> "CompletedPiece"
   | InsertTorrent (ih, left) ->
     sprintf "InsertTorrent: info_hash: %s left: %Ld B"
@@ -38,11 +38,11 @@ let adjust f k m =
 let handle_message id msg m : Messages.state M.t Lwt.t =
   debug id "%s" (string_of_msg msg) >>
   match msg with
-  | TrackerStat stats ->
+  | TrackerStat (ih, complete, incomplete) ->
     Lwt.return (adjust (fun st ->
       {st with
-        incomplete = stats.track_incomplete;
-        complete = stats.track_complete}) stats.track_info_hash m)
+        incomplete = incomplete;
+        complete = complete}) ih m)
   | InsertTorrent (ih, l) ->
     (* FIXME what if it is duplicate? *)
     Lwt.return (M.add ih
