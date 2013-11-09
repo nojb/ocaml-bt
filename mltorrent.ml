@@ -29,7 +29,8 @@ let download path =
   Lwt_main.run (fst (Lwt.wait ()))
 
 let _ =
-  download "wabi.torrent"
+  if Array.length Sys.argv > 1 then
+    download Sys.argv.(1)
 
 (* let start path = *)
 (*   let torrent_info = Torrent.make (Bcode.from_file path) in *)

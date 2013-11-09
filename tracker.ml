@@ -256,7 +256,7 @@ let try_http_server id st ss (uri : Uri.t) : response Lwt.t =
   | None -> raise_lwt (HTTPError "no response")
   | Some (resp, body) ->
     lwt body = Cohttp_lwt_body.string_of_body body in
-    debug id "Got tracker response" >>
+    (* debug id "Got tracker response" >> *)
     let dict = Bcode.from_string body in
     Lwt.return (decode_http_response dict)
     (* if not (Cohttp_lwt_unix.Response.has_body resp) then *)
