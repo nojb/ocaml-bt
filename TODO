@@ -3,3 +3,4 @@
 - Fix FS with mmap
 - Use OCaml int's throughout and demand 64 bit
 - Use Result.t and Result.Lwt.t to improve error checking
+- Start commenting everything

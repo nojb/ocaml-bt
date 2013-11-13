@@ -3,14 +3,13 @@ type restart_policy =
   | OneForOne
 
 val default_stop :
-  (Msg.super_msg option -> unit) ->
+  Msg.super_msg Lwt_pipe.t ->
   (Proc.Id.t -> unit Lwt.t)
 
 val start :
   restart_policy ->
   string ->
   children:Msg.child list ->
-  send_super:(Msg.super_msg option -> unit) ->
-  msgs:Msg.super_msg Lwt_stream.t ->
-  send:(Msg.super_msg option -> unit) ->
-  (Proc.Id.t * (Msg.super_msg option -> unit))
+  super_ch:Msg.super_msg Lwt_pipe.t ->
+  ch:Msg.super_msg Lwt_pipe.t ->
+  (Proc.Id.t * Msg.super_msg Lwt_pipe.t)

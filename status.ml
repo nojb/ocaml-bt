@@ -1,7 +1,6 @@
 open Printf
 
 let (>>=) = Lwt.(>>=)
-(* let (>|=) = Lwt.(>|=) *)
 
 module H = Hashtbl.Make (Torrent.Digest)
 
@@ -65,12 +64,11 @@ let handle_message t msg : unit Lwt.t =
   | _ ->
     failwith "unhandled message"
 
-let start ~send_super ~msgs =
+let start ~super_ch ~ch =
   let run id =
     let t = { torrents = H.create 17; id } in
-    Lwt_stream.iter_s (handle_message t) msgs
+    Lwt_pipe.iter_s (handle_message t) ch
   in
-  let id = Proc.spawn
-    (Proc.cleanup run (Super.default_stop send_super) (fun _ ->
-      Lwt.return_unit)) in
-  id
+  Proc.spawn
+    (Proc.cleanup run (Super.default_stop super_ch) (fun _ ->
+      Lwt.return_unit))

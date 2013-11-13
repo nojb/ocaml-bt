@@ -1,5 +1,5 @@
 val start :
-  send_super:(Msg.super_msg option -> unit) ->
+  super_ch:Msg.super_msg Lwt_pipe.t ->
   Lwt_io.input_channel ->
-  send_peer:(Msg.msg_ty option -> unit) ->
+  peer_ch:Msg.msg_ty Lwt_pipe.t ->
   Proc.Id.t

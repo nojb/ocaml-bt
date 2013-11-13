@@ -1,4 +1,4 @@
 val start :
-  send_super : (Msg.super_msg option -> unit) ->
-  msgs: Msg.status_msg Lwt_stream.t ->
+  super_ch : Msg.super_msg Lwt_pipe.t ->
+  ch : Msg.status_msg Lwt_pipe.t ->
   Proc.Id.t

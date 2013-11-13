@@ -1,16 +1,5 @@
 open Printf
 open Msg
-(* open Monitor *)
-
-(* let event_loop id oc v = *)
-(*   let rec loop () = *)
-(*     lwt s = Lwt_mvar.take v in *)
-(*     Lwt_io.write oc s >> loop () *)
-(*   in loop () *)
-(*  *)
-(* let start ~monitor oc v = *)
-(*   Monitor.spawn ~parent:monitor ~name:"Sender" (fun id -> event_loop id oc v) *)
-(*   (* Supervisor.spawn "Sender" sup_ch (fun id -> event_loop id oc v) *) *)
 
 let (>>=) = Lwt.(>>=)
 
@@ -93,19 +82,19 @@ let send_msg id oc msg : int Lwt.t =
     Lwt_io.BE.write_int16 oc port >>
     Lwt.return 7
 
-let handle_message id oc send_peer_mgr msg =
+let handle_message id oc peer_ch msg =
   debug id "%s" (string_of_msg msg) >>
   match msg with
   | SendMsg msg ->
     lwt sz = send_msg id oc msg in
-    send_peer_mgr (Some (FromSender sz));
+    Lwt_pipe.write peer_ch (FromSender sz);
     Lwt.return ()
   | msg ->
     debug id "Unhandled: %s" (string_of_msg msg)
 
-let start ~send_super oc msgs ~send_peer =
+let start ~super_ch oc ~ch ~peer_ch =
   let run id =
-    Lwt_stream.iter_s (handle_message id oc send_peer) msgs
+    Lwt_pipe.iter_s (handle_message id oc peer_ch) ch
   in
   Proc.spawn (Proc.cleanup run
-    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))
+    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))

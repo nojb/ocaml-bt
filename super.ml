@@ -18,16 +18,15 @@ type restart_policy =
 
 type child_info =
   | HWorker
-  | HSupervisor of (Msg.super_msg option -> unit)
+  | HSupervisor of Msg.super_msg Lwt_pipe.t
 
 module H = Hashtbl.Make (Proc.Id)
 
 type t = {
   name : string;
   policy : restart_policy;
-  send_super : Msg.super_msg option -> unit;
-  msgs : Msg.super_msg Lwt_stream.t;
-  send : Msg.super_msg option -> unit;
+  super_ch : Msg.super_msg Lwt_pipe.t;
+  ch : Msg.super_msg Lwt_pipe.t;
   children : child_info H.t;
   id : Proc.Id.t
 }
@@ -36,22 +35,22 @@ let debug t ?exn fmt =
   Printf.ksprintf (fun msg -> Lwt_log.debug_f ?exn "%s %s: %s" t.name
     (Proc.Id.to_string t.id) msg) fmt
 
-let default_stop send_super id =
-  send_super (Some (Msg.IAmDying id));
+let default_stop super id =
+  Lwt_pipe.write super (Msg.IAmDying id);
   Lwt.return_unit
 
 let finish_child id = function
   | HWorker ->
     Proc.kill id
-  | HSupervisor send ->
-    send (Some Msg.PleaseDie)
+  | HSupervisor ch ->
+    Lwt_pipe.write ch Msg.PleaseDie
 
 let spawn_child t = function
   | Msg.Worker f ->
-    H.replace t.children (f t.send) HWorker
+    H.replace t.children (f t.ch) HWorker
   | Msg.Supervisor f ->
-    let id, send = f t.send in
-    H.replace t.children id (HSupervisor send)
+    let id, ch = f t.ch in
+    H.replace t.children id (HSupervisor ch)
 
 let handle_message t msg =
   debug t "%s" (string_of_msg msg) >>= fun () ->
@@ -72,18 +71,18 @@ let handle_message t msg =
     spawn_child t child;
     Lwt.return_unit
 
-let start policy name ~children ~send_super ~msgs ~send =
+let start policy name ~children ~super_ch ~ch =
   let run id =
     let t =
-      { name; send_super; msgs; send; policy; children = H.create 17; id }
+      { name; super_ch; ch; policy; children = H.create 17; id }
     in
     List.iter (spawn_child t) children;
     try_lwt
-      Lwt_stream.iter_s (handle_message t) t.msgs
+      Lwt_pipe.iter_s (handle_message t) ch
     with
     | Stop -> Lwt.return_unit
   in
   let id =
-    Proc.spawn (Proc.catch run (default_stop send_super))
+    Proc.spawn (Proc.catch run (default_stop super_ch))
   in
-  id, send
+  id, ch

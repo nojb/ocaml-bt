@@ -35,8 +35,8 @@ type t = {
   mutable pending_peers : (Torrent.digest * peer) list;
   peers : unit M.t;
   peer_id : Torrent.peer_id;
-  send : Msg.peer_mgr_msg option -> unit;
-  send_pool : (Msg.super_msg option -> unit);
+  ch : Msg.peer_mgr_msg Lwt_pipe.t;
+  pool_ch : Msg.super_msg Lwt_pipe.t;
   id : Proc.Id.t
 }
 
@@ -85,13 +85,13 @@ let handle_good_handshake t ic oc ih peer_id : unit Lwt.t =
   try_lwt
     let tl = TorrentTbl.find t.torrents ih in
     let pieces = tl.Msg.pieces in
-    let send_piece_mgr = tl.Msg.send_piece_mgr in
-    let children = Peer.start ic oc ~send_peer_mgr:t.send ih ~pieces ~send_piece_mgr in
+    let piece_mgr_ch = tl.Msg.piece_mgr_ch in
+    let children = Peer.start ic oc ~peer_mgr_ch:t.ch ih ~pieces ~piece_mgr_ch in
     let start_peer_sup =
-      let msgs, send = Lwt_stream.create () in
-      Super.start Super.AllForOne "PeerSup" ~children ~msgs ~send
+      let ch = Lwt_pipe.create () in
+      Super.start Super.AllForOne "PeerSup" ~children ~ch
     in
-    t.send_pool (Some (SpawnNew (Supervisor start_peer_sup)));
+    Lwt_pipe.write t.pool_ch (SpawnNew (Supervisor start_peer_sup));
     Lwt.return_unit
   with
   | Not_found ->
@@ -146,25 +146,25 @@ let handle_message t msg : unit Lwt.t =
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let start ~send_super ~msgs ~send ~peer_id =
+let start ~super_ch ~ch ~peer_id =
   (* FIXME register pool thread with my supervisor so that
    * it gets automatically finished when the supervisor goes away *)
   let run id =
-    let msgs_pool, send_pool = Lwt_stream.create () in
+    let pool_ch = Lwt_pipe.create () in
     let start_pool =
-      Super.start Super.OneForOne "PeerMgrPool" ~children:[] ~msgs:msgs_pool ~send:send_pool
+      Super.start Super.OneForOne "PeerMgrPool" ~children:[] ~ch:pool_ch
     in
-    send_super (Some (SpawnNew (Supervisor start_pool)));
+    Lwt_pipe.write super_ch (SpawnNew (Supervisor start_pool));
     let t =
       { torrents = TorrentTbl.create 17;
         pending_peers = [];
         peers = M.empty;
         peer_id;
-        send;
-        send_pool;
+        ch;
+        pool_ch;
         id }
     in
-    Lwt_stream.iter_s (handle_message t) msgs
+    Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn (Proc.cleanup run
-    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))
+    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))

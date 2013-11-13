@@ -1,5 +1,4 @@
 open Printf
-(* open Messages *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -42,9 +41,9 @@ type response =
 let fail_timer_interval = 15 * 60
 
 type t = {
-  send_status           : Msg.status_msg option -> unit;
-  send          : Msg.tracker_msg option -> unit;
-  send_peer_mgr         : Msg.peer_mgr_msg option -> unit;
+  status_ch           : Msg.status_msg Lwt_pipe.t;
+  ch          : Msg.tracker_msg Lwt_pipe.t;
+  peer_mgr_ch         : Msg.peer_mgr_msg Lwt_pipe.t;
   info_hash             : Torrent.Digest.t;
   peer_id               : Torrent.peer_id;
   tier                  : Uri.t array;
@@ -71,7 +70,7 @@ let timer_update t (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
     let _ = Proc.spawn
       (fun _ ->
         Lwt_unix.sleep (float interval) >|= fun () ->
-        t.send (Some (Msg.TrackerTick nt))) in
+        Lwt_pipe.write t.ch (Msg.TrackerTick nt)) in
     debug t "Set Timer to: %d" interval >>
     Lwt.return_unit
   | _ ->
@@ -304,7 +303,7 @@ let query_trackers t ss : response Lwt.t =
 let poke_tracker t : (int * int option) Lwt.t =
   let mv = Lwt_mvar.create_empty () in
   let ih = t.info_hash in
-  t.send_status (Some (Msg.RequestStatus (ih, mv)));
+  Lwt_pipe.write t.status_ch (Msg.RequestStatus (ih, mv));
   lwt ss = Lwt_mvar.take mv in
   try_lwt
     match_lwt query_trackers t ss with
@@ -316,8 +315,8 @@ let poke_tracker t : (int * int option) Lwt.t =
       Lwt.return (fail_timer_interval, None)
     | Success ok ->
       debug t "Received %d peers" (List.length ok.new_peers) >>= fun () ->
-      t.send_peer_mgr (Some (Msg.PeersFromTracker (ih, ok.new_peers)));
-      t.send_status (Some (Msg.TrackerStat (ih, ok.complete, ok.incomplete)));
+      Lwt_pipe.write t.peer_mgr_ch (Msg.PeersFromTracker (ih, ok.new_peers));
+      Lwt_pipe.write t.status_ch (Msg.TrackerStat (ih, ok.complete, ok.incomplete));
       begin match t.status with
       | Running   -> t.status <- Running
       | Stopped   -> t.status <- Stopped
@@ -359,13 +358,13 @@ let shuffle_array a =
     a.(j) <- tmp
   done
 
-let start ~send_super ~msgs ~send ~info_hash ~peer_id ~local_port
-  ~tier ~send_status ~send_peer_mgr =
+let start ~super_ch ~ch ~info_hash ~peer_id ~local_port
+  ~tier ~status_ch ~peer_mgr_ch =
   let run id =
     let t = {
-      send;
-      send_status;
-      send_peer_mgr;
+      ch;
+      status_ch;
+      peer_mgr_ch;
       info_hash;
       peer_id;
       tier = Array.of_list tier;
@@ -376,11 +375,7 @@ let start ~send_super ~msgs ~send ~info_hash ~peer_id ~local_port
     }
     in
     shuffle_array t.tier;
-    Lwt_stream.iter_s (handle_message t) msgs
+    Lwt_pipe.iter_s (handle_message t) ch
   in
-  let id =
-    Proc.spawn (Proc.cleanup run
-      (Super.default_stop send_super)
-      (fun _ -> Lwt.return_unit))
-  in
-  id
+  Proc.spawn (Proc.cleanup run
+    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))

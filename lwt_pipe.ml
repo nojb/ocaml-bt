@@ -1,5 +1,5 @@
 type 'a t =
-  'a Lwt_stream.t * ('a -> unit)
+  'a Lwt_stream.t * ('a option -> unit)
 
 let create () =
   Lwt_stream.create ()

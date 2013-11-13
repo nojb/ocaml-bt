@@ -63,9 +63,9 @@ type t = {
   (* interesting_pieces : PieceSet.t; *)
   (* mutable last_pn : int; *)
   pieces : Torrent.piece_info array;
-  send_peer_mgr : Msg.peer_mgr_msg option -> unit;
-  send_sender : Msg.sender_msg option -> unit;
-  send_piece_mgr : Msg.piece_mgr_msg option -> unit;
+  peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t;
+  sender_ch : Msg.sender_msg Lwt_pipe.t;
+  piece_mgr_ch : Msg.piece_mgr_msg Lwt_pipe.t;
   id : Proc.Id.t
 }
 
@@ -82,11 +82,11 @@ let hi_mark = 25
 
 let send_sender t msg =
   t.last_msg <- 0;
-  t.send_sender (Some msg)
+  Lwt_pipe.write t.sender_ch msg
 
 let grab_blocks t n : (int * block) list Lwt.t =
   let mv = Lwt_mvar.create_empty () in
-  t.send_piece_mgr (Some (GrabBlocks (n, t.peer_pieces, mv)));
+  Lwt_pipe.write t.piece_mgr_ch (GrabBlocks (n, t.peer_pieces, mv));
   Lwt_mvar.take mv
 
 let fill_blocks t =
@@ -111,7 +111,7 @@ let handle_peer_msg t = function
   | KeepAlive ->
     Lwt.return_unit
   | Choke ->
-    t.send_piece_mgr (Some (PutbackBlocks (BlockSet.elements t.block_queue)));
+    Lwt_pipe.write t.piece_mgr_ch (PutbackBlocks (BlockSet.elements t.block_queue));
     t.block_queue <- BlockSet.empty;
     t.peer_choking <- true;
     Lwt.return_unit
@@ -180,8 +180,8 @@ let handle_message t msg : unit Lwt.t =
     handle_timer_tick t;
     Lwt.return_unit
 
-let start_peer ~send_super ~send_peer_mgr msgs ih ~pieces
-  ~send_sender ~send_piece_mgr =
+let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
+  ~sender_ch ~piece_mgr_ch =
   let run id =
     let t =
       { we_interested = true;
@@ -191,23 +191,23 @@ let start_peer ~send_super ~send_peer_mgr msgs ih ~pieces
         peer_choking = false;
         peer_pieces = Bits.create (Array.length pieces);
         pieces;
-        send_sender;
-        send_piece_mgr;
-        send_peer_mgr;
+        sender_ch;
+        piece_mgr_ch;
+        peer_mgr_ch;
         last_msg = 0;
         id }
     in
-    t.send_peer_mgr (Some (Connect (ih, id)));
-    Lwt_stream.iter_s (handle_message t) msgs
+    Lwt_pipe.write peer_mgr_ch (Connect (ih, id));
+    Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn (Proc.cleanup run
-    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))
+    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
 
-let start ic oc ~send_peer_mgr ih ~pieces ~send_piece_mgr =
-  let msgs_sender, send_sender = Lwt_stream.create () in
-  let msgs, send = Lwt_stream.create () in
+let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
+  let sender_ch = Lwt_pipe.create () in
+  let ch = Lwt_pipe.create () in
   [
-    Worker (Sender.start oc msgs_sender ~send_peer:send);
-    Worker (Receiver.start ic ~send_peer:send);
-    Worker (start_peer ~send_peer_mgr msgs ih ~pieces ~send_sender ~send_piece_mgr)
+    Worker (Sender.start oc ~ch:sender_ch ~peer_ch:ch);
+    Worker (Receiver.start ic ~peer_ch:ch);
+    Worker (start_peer ~peer_mgr_ch ~ch ih ~pieces ~sender_ch ~piece_mgr_ch)
   ]

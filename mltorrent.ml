@@ -8,21 +8,23 @@ let _ =
 
 let download path =
   let peer_id = Torrent.gen_peer_id () in
-  let msgs_status, send_status = Lwt_stream.create () in
-  let msgs_torrent_mgr, send_torrent_mgr = Lwt_stream.create () in
-  let msgs_peer_mgr, send_peer_mgr = Lwt_stream.create () in
+  let status_ch = Lwt_pipe.create () in
+  let torrent_mgr_ch = Lwt_pipe.create () in
+  let peer_mgr_ch = Lwt_pipe.create () in
   let children = [
-    Msg.Worker (TorrentMgr.start ~send_status ~peer_id ~send_peer_mgr ~msgs:msgs_torrent_mgr);
-    Msg.Worker (Status.start ~msgs:msgs_status);
-    Msg.Worker (PeerMgr.start ~msgs:msgs_peer_mgr ~send:send_peer_mgr ~peer_id)
+    Msg.Worker (TorrentMgr.start ~status_ch ~peer_id ~peer_mgr_ch
+      ~ch:torrent_mgr_ch);
+    Msg.Worker (Status.start ~ch:status_ch);
+    Msg.Worker (PeerMgr.start ~ch:peer_mgr_ch ~peer_id)
   ]
   in
   let _ =
-    let send_super _ = failwith "should not happen" in
-    let msgs, send = Lwt_stream.create () in
-    Super.start ~send_super Super.AllForOne "MainSup" ~children ~msgs ~send
+    let fake_ch = Lwt_pipe.create () in
+    (* Lwt_pipe.close fake_ch; *)
+    let ch = Lwt_pipe.create () in
+    Super.start ~super_ch:fake_ch Super.AllForOne "MainSup" ~children ~ch
   in
-  send_torrent_mgr (Some (Msg.AddedTorrent path));
+  Lwt_pipe.write torrent_mgr_ch (Msg.AddedTorrent path);
   Lwt_main.run (fst (Lwt.wait ()))
 
 let _ =

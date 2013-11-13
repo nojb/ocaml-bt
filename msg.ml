@@ -1,8 +1,8 @@
 open Printf
 
 type child =
-  | Worker of (send_super:(super_msg option -> unit) -> Proc.Id.t)
-  | Supervisor of (send_super:(super_msg option -> unit) -> (Proc.Id.t * (super_msg option -> unit)))
+  | Worker of (super_ch:super_msg Lwt_pipe.t -> Proc.Id.t)
+  | Supervisor of (super_ch:super_msg Lwt_pipe.t -> (Proc.Id.t * super_msg Lwt_pipe.t))
 
 and super_msg =
   | IAmDying of Proc.Id.t
@@ -107,7 +107,7 @@ type piece_mgr_msg =
   | PutbackBlocks of (int * block) list
 
 type torrent_local = {
-  send_piece_mgr : piece_mgr_msg option -> unit;
+  piece_mgr_ch : piece_mgr_msg Lwt_pipe.t;
   pieces : Torrent.piece_info array
 }
 

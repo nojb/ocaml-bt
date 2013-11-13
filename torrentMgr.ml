@@ -7,9 +7,9 @@ let string_of_msg = function
     sprintf "AddedTorrent: %S" path
 
 type t = {
-  send_status : Msg.status_msg option -> unit;
-  send_peer_mgr : Msg.peer_mgr_msg option -> unit;
-  send_super : Msg.super_msg option -> unit;
+  status_ch : Msg.status_msg Lwt_pipe.t;
+  peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t;
+  super_ch : Msg.super_msg Lwt_pipe.t;
   peer_id : Torrent.peer_id;
   id : Proc.Id.t
 }
@@ -23,36 +23,36 @@ let add_torrent t path : unit Lwt.t =
   Torrent.pp torrent_info;
   let ih = torrent_info.Torrent.info_hash in
   let tl =
-    { Msg.send_piece_mgr = (fun _ -> ()); Msg.pieces = torrent_info.Torrent.pieces }
+    { Msg.piece_mgr_ch = Lwt_pipe.create (); Msg.pieces = torrent_info.Torrent.pieces }
   in
-  let msgs_sup, send_sup = Lwt_stream.create () in
-  let msgs_track_super, send_track_super = Lwt_stream.create () in
-  let start_trackers, send_trackers = List.split (List.map (fun tier ->
-    let msgs, send = Lwt_stream.create () in
+  let sup_ch = Lwt_pipe.create () in
+  let tracker_sup_ch = Lwt_pipe.create () in
+  let start_trackers, tracker_chs = List.split (List.map (fun tier ->
+    let ch = Lwt_pipe.create () in
     Msg.Worker (Tracker.start
       ~info_hash:ih
       ~tier
       ~peer_id:t.peer_id
       ~local_port:6881
-      ~send_status:t.send_status
-      ~send_peer_mgr:t.send_peer_mgr
-      ~msgs ~send), send) torrent_info.Torrent.announce_list)
+      ~status_ch:t.status_ch
+      ~peer_mgr_ch:t.peer_mgr_ch
+      ~ch), ch) torrent_info.Torrent.announce_list)
   in
   let start_track_sup =
-    Super.start Super.OneForOne "TrackerSup" ~children:start_trackers ~msgs:msgs_track_super
-      ~send:send_track_super
+    Super.start Super.OneForOne "TrackerSup" ~children:start_trackers
+      ~ch:tracker_sup_ch
   in
   (* lwt handles, have = Fs.open_and_check_file id torrent_info in *)
   let start_super = Super.start Super.AllForOne "TorrentSup"
     ~children:[ Msg.Supervisor start_track_sup ]
-    ~msgs:msgs_sup ~send:send_sup
+    ~ch:sup_ch
   in
-  t.send_super (Some (Msg.SpawnNew (Msg.Supervisor start_super)));
+  Lwt_pipe.write t.super_ch (Msg.SpawnNew (Msg.Supervisor start_super));
   (* let _, send_fs = Fs.start ~send_super ~handles ~pieces in *)
-  t.send_status (Some (Msg.InsertTorrent (ih,
-    torrent_info.Torrent.total_length)));
-  t.send_peer_mgr (Some (Msg.NewTorrent (ih, tl)));
-  List.iter (fun send -> send (Some Msg.Start)) send_trackers;
+  Lwt_pipe.write t.status_ch (Msg.InsertTorrent (ih,
+    torrent_info.Torrent.total_length));
+  Lwt_pipe.write t.peer_mgr_ch (Msg.NewTorrent (ih, tl));
+  List.iter (fun ch -> Lwt_pipe.write ch Msg.Start) tracker_chs;
   Lwt.return_unit
 
 let handle_message t msg =
@@ -61,10 +61,10 @@ let handle_message t msg =
   | Msg.AddedTorrent path ->
     add_torrent t path
 
-let start ~send_super ~send_status ~peer_id ~send_peer_mgr ~msgs =
+let start ~super_ch ~status_ch ~peer_id ~peer_mgr_ch ~ch =
   let run id =
-    let t = { send_super; send_status; send_peer_mgr; peer_id; id } in
-    Lwt_stream.iter_s (handle_message t) msgs
+    let t = { super_ch; status_ch; peer_mgr_ch; peer_id; id } in
+    Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn (Proc.cleanup run
-    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))
+    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
