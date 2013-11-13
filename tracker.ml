@@ -1,23 +1,17 @@
 open Printf
-open Messages
+(* open Messages *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let debug = Supervisor.debug
-
 let failwith_lwt msg =
   raise_lwt (Failure msg)
 
-let create_stream () =
-  let s, w = Lwt_stream.create () in
-  s, (fun x -> w (Some x))
-
 let string_of_msg = function
-  | Stop -> "Stop"
-  | TrackerTick n -> sprintf "TrackerTick: %d" n
-  | Start -> "Start"
-  | Complete -> "Complete"
+  | Msg.Stop -> "Stop"
+  | Msg.TrackerTick n -> sprintf "TrackerTick: %d" n
+  | Msg.Start -> "Start"
+  | Msg.Complete -> "Complete"
 
 type status =
   | Started
@@ -47,38 +41,43 @@ type response =
 
 let fail_timer_interval = 15 * 60
 
-type state = {
-  w_status_ch           : status_msg -> unit;
-  w_tracker_ch          : tracker_msg -> unit;
-  w_peer_mgr_ch         : peer_mgr_msg -> unit;
+type t = {
+  send_status           : Msg.status_msg option -> unit;
+  send          : Msg.tracker_msg option -> unit;
+  send_peer_mgr         : Msg.peer_mgr_msg option -> unit;
   info_hash             : Torrent.Digest.t;
   peer_id               : Torrent.peer_id;
   tier                  : Uri.t array;
   local_port            : int;
   mutable status        : status;
-  mutable next_tick     : int
+  mutable next_tick     : int;
+  id : Proc.Id.t
 }
+
+let debug t ?exn fmt =
+  Printf.ksprintf (fun msg ->
+    Lwt_log.debug_f ?exn "Tracker %s: %s" (Proc.Id.to_string t.id) msg) fmt
 
 (** [timer_update id c st] is a Lwt thread that updates the [tick] counter
     of [st] and launches a asynchronous thread to ping the tracker thread
     after [st.interval] seconds.
     @returns [st] updated with the new [tick] counter *)
-let timer_update id st (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
-  match st.status with
+let timer_update t (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
+  match t.status with
   | Running ->
-    let t = st.next_tick in
-    st.next_tick <- t+1;
+    let nt = t.next_tick in
+    t.next_tick <- nt+1;
     (* run *)
-    let _ = Supervisor.spawn "TrackerTimer"
+    let _ = Proc.spawn
       (fun _ ->
-        Lwt_unix.sleep (float interval) >>
-        (st.w_tracker_ch (TrackerTick t); Lwt.return ())) in
-    debug id "Set Timer to: %d" interval >>
-    Lwt.return ()
+        Lwt_unix.sleep (float interval) >|= fun () ->
+        t.send (Some (Msg.TrackerTick nt))) in
+    debug t "Set Timer to: %d" interval >>
+    Lwt.return_unit
   | _ ->
-    Lwt.return ()
+    Lwt.return_unit
 
-let try_udp_server id st ss url =
+let try_udp_server t ss url =
   let fresh_transaction_id () = Random.int32 Int32.max_int in
   let socket = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
   let host = match Uri.host url with
@@ -147,13 +146,13 @@ let try_udp_server id st ss url =
       Lwt_io.BE.write_int64 oc conn_id >>
       Lwt_io.BE.write_int32 oc 1l >> (* announce *)
       Lwt_io.BE.write_int32 oc trans_id >>
-      Lwt_io.write oc (Torrent.Digest.to_bin st.info_hash) >>
-      Lwt_io.write oc (Torrent.PeerId.to_string st.peer_id) >>
-      Lwt_io.BE.write_int64 oc ss.downloaded >>
-      Lwt_io.BE.write_int64 oc ss.left >>
-      Lwt_io.BE.write_int64 oc ss.uploaded >>
+      Lwt_io.write oc (Torrent.Digest.to_bin t.info_hash) >>
+      Lwt_io.write oc (Torrent.PeerId.to_string t.peer_id) >>
+      Lwt_io.BE.write_int64 oc ss.Msg.downloaded >>
+      Lwt_io.BE.write_int64 oc ss.Msg.left >>
+      Lwt_io.BE.write_int64 oc ss.Msg.uploaded >>
       Lwt_io.BE.write_int32 oc
-        begin match st.status with
+        begin match t.status with
         | Running -> 0l
         | Completed -> 1l
         | Started -> 2l
@@ -162,13 +161,13 @@ let try_udp_server id st ss url =
       Lwt_io.BE.write_int32 oc 0l >>
       Lwt_io.BE.write_int32 oc 0l >>
       Lwt_io.BE.write_int32 oc (Int32.of_int (-1)) >>
-      Lwt_io.BE.write_int16 oc st.local_port >>
+      Lwt_io.BE.write_int16 oc t.local_port >>
       try_lwt
         Lwt_unix.with_timeout (15.0 *. 2.0 ** float n)
           (announce_response trans_id)
       with
       | Lwt_unix.Timeout ->
-        debug id "UDP Announce Request Timeout after %d s; Retrying..."
+        debug t "UDP Announce Request Timeout after %d s; Retrying..."
           (truncate (15.0 *. 2.0 ** float n)) >>
         if n >= 2 then request_connect (n+1)
         else request_announce conn_id (n+1)
@@ -184,7 +183,7 @@ let try_udp_server id st ss url =
       if n >= 8 then
         failwith_lwt "Too many retries"
       else
-        debug id "UDP Connect Request Timeout after %d s; Retrying..."
+        debug t "UDP Connect Request Timeout after %d s; Retrying..."
           (truncate (15.0 *. 2.0 ** float n)) >>
         request_connect (n+1)
   in request_connect 0
@@ -235,16 +234,16 @@ let decode_http_response (d : Bcode.t) =
     | Not_found ->
       decode_success ()
 
-let try_http_server id st ss (uri : Uri.t) : response Lwt.t =
+let try_http_server t ss (uri : Uri.t) : response Lwt.t =
   let uri =
     let params =
-      ("info_hash",   (Torrent.Digest.to_bin st.info_hash)) ::
-      ("peer_id",     (Torrent.PeerId.to_string st.peer_id)) ::
-      ("uploaded",    Int64.to_string ss.uploaded) ::
-      ("downloaded",  Int64.to_string ss.downloaded) ::
-      ("left",        Int64.to_string ss.left) ::
-      ("port",        string_of_int st.local_port) ::
-      match st.status with
+      ("info_hash",   (Torrent.Digest.to_bin t.info_hash)) ::
+      ("peer_id",     (Torrent.PeerId.to_string t.peer_id)) ::
+      ("uploaded",    Int64.to_string ss.Msg.uploaded) ::
+      ("downloaded",  Int64.to_string ss.Msg.downloaded) ::
+      ("left",        Int64.to_string ss.Msg.left) ::
+      ("port",        string_of_int t.local_port) ::
+      match t.status with
       | Running -> []
       | Completed -> ("event", "completed") :: []
       | Started -> ("event", "started") :: []
@@ -265,29 +264,32 @@ let try_http_server id st ss (uri : Uri.t) : response Lwt.t =
     (* else *)
     (*   Log.debug "Got good response!" >> (* decode answer *) assert false *)
 
-let try_server id st ss url =
-  debug id "Querying Tracker: %s" (Uri.to_string url) >>
+let try_server t ss url =
+  debug t "Querying Tracker: %s" (Uri.to_string url) >>
   match Uri.scheme url with
   | Some "http" ->
-    try_http_server id st ss url
+    try_http_server t ss url
   | Some "udp" ->
-    try_udp_server id st ss url
+    try_udp_server t ss url
   | Some other -> failwith_lwt (sprintf "Unknown Tracker Scheme: %S" other)
   | None -> failwith_lwt "No Tracker Scheme Specified"
 
-let query_trackers id st ss : response Lwt.t =
+let query_trackers t ss : response Lwt.t =
   let rec loop i =
-    if i >= Array.length st.tier then
+    if i >= Array.length t.tier then
       raise_lwt EmptyAnnounceList
     else
       try_lwt
-        lwt resp = try_server id st ss st.tier.(i) in
-        let tmp = st.tier.(0) in
-        st.tier.(0) <- st.tier.(i);
-        st.tier.(i) <- tmp;
+        lwt resp = try_server t ss t.tier.(i) in
+        let tmp = t.tier.(0) in
+        t.tier.(0) <- t.tier.(i);
+        t.tier.(i) <- tmp;
         Lwt.return resp
-      with exn ->
-        debug id ~exn "Failed" >>
+      with
+      | Lwt.Canceled ->
+        raise_lwt Lwt.Canceled
+      | exn ->
+        debug t ~exn "Failed" >>= fun () ->
         loop (i+1)
   in
   loop 0
@@ -299,55 +301,55 @@ let query_trackers id st ss : response Lwt.t =
     a new timer is setup for the interval time requested by the tracker,
     otherwise a default is used.
     @returns st the state updated with new interval times and [status] *)
-let poke_tracker id st : (int * int option) Lwt.t =
-  let v = Lwt_mvar.create_empty () in
-  let ih = st.info_hash in
-  st.w_status_ch (RequestStatus (ih, v));
-  lwt ss = Lwt_mvar.take v in
+let poke_tracker t : (int * int option) Lwt.t =
+  let mv = Lwt_mvar.create_empty () in
+  let ih = t.info_hash in
+  t.send_status (Some (Msg.RequestStatus (ih, mv)));
+  lwt ss = Lwt_mvar.take mv in
   try_lwt
-    match_lwt query_trackers id st ss with
+    match_lwt query_trackers t ss with
     | Warning warn ->
-      debug id "Tracker Warning Response: %s" warn >>
+      debug t "Tracker Warning Response: %s" warn >>
       Lwt.return (fail_timer_interval, None)
     | Error err ->
-      debug id "Tracker Error Response: %s" err >>
+      debug t "Tracker Error Response: %s" err >>
       Lwt.return (fail_timer_interval, None)
     | Success ok ->
-      lwt () = debug id "Received %d peers" (List.length ok.new_peers) in
-      st.w_peer_mgr_ch (PeersFromTracker (ih, ok.new_peers));
-      st.w_status_ch (TrackerStat (ih, ok.complete, ok.incomplete));
-      begin match st.status with
-      | Running   -> st.status <- Running
-      | Stopped   -> st.status <- Stopped
-      | Completed -> st.status <- Running
-      | Started   -> st.status <- Running
+      debug t "Received %d peers" (List.length ok.new_peers) >>= fun () ->
+      t.send_peer_mgr (Some (Msg.PeersFromTracker (ih, ok.new_peers)));
+      t.send_status (Some (Msg.TrackerStat (ih, ok.complete, ok.incomplete)));
+      begin match t.status with
+      | Running   -> t.status <- Running
+      | Stopped   -> t.status <- Stopped
+      | Completed -> t.status <- Running
+      | Started   -> t.status <- Running
       end;
       Lwt.return (ok.interval, ok.min_interval)
   with
   | HTTPError err ->
-    debug id "Tracker HTTP Error: %s" err >>
+    debug t "Tracker HTTP Error: %s" err >>
     Lwt.return (fail_timer_interval, None)
   | DecodeError ->
-    debug id "Response Decode Error" >>
+    debug t "Response Decode Error" >>
     Lwt.return (fail_timer_interval, None)
 
-let handle_message id st msg : unit Lwt.t =
-  debug id "%s" (string_of_msg msg) >>
+let handle_message t msg : unit Lwt.t =
+  debug t "%s" (string_of_msg msg) >>
   match msg with
-  | TrackerTick x ->
-    if x+1 = st.next_tick then
-      poke_tracker id st >>= timer_update id st
+  | Msg.TrackerTick x ->
+    if x+1 = t.next_tick then
+      poke_tracker t >>= timer_update t
     else
-      Lwt.return ()
-  | Stop ->
-    st.status <- Stopped;
-    poke_tracker id st >>= timer_update id st
-  | Start ->
-    st.status <- Started;
-    poke_tracker id st >>= timer_update id st
-  | Complete ->
-    st.status <- Completed;
-    poke_tracker id st >>= timer_update id st
+      Lwt.return_unit
+  | Msg.Stop ->
+    t.status <- Stopped;
+    poke_tracker t >>= timer_update t
+  | Msg.Start ->
+    t.status <- Started;
+    poke_tracker t >>= timer_update t
+  | Msg.Complete ->
+    t.status <- Completed;
+    poke_tracker t >>= timer_update t
 
 let shuffle_array a =
   for i = (Array.length a)-1 downto 1 do
@@ -357,27 +359,28 @@ let shuffle_array a =
     a.(j) <- tmp
   done
 
-(** NOTE: Actually, this process only needs the info_hash and
-    the announce list to do its work. Probably should not be passed,
-    and it should not store the whoel torrent_info *)
-let start ~msg_supervisor ~info_hash ~tier ~peer_id ~local_port
-  ~w_status_ch ~w_peer_mgr_ch =
-  let tracker_ch, w_tracker_ch = create_stream () in
-  let st = {
-    w_status_ch;
-    w_tracker_ch;
-    w_peer_mgr_ch;
-    info_hash;
-    peer_id;
-    tier = Array.of_list tier;
-    local_port;
-    status        = Stopped;
-    next_tick     = 0
-  }
+let start ~send_super ~msgs ~send ~info_hash ~peer_id ~local_port
+  ~tier ~send_status ~send_peer_mgr =
+  let run id =
+    let t = {
+      send;
+      send_status;
+      send_peer_mgr;
+      info_hash;
+      peer_id;
+      tier = Array.of_list tier;
+      local_port;
+      status        = Stopped;
+      next_tick     = 0;
+      id
+    }
+    in
+    shuffle_array t.tier;
+    Lwt_stream.iter_s (handle_message t) msgs
   in
-  shuffle_array st.tier;
-  let event_loop id =
-    Lwt_stream.iter_s (handle_message id st) tracker_ch
+  let id =
+    Proc.spawn (Proc.cleanup run
+      (Super.default_stop send_super)
+      (fun _ -> Lwt.return_unit))
   in
-  Supervisor.spawn_worker msg_supervisor "Tracker" event_loop;
-  w_tracker_ch
+  id

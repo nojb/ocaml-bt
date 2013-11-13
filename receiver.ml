@@ -1,4 +1,4 @@
-open Messages
+open Msg
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -62,18 +62,11 @@ let stream_of_channel id (ic : Lwt_io.input_channel) : peer_msg Lwt_stream.t =
   in
   Lwt_stream.from (fun () -> lwt msg = read () in Lwt.return (Some msg))
 
-let event_loop id ic w_ch =
-  (* try_lwt *)
-  let msg_stream = stream_of_channel id ic in
-  Lwt_stream.iter (fun msg -> w_ch (FromPeer msg)) msg_stream
-    (* raise_lwt Stop *)
-  (* with *)
-  (* | BadMsg (msgid, len) -> *)
-  (*   debug id "BadMsg: id: %d len: %d" msgid len >> *)
-  (*   raise_lwt Stop *)
-  (* | End_of_file -> *)
-  (*   raise_lwt Stop *)
-
-let start ~msg_supervisor ic w_ch =
-  Supervisor.spawn_worker msg_supervisor "Receiver"
-    (fun id -> event_loop id ic w_ch)
+let start ~send_super ic ~send_peer =
+  let run id =
+    (* let t = { send_peer; id } in *)
+    Lwt_stream.iter (fun msg -> send_peer (Some (FromPeer msg)))
+      (stream_of_channel id ic)
+  in
+  Proc.spawn (Proc.cleanup run
+    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))

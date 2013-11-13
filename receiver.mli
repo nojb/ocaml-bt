@@ -1,10 +1,5 @@
-(* open Supervisor *)
-open Messages
-
 val start :
-  (* monitor:Monitor.t -> *)
-  msg_supervisor:(Supervisor.supervisor_msg -> unit) ->
-  (* (supervisor_msg -> unit) -> *)
+  send_super:(Msg.super_msg option -> unit) ->
   Lwt_io.input_channel ->
-  (msg_ty -> unit) -> unit
-  (* Spawn.thread_id *)
+  send_peer:(Msg.msg_ty option -> unit) ->
+  Proc.Id.t

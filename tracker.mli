@@ -1,9 +1,11 @@
 val start :
-  msg_supervisor:(Supervisor.supervisor_msg -> unit) ->
+  send_super:(Msg.super_msg option -> unit) ->
+  msgs:Msg.tracker_msg Lwt_stream.t ->
+  send:(Msg.tracker_msg option -> unit) ->
   info_hash:Torrent.Digest.t ->
-  tier:Uri.t list ->
   peer_id:Torrent.peer_id ->
   local_port:int ->
-  w_status_ch:(Messages.status_msg -> unit) ->
-  w_peer_mgr_ch:(Messages.peer_mgr_msg -> unit) ->
-  (Messages.tracker_msg -> unit)
+  tier:Uri.t list ->
+  send_status:(Msg.status_msg option -> unit) ->
+  send_peer_mgr:(Msg.peer_mgr_msg option -> unit) ->
+  Proc.Id.t

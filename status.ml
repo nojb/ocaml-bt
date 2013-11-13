@@ -1,71 +1,76 @@
 open Printf
-open Messages
 
 let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
+(* let (>|=) = Lwt.(>|=) *)
 
-let debug = Supervisor.debug
+module H = Hashtbl.Make (Torrent.Digest)
 
-module M = Map.Make (Torrent.Digest)
+type t = {
+  torrents : Msg.state H.t;
+  id : Proc.Id.t
+}
+
+let debug t fmt =
+  Printf.ksprintf (fun msg ->
+    Lwt_log.debug_f "Status %s: %s" (Proc.Id.to_string t.id) msg) fmt
 
 let string_of_msg = function
-  | TrackerStat (ih, complete, incomplete) ->
+  | Msg.TrackerStat (ih, complete, incomplete) ->
     sprintf "TrackerStat: info_hash: %s%s%s"
       (Torrent.Digest.to_string ih)
       (Util.map_some "" (fun ic -> " incomplete: " ^ string_of_int ic)
         incomplete)
       (Util.map_some "" (fun co -> " complete: " ^ string_of_int co)
         complete)
-  | CompletedPiece _ -> "CompletedPiece"
-  | InsertTorrent (ih, left) ->
+  | Msg.CompletedPiece _ -> "CompletedPiece"
+  | Msg.InsertTorrent (ih, left) ->
     sprintf "InsertTorrent: info_hash: %s left: %Ld B"
       (Torrent.Digest.to_string ih) left
-  | RemoveTorrent _ -> "RemoveTorrent"
-  | TorrentCompleted _ -> "TorrentCompleted"
-  | RequestStatus (ih, _) ->
+  | Msg.RemoveTorrent _ -> "RemoveTorrent"
+  | Msg.TorrentCompleted _ -> "TorrentCompleted"
+  | Msg.RequestStatus (ih, _) ->
     sprintf "RequestStatus: info_hash: %s"
       (Torrent.Digest.to_string ih)
-  | RequestAllTorrents _ -> "RequestAllTorrents"
-  | StatusTimerTick -> "StatusTimerTick"
+  | Msg.RequestAllTorrents _ -> "RequestAllTorrents"
+  | Msg.StatusTimerTick -> "StatusTimerTick"
 
 exception UnknownInfoHash of Torrent.Digest.t
 
-let adjust f k m =
-  (* FIXME throw UnknownInfoHash if info_hash does not
-   * exist *)
-  M.add k (f (M.find k m)) m
-
-let handle_message id msg m : Messages.state M.t Lwt.t =
-  debug id "%s" (string_of_msg msg) >>
+let handle_message t msg : unit Lwt.t =
+  debug t "%s" (string_of_msg msg) >>= fun () ->
   match msg with
-  | TrackerStat (ih, complete, incomplete) ->
-    Lwt.return (adjust (fun st ->
-      {st with
-        incomplete = incomplete;
-        complete = complete}) ih m)
-  | InsertTorrent (ih, l) ->
+  | Msg.TrackerStat (ih, complete, incomplete) ->
+    let st = H.find t.torrents ih in
+    H.replace t.torrents ih {st with Msg.complete; Msg.incomplete};
+    Lwt.return_unit
+  | Msg.InsertTorrent (ih, left) ->
     (* FIXME what if it is duplicate? *)
-    Lwt.return (M.add ih
-      { uploaded = 0L; downloaded = 0L; left = l;
-        incomplete = None; complete = None;
-        state =
-          if l = 0L then
+    H.add t.torrents ih
+      { Msg.uploaded = 0L; Msg.downloaded = 0L; Msg.left;
+        Msg.incomplete = None; Msg.complete = None;
+        Msg.state =
+          if left = 0L then
             Torrent.Seeding
           else
-            Torrent.Leeching } m)
-  | RequestStatus (ih, v) ->
+            Torrent.Leeching };
+    Lwt.return_unit
+  | Msg.RequestStatus (ih, mv) ->
     begin try
-      let st = M.find ih m in
-      Lwt_mvar.put v st >> Lwt.return m
+      let st = H.find t.torrents ih in
+      Lwt_mvar.put mv st >>= fun () ->
+      Lwt.return_unit
     with
     | Not_found -> raise_lwt (UnknownInfoHash ih)
     end
   | _ ->
     failwith "unhandled message"
 
-let start ~msg_supervisor ~status_ch =
-  let event_loop id =
-    Lwt_stream.fold_s (handle_message id) status_ch M.empty >>= fun _ ->
-    Lwt.return ()
+let start ~send_super ~msgs =
+  let run id =
+    let t = { torrents = H.create 17; id } in
+    Lwt_stream.iter_s (handle_message t) msgs
   in
-  Supervisor.spawn_worker msg_supervisor "Status" event_loop
+  let id = Proc.spawn
+    (Proc.cleanup run (Super.default_stop send_super) (fun _ ->
+      Lwt.return_unit)) in
+  id

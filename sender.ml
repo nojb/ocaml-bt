@@ -1,5 +1,5 @@
 open Printf
-open Messages
+open Msg
 (* open Monitor *)
 
 (* let event_loop id oc v = *)
@@ -14,7 +14,9 @@ open Messages
 
 let (>>=) = Lwt.(>>=)
 
-let debug = Supervisor.debug
+let debug id ?exn fmt =
+  Printf.ksprintf (fun msg ->
+    Lwt_log.debug_f ?exn "Sender %s: %s" (Proc.Id.to_string id) msg) fmt
 
 let string_of_msg = function
   | SendMsg msg ->
@@ -96,14 +98,14 @@ let handle_message id oc send_peer_mgr msg =
   match msg with
   | SendMsg msg ->
     lwt sz = send_msg id oc msg in
-    send_peer_mgr (FromSender sz);
+    send_peer_mgr (Some (FromSender sz));
     Lwt.return ()
   | msg ->
     debug id "Unhandled: %s" (string_of_msg msg)
 
-let start ~msg_supervisor oc sender_ch send_peer_mgr =
-  let event_loop id =
-    Lwt_stream.iter_s (handle_message id oc send_peer_mgr) sender_ch
+let start ~send_super oc msgs ~send_peer =
+  let run id =
+    Lwt_stream.iter_s (handle_message id oc send_peer) msgs
   in
-  Supervisor.spawn_worker msg_supervisor "Sender" event_loop
-  (* Monitor.spawn ~parent:monitor ~name:"Sender" event_loop *)
+  Proc.spawn (Proc.cleanup run
+    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))

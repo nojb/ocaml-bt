@@ -1,14 +1,12 @@
-open Messages
+open Msg
 open Printf
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let debug = Supervisor.debug
-
-let create_stream () =
-  let s, w = Lwt_stream.create () in
-  s, (fun x -> w (Some x))
+let debug id ?exn fmt =
+  Printf.ksprintf (fun msg ->
+    Lwt_log.debug_f ?exn "Peer %s: %s" (Proc.Id.to_string id) msg) fmt
 
 let string_of_msg = function
   | FromPeer msg ->
@@ -49,7 +47,7 @@ end
 
 module BlockSet = Set.Make(Block)
 
-type state = {
+type t = {
   mutable we_interested : bool;
   mutable we_choking : bool;
   mutable block_queue : BlockSet.t;
@@ -65,8 +63,10 @@ type state = {
   (* interesting_pieces : PieceSet.t; *)
   (* mutable last_pn : int; *)
   pieces : Torrent.piece_info array;
-  msg_sender : sender_msg -> unit;
-  msg_piece_mgr : piece_mgr_msg -> unit
+  send_peer_mgr : Msg.peer_mgr_msg option -> unit;
+  send_sender : Msg.sender_msg option -> unit;
+  send_piece_mgr : Msg.piece_mgr_msg option -> unit;
+  id : Proc.Id.t
 }
 
 let string_of_msg = function
@@ -80,137 +80,134 @@ let string_of_msg = function
 let lo_mark = 5
 let hi_mark = 25
 
-let send id st msg =
-  st.last_msg <- 0;
-  st.msg_sender msg
+let send_sender t msg =
+  t.last_msg <- 0;
+  t.send_sender (Some msg)
 
-let grab_blocks id st n : (int * block) list Lwt.t =
+let grab_blocks t n : (int * block) list Lwt.t =
   let mv = Lwt_mvar.create_empty () in
-  st.msg_piece_mgr (GrabBlocks (n, st.peer_pieces, mv));
+  t.send_piece_mgr (Some (GrabBlocks (n, t.peer_pieces, mv)));
   Lwt_mvar.take mv
 
-let fill_blocks id st =
-  if not st.peer_choking && st.we_interested then
-    let sz = BlockSet.cardinal st.block_queue in
+let fill_blocks t =
+  if not t.peer_choking && t.we_interested then
+    let sz = BlockSet.cardinal t.block_queue in
     if sz < lo_mark then begin
-      lwt blks = grab_blocks id st (hi_mark - sz) in
+      lwt blks = grab_blocks t (hi_mark - sz) in
       List.iter (fun (pn, b) ->
-        if not (BlockSet.mem (pn, b) st.block_queue) then
-          send id st (SendMsg (Request (pn, b)))) blks;
-      st.block_queue <-
-        List.fold_left (fun bq b -> BlockSet.add b bq) st.block_queue blks;
-      Lwt.return ()
+        if not (BlockSet.mem (pn, b) t.block_queue) then
+          send_sender t (SendMsg (Request (pn, b)))) blks;
+      t.block_queue <-
+        List.fold_left (fun bq b -> BlockSet.add b bq) t.block_queue blks;
+      Lwt.return_unit
     end else
-      Lwt.return ()
+      Lwt.return_unit
   else
-    Lwt.return ()
-
+    Lwt.return_unit
 
 exception UnknownPiece of int
 
-let handle_peer_msg id st = function
+let handle_peer_msg t = function
   | KeepAlive ->
-    Lwt.return ()
+    Lwt.return_unit
   | Choke ->
-    st.msg_piece_mgr (PutbackBlocks (BlockSet.elements st.block_queue));
-    st.block_queue <- BlockSet.empty;
-    st.peer_choking <- true;
-    Lwt.return ()
+    t.send_piece_mgr (Some (PutbackBlocks (BlockSet.elements t.block_queue)));
+    t.block_queue <- BlockSet.empty;
+    t.peer_choking <- true;
+    Lwt.return_unit
   | Unchoke ->
-    st.peer_choking <- false;
-    fill_blocks id st
+    t.peer_choking <- false;
+    fill_blocks t
   | Interested ->
-    st.peer_interested <- true;
-    Lwt.return ()
+    t.peer_interested <- true;
+    Lwt.return_unit
   | NotInterested ->
-    st.peer_interested <- false;
-    Lwt.return ()
+    t.peer_interested <- false;
+    Lwt.return_unit
   | Have index ->
-    if index >= 0 && index < Array.length st.pieces then begin
-      Bits.set st.peer_pieces index;
+    if index >= 0 && index < Array.length t.pieces then begin
+      Bits.set t.peer_pieces index;
       (* later : track interest, decr missing counter *)
-      fill_blocks id st
+      fill_blocks t
     end else
       raise_lwt (UnknownPiece index)
   | BitField bits ->
-    if Bits.count st.peer_pieces = 0 then begin
-      st.peer_pieces <- bits;
-      Lwt.return ()
+    if Bits.count t.peer_pieces = 0 then begin
+      t.peer_pieces <- bits;
+      Lwt.return_unit
     end else
-      Lwt.return ()
+      Lwt.return_unit
   | Request (index, block) ->
-    if not st.we_choking then send id st (SendPiece (index, block));
-    Lwt.return ()
+    if not t.we_choking then send_sender t (SendPiece (index, block));
+    Lwt.return_unit
   | Piece (index, offset, block) ->
     let blk = Block (offset, String.length block) in
-    if BlockSet.mem (index, blk) st.block_queue then begin
+    if BlockSet.mem (index, blk) t.block_queue then begin
       (* FIXME FIXME Store Block Here *)
-      st.block_queue <- BlockSet.remove (index, blk) st.block_queue;
+      t.block_queue <- BlockSet.remove (index, blk) t.block_queue;
       Lwt.return ()
     end else
-      debug id "Received unregistered piece: index: %d offset: %d length: %d"
+      debug t.id "Received unregistered piece: index: %d offset: %d length: %d"
         index offset (String.length block)
   | Cancel (index, block) ->
-    send id st (SendCancel (index, block));
+    send_sender t (SendCancel (index, block));
     Lwt.return ()
   | msg ->
-    debug id "Unahandled: %s" (string_of_peer_msg msg)
+    debug t.id "Unahandled: %s" (string_of_peer_msg msg)
 
-let handle_sender_msg id st sz =
+let handle_sender_msg t sz =
   (* later: update some rates *)
-  Lwt.return ()
+  Lwt.return_unit
 
-let handle_timer_tick id st =
+let handle_timer_tick t =
   let keep_alive () =
-    if st.last_msg >= 24 then
-      send id st (SendMsg KeepAlive)
+    if t.last_msg >= 24 then
+      send_sender t (SendMsg KeepAlive)
     else
-      st.last_msg <- st.last_msg + 1
+      t.last_msg <- t.last_msg + 1
   in
   keep_alive ()
   (* later- tell Status, tell ChokeMgr *)
 
-let handle_msg id st msg : unit Lwt.t =
-  debug id "%s" (string_of_msg msg) >>= fun () ->
+let handle_message t msg : unit Lwt.t =
+  debug t.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
   | FromPeer msg ->
-    handle_peer_msg id st msg
+    handle_peer_msg t msg
   | FromSender sz ->
-    handle_sender_msg id st sz
+    handle_sender_msg t sz
   | FromTimer ->
-    handle_timer_tick id st;
-    Lwt.return ()
+    handle_timer_tick t;
+    Lwt.return_unit
 
-let start_peer ~msg_supervisor w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr =
-  let st =
-    { we_interested = true;
-      we_choking = false;
-      block_queue = BlockSet.empty;
-      peer_interested = true;
-      peer_choking = false;
-      peer_pieces = Bits.create (Array.length pieces);
-      pieces;
-      msg_sender;
-      msg_piece_mgr;
-      last_msg = 0 }
+let start_peer ~send_super ~send_peer_mgr msgs ih ~pieces
+  ~send_sender ~send_piece_mgr =
+  let run id =
+    let t =
+      { we_interested = true;
+        we_choking = false;
+        block_queue = BlockSet.empty;
+        peer_interested = true;
+        peer_choking = false;
+        peer_pieces = Bits.create (Array.length pieces);
+        pieces;
+        send_sender;
+        send_piece_mgr;
+        send_peer_mgr;
+        last_msg = 0;
+        id }
+    in
+    t.send_peer_mgr (Some (Connect (ih, id)));
+    Lwt_stream.iter_s (handle_message t) msgs
   in
-  let startup id =
-    w_pmc (Connect (ih, id));
-    Lwt.return ()
-  in
-  let event_loop id =
-    Lwt_stream.iter_s (handle_msg id st) in_ch
-  in
-  (* Add a cleanup operation *)
-  Supervisor.spawn_worker msg_supervisor "Peer"
-    (fun id -> startup id >> event_loop id)
+  Proc.spawn (Proc.cleanup run
+    (Super.default_stop send_super) (fun _ -> Lwt.return_unit))
 
-let start ~msg_supervisor ic oc w_pmc ih ~pieces ~msg_piece_mgr =
-  let sender_ch, msg_sender = create_stream () in
-  let in_ch, w_in = create_stream () in
-  let msg_peer_sup = Supervisor.spawn_supervisor msg_supervisor "PeerSup"
-    Supervisor.AllForOne
-  in
-  Sender.start ~msg_supervisor:msg_peer_sup oc sender_ch w_in;
-  Receiver.start ~msg_supervisor:msg_peer_sup ic w_in;
-  start_peer ~msg_supervisor:msg_peer_sup w_pmc in_ch ih ~pieces ~msg_sender ~msg_piece_mgr
+let start ic oc ~send_peer_mgr ih ~pieces ~send_piece_mgr =
+  let msgs_sender, send_sender = Lwt_stream.create () in
+  let msgs, send = Lwt_stream.create () in
+  [
+    Worker (Sender.start oc msgs_sender ~send_peer:send);
+    Worker (Receiver.start ic ~send_peer:send);
+    Worker (start_peer ~send_peer_mgr msgs ih ~pieces ~send_sender ~send_piece_mgr)
+  ]

@@ -1,5 +1,14 @@
 open Printf
 
+type child =
+  | Worker of (send_super:(super_msg option -> unit) -> Proc.Id.t)
+  | Supervisor of (send_super:(super_msg option -> unit) -> (Proc.Id.t * (super_msg option -> unit)))
+
+and super_msg =
+  | IAmDying of Proc.Id.t
+  | PleaseDie
+  | SpawnNew of child
+
 type torrent_mgr_msg =
   | AddedTorrent of string
 
@@ -98,7 +107,7 @@ type piece_mgr_msg =
   | PutbackBlocks of (int * block) list
 
 type torrent_local = {
-  msg_piece_mgr : piece_mgr_msg -> unit;
+  send_piece_mgr : piece_mgr_msg option -> unit;
   pieces : Torrent.piece_info array
 }
 
@@ -107,10 +116,10 @@ type peer_mgr_msg =
   | NewIncoming         of Lwt_unix.file_descr
   | NewTorrent          of Torrent.digest * torrent_local
   | StopTorrent         of Torrent.digest
-
-type mgr_msg =
-  | Connect     of Torrent.digest * Supervisor.thread_id
-  | Disconnect  of Supervisor.thread_id
+(*  *)
+(* type mgr_msg = *)
+  | Connect     of Torrent.digest * Proc.Id.t
+  | Disconnect  of Proc.Id.t
 
 type msg_ty =
   | FromPeer    of peer_msg
