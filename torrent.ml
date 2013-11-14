@@ -65,29 +65,17 @@ type file_info = {
 type info = {
   name          : string;
   info_hash     : digest;
-  (* piece_count   : int; *)
   announce_list : Uri.t list list;
   pieces        : piece_info array;
   piece_length  : int;
   total_length  : int64;
   files         : file_info list
-  (* piece_length  : int; *)
-  (* pieces_hash   : digest array; *)
-  (* files         : file_info list; *)
 } 
-
-(* let total_size info pieces = *)
-(*   Array.fold_left (fun acc piece -> Int64.add acc piece.len) 0L info.pieces *)
 
 let bytes_left have (pieces : piece_info array) =
   Bits.fold_left_i (fun acc i has ->
     if has then Int64.add acc (Int64.of_int pieces.(i).piece_length)
     else acc) 0L have
-  (* let rec loop acc i = *)
-  (*   if i >= Array.length pieces then acc *)
-  (*   else if Bits.is_set have i then loop (Int64.add acc (Int64.of_int pieces.(i).piece_length)) (i+1) *)
-  (*   else loop acc (i+1) *)
-  (* in loop 0L 0 *)
 
 exception Bad_format
 
@@ -168,6 +156,14 @@ let int_assoc k l =
   | _ -> raise Bad_format
 
 let info_files (bc : Bcode.t) : file_info list =
+  let name =
+    try
+      match search_info "name" bc with
+      | Bcode.BString s -> s
+      | _ -> raise Bad_format
+    with
+    | Not_found -> raise Bad_format
+  in
   try
     let files = search_info "files" bc in
     match files with
@@ -175,7 +171,7 @@ let info_files (bc : Bcode.t) : file_info list =
         List.map (function
           | Bcode.BDict d ->
             { file_size = int_assoc "length" d;
-              file_path = List.map (function
+              file_path = name :: List.map (function
                 | Bcode.BString s -> s
                 | _ -> raise Bad_format) (list_assoc "path" d) }
           | _ -> raise Bad_format) l
@@ -183,9 +179,8 @@ let info_files (bc : Bcode.t) : file_info list =
   with
   | Not_found -> (* single file mode *)
     try
-      match search_info "length" bc, search_info "name" bc with
-      | Bcode.BInt n, Bcode.BString name ->
-          [{ file_path = [name]; file_size = n }]
+      match search_info "length" bc with
+      | Bcode.BInt n -> [{ file_path = [name]; file_size = n }]
       | _ -> raise Bad_format
     with
     | Not_found -> raise Bad_format

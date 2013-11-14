@@ -6,6 +6,8 @@ let (>|=) = Lwt.(>|=)
 
 let debug = Proc.debug
 
+let failwith_lwt msg = raise_lwt (Failure msg)
+
 module M = Map.Make (Proc.Id)
 
 let string_of_msg = function
@@ -44,41 +46,37 @@ let junk n ic =
   let buf = String.create n in
   Lwt_io.read_into_exactly ic buf 0 n
 
-exception BadHandShake of string
 exception InfoHashNotFound of Torrent.Digest.t
 
-let recv_handshake t ic ih : Torrent.peer_id Lwt.t =
-  try_lwt
-    lwt pstrlen = Lwt_io.read_char ic in
-    let pstrlen = int_of_char pstrlen in
-    let buf = String.create pstrlen in
-    (* debug t.id "received pstrlen: %d" pstrlen >> *)
-    Lwt_io.read_into_exactly ic buf 0 pstrlen >>= fun () ->
-    (* debug t.id "received pstr: %S" buf >> *)
-    if buf = "BitTorrent protocol" then
-      junk 8 ic >>
-      lwt ih' = Torrent.Digest.of_input_channel ic in
-      if Torrent.Digest.equal ih' ih then
-        Torrent.PeerId.of_input_channel ic
-      else
-        raise_lwt (BadHandShake "bad info hash")
+let recv_handshake ic ih : Torrent.peer_id Lwt.t =
+  lwt pstrlen = Lwt_io.read_char ic in
+  let pstrlen = int_of_char pstrlen in
+  let buf = String.create pstrlen in
+  (* debug t.id "received pstrlen: %d" pstrlen >> *)
+  Lwt_io.read_into_exactly ic buf 0 pstrlen >>= fun () ->
+  (* debug t.id "received pstr: %S" buf >> *)
+  if buf = "BitTorrent protocol" then
+    junk 8 ic >>
+    lwt ih' = Torrent.Digest.of_input_channel ic in
+    if Torrent.Digest.equal ih' ih then
+      Torrent.PeerId.of_input_channel ic
     else
-      raise_lwt (BadHandShake "wrong protocol")
-  with
-  | End_of_file -> raise_lwt (BadHandShake "unexpected end of file")
+      failwith_lwt "bad info hash"
+  else
+    failwith_lwt "bad protocol"
 
 let handshake_message peer_id ih =
   "\019BitTorrent protocol" ^ String.make 8 '\000' ^
   (Torrent.Digest.to_bin ih) ^ (Torrent.PeerId.to_string peer_id)
 
-let handshake t ic oc ih =
-  debug t.id "Sending handshake message" >>= fun () ->
-  Lwt_io.write oc (handshake_message t.peer_id ih) >>= fun () ->
+let handshake id peer_id ic oc ih =
+  debug id "Sending handshake message" >>= fun () ->
+  Lwt_io.write oc (handshake_message peer_id ih) >>= fun () ->
   (* debug t.id "Waiting to hear back from the other side" >>= fun () -> *)
-  recv_handshake t ic ih
+  recv_handshake ic ih
 
-let handle_good_handshake t ic oc ih peer_id : unit Lwt.t =
-  debug t.id "good handshake received from: %S"
+let handle_good_handshake t id ic oc ih peer_id : unit Lwt.t =
+  debug id "good handshake received from: %S"
     (Torrent.PeerId.to_string peer_id) >>= fun () ->
   try_lwt
     let tl = TorrentTbl.find t.torrents ih in
@@ -101,7 +99,7 @@ let connect t (addr, port) ih =
     lwt ic, oc = Lwt_io.open_connection (Unix.ADDR_INET (addr, port)) in
     debug id "Connected to %s:%d, initiating handshake"
       (Unix.string_of_inet_addr addr) port >>
-    handshake t ic oc ih >>= handle_good_handshake t ic oc ih
+    handshake id t.peer_id ic oc ih >>= handle_good_handshake t id ic oc ih
   in
   Proc.async ~name:"Connector" connector
 

@@ -40,21 +40,13 @@ let protect f =
       debug id ~exn "Process terminated by exception" >>= fun () ->
       raise_lwt exn
 
-let exec ?name f =
-  let id = Id.fresh name in
-  let t, w = Lwt.wait () in
-  let t' = t >>= f in
-  Lwt.on_termination t' (fun () -> H.remove all_threads id);
-  Lwt.wakeup w id;
-  id, t'
-
-let run ?name f =
-  let _, t = exec ?name (protect f) in
-  t
-
 let async ?name f =
-  ignore (run ?name f)
+  let id = Id.fresh name in
+  ignore ((protect f) id)
 
+(* let async ?name f = *)
+(*   ignore (run ?name f) *)
+(*  *)
 let spawn ?name f on_stop on_cleanup =
   let f id =
     try_lwt
@@ -68,5 +60,10 @@ let spawn ?name f on_stop on_cleanup =
       on_cleanup id >>= fun () ->
       on_stop id
   in
-  let id, _ = exec ?name f in
+  let id = Id.fresh name in
+  let t, w = Lwt.wait () in
+  let t' = t >>= f in
+  H.add all_threads id t';
+  Lwt.on_termination t' (fun () -> H.remove all_threads id);
+  Lwt.wakeup w id;
   id

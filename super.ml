@@ -45,9 +45,12 @@ let finish_child id = function
 
 let spawn_child t = function
   | Msg.Worker f ->
-    H.replace t.children (f t.ch) HWorker
+    let id = f t.ch in
+    ignore (debug t.id "Spawned %s" (Proc.Id.to_string id));
+    H.replace t.children id HWorker
   | Msg.Supervisor f ->
     let id, ch = f t.ch in
+    ignore (debug t.id "Spawned %s" (Proc.Id.to_string id));
     H.replace t.children id (HSupervisor ch)
 
 let handle_message t msg =

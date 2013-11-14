@@ -42,17 +42,12 @@ type info = {
   name          : string;
   info_hash     : digest;
   announce_list : Uri.t list list;
-  (* piece_length  : int; *)
-  (* pieces_hash   : digest array; *)
-  (* announce      : Uri.t option; *)
-  (* comment       : string option *)
   pieces        : piece_info array;
   piece_length  : int;
   total_length  : int64;
   files         : file_info list
 } 
 
-(* val total_size : info -> int64 *)
 val bytes_left : Bits.t -> piece_info array -> int64
 val make : Bcode.t -> info
 val gen_peer_id : unit -> peer_id

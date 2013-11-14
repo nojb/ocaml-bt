@@ -18,3 +18,6 @@ let iter f (s, _) =
 
 let iter_s f (s, _) =
   Lwt_stream.iter_s f s
+
+let fold_s f (s, _) =
+  Lwt_stream.fold_s f s

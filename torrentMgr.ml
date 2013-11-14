@@ -20,9 +20,8 @@ let add_torrent t path : unit Lwt.t =
   let torrent_info = Torrent.make (Bcode.from_file path) in
   Torrent.pp torrent_info;
   let ih = torrent_info.Torrent.info_hash in
-  let tl =
-    { Msg.piece_mgr_ch = Lwt_pipe.create (); Msg.pieces = torrent_info.Torrent.pieces }
-  in
+  let piece_mgr_ch = Lwt_pipe.create () in
+  let fs_ch = Lwt_pipe.create () in
   let sup_ch = Lwt_pipe.create () in
   let tracker_sup_ch = Lwt_pipe.create () in
   let start_trackers, tracker_chs = List.split (List.map (fun tier ->
@@ -40,15 +39,22 @@ let add_torrent t path : unit Lwt.t =
     Super.start Super.OneForOne "TrackerSup" ~children:start_trackers
       ~ch:tracker_sup_ch
   in
-  (* lwt handles, have = Fs.open_and_check_file id torrent_info in *)
+  lwt handles, have = Fs.open_and_check_file t.id torrent_info in
+  let db = PieceMgr.create_piece_db have torrent_info.Torrent.pieces in
   let start_super = Super.start Super.AllForOne "TorrentSup"
-    ~children:[ Msg.Supervisor start_track_sup ]
+    ~children:[
+      Msg.Worker (Fs.start ~ch:fs_ch ~pieces:torrent_info.Torrent.pieces ~handles);
+      Msg.Worker (PieceMgr.start ~ch:piece_mgr_ch ~status_ch:t.status_ch
+        db ~info_hash:ih);
+      Msg.Supervisor start_track_sup
+    ]
     ~ch:sup_ch
   in
   Lwt_pipe.write t.super_ch (Msg.SpawnNew (Msg.Supervisor start_super));
   (* let _, send_fs = Fs.start ~send_super ~handles ~pieces in *)
   Lwt_pipe.write t.status_ch (Msg.InsertTorrent (ih,
     torrent_info.Torrent.total_length));
+  let tl = { Msg.piece_mgr_ch; Msg.pieces = torrent_info.Torrent.pieces } in
   Lwt_pipe.write t.peer_mgr_ch (Msg.NewTorrent (ih, tl));
   List.iter (fun ch -> Lwt_pipe.write ch Msg.Start) tracker_chs;
   Lwt.return_unit
