@@ -2,16 +2,14 @@ open Printf
 
 let (>>=) = Lwt.(>>=)
 
+let debug = Proc.debug
+
 module H = Hashtbl.Make (Torrent.Digest)
 
 type t = {
   torrents : Msg.state H.t;
   id : Proc.Id.t
 }
-
-let debug t fmt =
-  Printf.ksprintf (fun msg ->
-    Lwt_log.debug_f "Status %s: %s" (Proc.Id.to_string t.id) msg) fmt
 
 let string_of_msg = function
   | Msg.TrackerStat (ih, complete, incomplete) ->
@@ -36,7 +34,7 @@ let string_of_msg = function
 exception UnknownInfoHash of Torrent.Digest.t
 
 let handle_message t msg : unit Lwt.t =
-  debug t "%s" (string_of_msg msg) >>= fun () ->
+  debug t.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
   | Msg.TrackerStat (ih, complete, incomplete) ->
     let st = H.find t.torrents ih in
@@ -69,6 +67,5 @@ let start ~super_ch ~ch =
     let t = { torrents = H.create 17; id } in
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn
-    (Proc.cleanup run (Super.default_stop super_ch) (fun _ ->
-      Lwt.return_unit))
+  Proc.spawn ~name:"Status" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)

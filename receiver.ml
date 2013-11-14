@@ -68,5 +68,5 @@ let start ~super_ch ic ~peer_ch =
     Lwt_stream.iter (fun msg -> Lwt_pipe.write peer_ch (FromPeer msg))
       (stream_of_channel id ic)
   in
-  Proc.spawn (Proc.cleanup run
-    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
+  Proc.spawn ~name:"Receiver" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)

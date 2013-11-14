@@ -3,6 +3,8 @@ open Printf
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
+let debug = Proc.debug
+
 let failwith_lwt msg =
   raise_lwt (Failure msg)
 
@@ -53,10 +55,6 @@ type t = {
   id : Proc.Id.t
 }
 
-let debug t ?exn fmt =
-  Printf.ksprintf (fun msg ->
-    Lwt_log.debug_f ?exn "Tracker %s: %s" (Proc.Id.to_string t.id) msg) fmt
-
 (** [timer_update id c st] is a Lwt thread that updates the [tick] counter
     of [st] and launches a asynchronous thread to ping the tracker thread
     after [st.interval] seconds.
@@ -71,7 +69,7 @@ let timer_update t (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
       (fun _ ->
         Lwt_unix.sleep (float interval) >|= fun () ->
         Lwt_pipe.write t.ch (Msg.TrackerTick nt)) in
-    debug t "Set Timer to: %d" interval >>
+    debug t.id "Set Timer to: %d" interval >>
     Lwt.return_unit
   | _ ->
     Lwt.return_unit
@@ -166,7 +164,7 @@ let try_udp_server t ss url =
           (announce_response trans_id)
       with
       | Lwt_unix.Timeout ->
-        debug t "UDP Announce Request Timeout after %d s; Retrying..."
+        debug t.id "UDP Announce Request Timeout after %d s; Retrying..."
           (truncate (15.0 *. 2.0 ** float n)) >>
         if n >= 2 then request_connect (n+1)
         else request_announce conn_id (n+1)
@@ -182,7 +180,7 @@ let try_udp_server t ss url =
       if n >= 8 then
         failwith_lwt "Too many retries"
       else
-        debug t "UDP Connect Request Timeout after %d s; Retrying..."
+        debug t.id "UDP Connect Request Timeout after %d s; Retrying..."
           (truncate (15.0 *. 2.0 ** float n)) >>
         request_connect (n+1)
   in request_connect 0
@@ -264,7 +262,7 @@ let try_http_server t ss (uri : Uri.t) : response Lwt.t =
     (*   Log.debug "Got good response!" >> (* decode answer *) assert false *)
 
 let try_server t ss url =
-  debug t "Querying Tracker: %s" (Uri.to_string url) >>
+  debug t.id "Querying Tracker: %s" (Uri.to_string url) >>
   match Uri.scheme url with
   | Some "http" ->
     try_http_server t ss url
@@ -288,7 +286,7 @@ let query_trackers t ss : response Lwt.t =
       | Lwt.Canceled ->
         raise_lwt Lwt.Canceled
       | exn ->
-        debug t ~exn "Failed" >>= fun () ->
+        debug t.id ~exn "Failed" >>= fun () ->
         loop (i+1)
   in
   loop 0
@@ -308,13 +306,13 @@ let poke_tracker t : (int * int option) Lwt.t =
   try_lwt
     match_lwt query_trackers t ss with
     | Warning warn ->
-      debug t "Tracker Warning Response: %s" warn >>
+      debug t.id "Tracker Warning Response: %s" warn >>
       Lwt.return (fail_timer_interval, None)
     | Error err ->
-      debug t "Tracker Error Response: %s" err >>
+      debug t.id "Tracker Error Response: %s" err >>
       Lwt.return (fail_timer_interval, None)
     | Success ok ->
-      debug t "Received %d peers" (List.length ok.new_peers) >>= fun () ->
+      debug t.id "Received %d peers" (List.length ok.new_peers) >>= fun () ->
       Lwt_pipe.write t.peer_mgr_ch (Msg.PeersFromTracker (ih, ok.new_peers));
       Lwt_pipe.write t.status_ch (Msg.TrackerStat (ih, ok.complete, ok.incomplete));
       begin match t.status with
@@ -326,14 +324,14 @@ let poke_tracker t : (int * int option) Lwt.t =
       Lwt.return (ok.interval, ok.min_interval)
   with
   | HTTPError err ->
-    debug t "Tracker HTTP Error: %s" err >>
+    debug t.id "Tracker HTTP Error: %s" err >>
     Lwt.return (fail_timer_interval, None)
   | DecodeError ->
-    debug t "Response Decode Error" >>
+    debug t.id "Response Decode Error" >>
     Lwt.return (fail_timer_interval, None)
 
 let handle_message t msg : unit Lwt.t =
-  debug t "%s" (string_of_msg msg) >>
+  debug t.id "%s" (string_of_msg msg) >>
   match msg with
   | Msg.TrackerTick x ->
     if x+1 = t.next_tick then
@@ -377,5 +375,5 @@ let start ~super_ch ~ch ~info_hash ~peer_id ~local_port
     shuffle_array t.tier;
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn (Proc.cleanup run
-    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
+  Proc.spawn ~name:"Tracker" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)

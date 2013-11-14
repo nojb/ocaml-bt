@@ -4,9 +4,7 @@ open Msg
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let debug id ?exn fmt =
-  Printf.ksprintf (fun msg ->
-    Lwt_log.debug_f ?exn "PeerMgr %s: %s" (Proc.Id.to_string id) msg) fmt
+let debug = Proc.debug
 
 module M = Map.Make (Proc.Id)
 
@@ -99,17 +97,13 @@ let handle_good_handshake t ic oc ih peer_id : unit Lwt.t =
 
 let connect t (addr, port) ih =
   let connector id =
-    try_lwt
     debug id "Connecting to %s:%d" (Unix.string_of_inet_addr addr) port >>
     lwt ic, oc = Lwt_io.open_connection (Unix.ADDR_INET (addr, port)) in
     debug id "Connected to %s:%d, initiating handshake"
       (Unix.string_of_inet_addr addr) port >>
     handshake t ic oc ih >>= handle_good_handshake t ic oc ih
-    with
-    | exn ->
-      debug t.id ~exn "Connector failed on exception"
   in
-  ignore (Proc.spawn connector)
+  Proc.async ~name:"Connector" connector
 
 let add_peer t (ih, paddr) : unit =
   connect t paddr ih
@@ -166,5 +160,5 @@ let start ~super_ch ~ch ~peer_id =
     in
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn (Proc.cleanup run
-    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
+  Proc.spawn ~name:"PeerMgr" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)

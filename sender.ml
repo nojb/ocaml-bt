@@ -3,9 +3,7 @@ open Msg
 
 let (>>=) = Lwt.(>>=)
 
-let debug id ?exn fmt =
-  Printf.ksprintf (fun msg ->
-    Lwt_log.debug_f ?exn "Sender %s: %s" (Proc.Id.to_string id) msg) fmt
+let debug = Proc.debug
 
 let string_of_msg = function
   | SendMsg msg ->
@@ -96,5 +94,5 @@ let start ~super_ch oc ~ch ~peer_ch =
   let run id =
     Lwt_pipe.iter_s (handle_message id oc peer_ch) ch
   in
-  Proc.spawn (Proc.cleanup run
-    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
+  Proc.spawn ~name:"Sender" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)

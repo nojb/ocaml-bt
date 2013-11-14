@@ -1,14 +1,16 @@
 module Id = struct
-  type t = int
+  type t = int * string option
   let last = ref 0
-  let to_string x = Printf.sprintf "[#%d]" x
-  let fresh () =
+  let to_string = function
+    | (x, None) -> Printf.sprintf "[#%d]" x
+    | (x, Some name) -> Printf.sprintf "%s [#%d]" name x
+  let fresh name =
     let x = !last in
     incr last;
-    x
-  let hash x = x
-  let equal x y = (x - y) = 0
-  let compare x y = x - y
+    (x, name)
+  let hash (x, _) = x
+  let equal (x, _) (y, _) = (x - y) = 0
+  let compare (x, _) (y, _) = x - y
 end
 
 module H = Hashtbl.Make (Id)
@@ -27,29 +29,44 @@ let debug id ?exn fmt =
 
 let (>>=) = Lwt.(>>=)
 
-let spawn f =
-  let id = Id.fresh () in
+let protect f =
+  fun id ->
+    try_lwt
+      f id >>= fun res ->
+      debug id "Process terminating gracefully" >>= fun () ->
+      Lwt.return res
+    with
+    | exn ->
+      debug id ~exn "Process terminated by exception" >>= fun () ->
+      raise_lwt exn
+
+let exec ?name f =
+  let id = Id.fresh name in
   let t, w = Lwt.wait () in
   let t' = t >>= f in
   Lwt.on_termination t' (fun () -> H.remove all_threads id);
   Lwt.wakeup w id;
-  id
+  id, t'
 
-let cleanup f on_stop on_cleanup =
-  fun id ->
+let run ?name f =
+  let _, t = exec ?name (protect f) in
+  t
+
+let async ?name f =
+  ignore (run ?name f)
+
+let spawn ?name f on_stop on_cleanup =
+  let f id =
     try_lwt
-      f id >>= fun () ->
-      debug id "Process terminating gracefully" >>= fun () ->
+      (protect f) id >>= fun () ->
       on_cleanup id >>= fun () ->
       on_stop id
     with
     | Lwt.Canceled ->
-      debug id "Process terminated by supervisor" >>= fun () ->
       on_cleanup id
     | exn ->
-      debug id ~exn "Process terminated by exception" >>= fun () ->
       on_cleanup id >>= fun () ->
       on_stop id
-
-let catch f on_stop =
-  cleanup f on_stop (fun _ -> Lwt.return_unit)
+  in
+  let id, _ = exec ?name f in
+  id

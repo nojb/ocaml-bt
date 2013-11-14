@@ -2,6 +2,8 @@ open Printf
 
 let (>>=) = Lwt.(>>=)
 
+let debug = Proc.debug
+
 let string_of_msg = function
   | Msg.AddedTorrent path ->
     sprintf "AddedTorrent: %S" path
@@ -13,10 +15,6 @@ type t = {
   peer_id : Torrent.peer_id;
   id : Proc.Id.t
 }
-
-let debug t ?exn fmt =
-  Printf.ksprintf (fun msg ->
-    Lwt_log.debug_f ?exn "TorrentMgr %s: %s" (Proc.Id.to_string t.id) msg) fmt
 
 let add_torrent t path : unit Lwt.t =
   let torrent_info = Torrent.make (Bcode.from_file path) in
@@ -56,7 +54,7 @@ let add_torrent t path : unit Lwt.t =
   Lwt.return_unit
 
 let handle_message t msg =
-  debug t "%s" (string_of_msg msg) >>= fun () ->
+  debug t.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
   | Msg.AddedTorrent path ->
     add_torrent t path
@@ -66,5 +64,5 @@ let start ~super_ch ~status_ch ~peer_id ~peer_mgr_ch ~ch =
     let t = { super_ch; status_ch; peer_mgr_ch; peer_id; id } in
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn (Proc.cleanup run
-    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
+  Proc.spawn ~name:"TorrentMgr" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)

@@ -1,5 +1,7 @@
 let (>>=) = Lwt.(>>=)
 
+let debug = Proc.debug
+
 let string_of_msg = function
   | Msg.IAmDying id ->
     Printf.sprintf "IAmDying: %s" (Proc.Id.to_string id)
@@ -31,10 +33,6 @@ type t = {
   id : Proc.Id.t
 }
 
-let debug t ?exn fmt =
-  Printf.ksprintf (fun msg -> Lwt_log.debug_f ?exn "%s %s: %s" t.name
-    (Proc.Id.to_string t.id) msg) fmt
-
 let default_stop super id =
   Lwt_pipe.write super (Msg.IAmDying id);
   Lwt.return_unit
@@ -53,7 +51,7 @@ let spawn_child t = function
     H.replace t.children id (HSupervisor ch)
 
 let handle_message t msg =
-  debug t "%s" (string_of_msg msg) >>= fun () ->
+  debug t.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
   | Msg.IAmDying id ->
     begin match t.policy with
@@ -83,6 +81,6 @@ let start policy name ~children ~super_ch ~ch =
     | Stop -> Lwt.return_unit
   in
   let id =
-    Proc.spawn (Proc.catch run (default_stop super_ch))
+    Proc.spawn ~name run (default_stop super_ch) (fun _ -> Lwt.return_unit)
   in
   id, ch

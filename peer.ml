@@ -4,9 +4,7 @@ open Printf
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let debug id ?exn fmt =
-  Printf.ksprintf (fun msg ->
-    Lwt_log.debug_f ?exn "Peer %s: %s" (Proc.Id.to_string id) msg) fmt
+let debug = Proc.debug
 
 let string_of_msg = function
   | FromPeer msg ->
@@ -200,8 +198,8 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
     Lwt_pipe.write peer_mgr_ch (Connect (ih, id));
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn (Proc.cleanup run
-    (Super.default_stop super_ch) (fun _ -> Lwt.return_unit))
+  Proc.spawn ~name:"Peer" run (Super.default_stop super_ch)
+    (fun _ -> Lwt.return_unit)
 
 let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
   let sender_ch = Lwt_pipe.create () in
