@@ -14,16 +14,16 @@ type db = {
   have : IntSet.t;
   pending : IntSet.t;
   downloading : PieceBlockSet.t;
-  all_pieces : Torrent.piece_info array
+  all_pieces : Info.piece_info array
   (** info about all the pieces in the torrent *)
 }
 
 val start :
   super_ch: Msg.super_msg Lwt_pipe.t ->
   ch: Msg.piece_mgr_msg Lwt_pipe.t ->
-  status_ch : Msg.status_msg Lwt_pipe.t ->
+  status_ch : Status.msg Lwt_pipe.t ->
   db ->
-  info_hash : Torrent.Digest.t ->
+  info_hash : Info.Digest.t ->
   Proc.Id.t
 
-val create_piece_db : Bits.t -> Torrent.piece_info array -> db
+val create_piece_db : Bits.t -> Info.piece_info array -> db

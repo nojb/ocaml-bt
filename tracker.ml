@@ -43,11 +43,11 @@ type response =
 let fail_timer_interval = 15 * 60
 
 type t = {
-  status_ch           : Msg.status_msg Lwt_pipe.t;
+  status_ch           : Status.msg Lwt_pipe.t;
   ch          : Msg.tracker_msg Lwt_pipe.t;
   peer_mgr_ch         : Msg.peer_mgr_msg Lwt_pipe.t;
-  info_hash             : Torrent.Digest.t;
-  peer_id               : Torrent.peer_id;
+  info_hash             : Info.Digest.t;
+  peer_id               : Info.peer_id;
   tier                  : Uri.t array;
   local_port            : int;
   mutable status        : status;
@@ -143,11 +143,11 @@ let try_udp_server t ss url =
       Lwt_io.BE.write_int64 oc conn_id >>
       Lwt_io.BE.write_int32 oc 1l >> (* announce *)
       Lwt_io.BE.write_int32 oc trans_id >>
-      Lwt_io.write oc (Torrent.Digest.to_bin t.info_hash) >>
-      Lwt_io.write oc (Torrent.PeerId.to_string t.peer_id) >>
-      Lwt_io.BE.write_int64 oc ss.Msg.downloaded >>
-      Lwt_io.BE.write_int64 oc ss.Msg.left >>
-      Lwt_io.BE.write_int64 oc ss.Msg.uploaded >>
+      Lwt_io.write oc (Info.Digest.to_bin t.info_hash) >>
+      Lwt_io.write oc (Info.PeerId.to_string t.peer_id) >>
+      Lwt_io.BE.write_int64 oc ss.Status.downloaded >>
+      Lwt_io.BE.write_int64 oc ss.Status.left >>
+      Lwt_io.BE.write_int64 oc ss.Status.uploaded >>
       Lwt_io.BE.write_int32 oc
         begin match t.status with
         | Running -> 0l
@@ -234,11 +234,11 @@ let decode_http_response (d : Bcode.t) =
 let try_http_server t ss (uri : Uri.t) : response Lwt.t =
   let uri =
     let params =
-      ("info_hash",   (Torrent.Digest.to_bin t.info_hash)) ::
-      ("peer_id",     (Torrent.PeerId.to_string t.peer_id)) ::
-      ("uploaded",    Int64.to_string ss.Msg.uploaded) ::
-      ("downloaded",  Int64.to_string ss.Msg.downloaded) ::
-      ("left",        Int64.to_string ss.Msg.left) ::
+      ("info_hash",   (Info.Digest.to_bin t.info_hash)) ::
+      ("peer_id",     (Info.PeerId.to_string t.peer_id)) ::
+      ("uploaded",    Int64.to_string ss.Status.uploaded) ::
+      ("downloaded",  Int64.to_string ss.Status.downloaded) ::
+      ("left",        Int64.to_string ss.Status.left) ::
       ("port",        string_of_int t.local_port) ::
       match t.status with
       | Running -> []
@@ -300,8 +300,7 @@ let query_trackers t ss : response Lwt.t =
     @returns st the state updated with new interval times and [status] *)
 let poke_tracker t : (int * int option) Lwt.t =
   let mv = Lwt_mvar.create_empty () in
-  let ih = t.info_hash in
-  Lwt_pipe.write t.status_ch (Msg.RequestStatus (ih, mv));
+  Lwt_pipe.write t.status_ch (`RequestStatus mv);
   lwt ss = Lwt_mvar.take mv in
   try_lwt
     match_lwt query_trackers t ss with
@@ -313,8 +312,8 @@ let poke_tracker t : (int * int option) Lwt.t =
       Lwt.return (fail_timer_interval, None)
     | Success ok ->
       debug t.id "Received %d peers" (List.length ok.new_peers) >>= fun () ->
-      Lwt_pipe.write t.peer_mgr_ch (Msg.PeersFromTracker (ih, ok.new_peers));
-      Lwt_pipe.write t.status_ch (Msg.TrackerStat (ih, ok.complete, ok.incomplete));
+      Lwt_pipe.write t.peer_mgr_ch (Msg.PeersFromTracker ok.new_peers);
+      Lwt_pipe.write t.status_ch (`UpdateStats (ok.complete, ok.incomplete));
       begin match t.status with
       | Running   -> t.status <- Running
       | Stopped   -> t.status <- Stopped

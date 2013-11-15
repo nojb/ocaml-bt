@@ -9,40 +9,11 @@ and super_msg =
   | PleaseDie
   | SpawnNew of child
 
-type torrent_mgr_msg =
-  | AddedTorrent of string
-
 type tracker_msg =
   | Stop
   | TrackerTick of int
   | Start
   | Complete
-
-type state = {
-  uploaded        : int64;
-  downloaded      : int64;
-  left            : int64;
-  incomplete      : int option;
-  complete        : int option;
-  state           : Torrent.state
-}
-
-(* type tracker_stats = { *)
-(*   track_info_hash   : Torrent.digest; *)
-(*   track_incomplete  : int option; *)
-(*   track_complete    : int option *)
-(* } *)
-
-type status_msg =
-  | TrackerStat         of Torrent.digest * int option * int option (*
-  tracker_stats *)
-  | CompletedPiece      of Torrent.digest * int
-  | InsertTorrent       of Torrent.digest * int64
-  | RemoveTorrent       of Torrent.digest
-  | TorrentCompleted    of Torrent.digest
-  | RequestStatus       of Torrent.digest * state Lwt_mvar.t
-  | RequestAllTorrents  of (Torrent.digest * state) list Lwt_mvar.t
-  | StatusTimerTick
 
 type peer =
   Unix.inet_addr * int
@@ -106,19 +77,12 @@ type piece_mgr_msg =
   (** Put these blocks back for retrieval *)
   | PutbackBlocks of (int * block) list
 
-type torrent_local = {
-  piece_mgr_ch : piece_mgr_msg Lwt_pipe.t;
-  pieces : Torrent.piece_info array
-}
-
 type peer_mgr_msg =
-  | PeersFromTracker    of Torrent.digest * peer list
+  | PeersFromTracker    of peer list
   | NewIncoming         of Lwt_unix.file_descr
-  | NewTorrent          of Torrent.digest * torrent_local
-  | StopTorrent         of Torrent.digest
-(*  *)
-(* type mgr_msg = *)
-  | Connect     of Torrent.digest * Proc.Id.t
+  (* | NewTorrent          of Torrent.digest * torrent_local *)
+  (* | StopTorrent         of Torrent.digest *)
+  | Connect     of Proc.Id.t
   | Disconnect  of Proc.Id.t
 
 type msg_ty =

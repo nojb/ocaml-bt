@@ -1,303 +1,96 @@
-module PeerId = struct
-  type t = string
-  let to_string x = x
-  let of_string x =
-    if String.length x <> 20 then invalid_arg "PeerId.of_string";
-    x
-  let of_input_channel ic =
-    let buf = String.create 20 in
-    Lwt.bind (Lwt_io.read_into_exactly ic buf 0 20)
-      (fun _ -> Lwt.return buf)
-end
+let _ = Lwt_log.Section.set_level Lwt_log.Section.main Lwt_log.Debug
 
-type peer_id = PeerId.t
+let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
 
-module Digest = struct
-  type t =
-    string
-  let dummy =
-    String.make 20 '\000'
-  let compare (s1 : t) (s2 : t) =
-    compare s1 s2
-  let equal (s1 : t) (s2 : t) =
-    s1 = s2
-  let hash (s : t) =
-    Hashtbl.hash s
-  let to_string s =
-    let buf = Buffer.create 40 in
-    for i = 0 to 19 do
-      Printf.bprintf buf "%02x" (int_of_char s.[i])
-    done;
-    Buffer.contents buf
-  let pp fmt s =
-    Format.fprintf fmt "%s" (to_string s)
-  let to_bin x =
-    x
-  let from_bin x =
-    if String.length x <> 20 then invalid_arg "Digest.from_bin";
-    x
-  let of_input_channel ic =
-    let buf = String.create 20 in
-    Lwt.bind (Lwt_io.read_into_exactly ic buf 0 20)
-      (fun _ -> Lwt.return buf)
-  let string s =
-    Sha1.to_bin (Sha1.string s)
-end
+let debug = Proc.debug
 
-type digest =
-  Digest.t
+let _ =
+  Random.self_init ()
 
-type state =
-  | Seeding
-  | Leeching
+type msg =
+  [ `Start
+  | `Stop ]
 
-type piece_info = {
-  piece_offset  : int64;
-  piece_length  : int;
-  piece_digest  : digest
+let string_of_msg = function
+  | `Start ->
+    "Start"
+  | `Stop ->
+    "Stop"
+
+type t = {
+  info : Info.t;
+  peer_id : Info.PeerId.t;
+  done_mv : unit Lwt_mvar.t;
+  id : Proc.Id.t
 }
 
-type file_info = {
-  file_path     : string list;
-  file_size     : int64
-}
+let start t : unit Lwt.t =
+  let info_hash = t.info.Info.info_hash in
+  let pieces = t.info.Info.pieces in
+  let peer_id = t.peer_id in
 
-type info = {
-  name          : string;
-  info_hash     : digest;
-  announce_list : Uri.t list list;
-  pieces        : piece_info array;
-  piece_length  : int;
-  total_length  : int64;
-  files         : file_info list
-} 
+  let piece_mgr_ch = Lwt_pipe.create () in
+  let fs_ch = Lwt_pipe.create () in
+  let sup_ch = Lwt_pipe.create () in
+  let status_ch = Lwt_pipe.create () in
+  let peer_mgr_ch = Lwt_pipe.create () in
+  let tracker_sup_ch = Lwt_pipe.create () in
+  let fake_ch = Lwt_pipe.create () in
 
-let bytes_left have (pieces : piece_info array) =
-  Bits.fold_left_i (fun acc i has ->
-    if has then Int64.add acc (Int64.of_int pieces.(i).piece_length)
-    else acc) 0L have
-
-exception Bad_format
-
-let search_info (s : string) (bc : Bcode.t) : Bcode.t =
-  Bcode.search s (Bcode.search "info" bc)
-
-(* let comment bc = *)
-(*   Bcode.search_string "comment" bc *)
-(*  *)
-(* let creation_date bc = *)
-(*   Bcode.search_string "creation date" bc *)
-(*  *)
-
-let announce (bc : Bcode.t) : Uri.t =
-  try
-    Uri.of_string (Bcode.search_string "announce" bc)
-  with
-  | Bcode.Bad_type -> raise Bad_format
-
-let announce_list bc : Uri.t list list =
-  try
-    let l = Bcode.search_list "announce-list" bc in
-    List.map
-      (function
-        | Bcode.BList l ->
-            List.map
-              (function
-                | Bcode.BString s -> Uri.of_string s
-                | _ -> raise Bad_format) l
-        | _ -> raise Bad_format) l
-  with
-  | Bcode.Bad_type -> raise Bad_format
-
-let split_at n s =
-  let len = String.length s in
-  if len mod n <> 0 then raise Bad_format
-  else Array.init (len/n) (fun i -> String.sub s (n*i) 20)
-
-let info_pieces (bc : Bcode.t) : digest array =
-  let pieces = search_info "pieces" bc in
-  match pieces with
-  | Bcode.BString sha1s -> split_at 20 sha1s
-  | _ -> raise Bad_format
-
-let number_pieces (bc : Bcode.t) : int =
-  let pieces = search_info "pieces" bc in
-  match pieces with
-  | Bcode.BString sha1s ->
-      let n = String.length sha1s in
-      if n mod 20 <> 0 then raise Bad_format
-      else n/20
-  | _ -> raise Bad_format
-
-let info_hash (bc : Bcode.t) : digest =
-  Sha1.to_bin (Sha1.string (Bcode.bencode (Bcode.search "info" bc)))
-
-let piece_length (bc : Bcode.t) : int =
-  match search_info "piece length" bc with
-  | Bcode.BInt n -> Int64.to_int n
-  | _ -> raise Bad_format
-
-let info_name (bc : Bcode.t) : string =
-  match search_info "name" bc with
-  | Bcode.BString s -> s
-  | _ -> raise Bad_format
-
-let maybe_assoc k l =
-  try Some (List.assoc k l) with Not_found -> None
-  
-let list_assoc k l =
-  match List.assoc k l with
-  | Bcode.BList l -> l
-  | _ -> raise Bad_format
-
-let int_assoc k l =
-  match List.assoc k l with
-  | Bcode.BInt n -> n
-  | _ -> raise Bad_format
-
-let info_files (bc : Bcode.t) : file_info list =
-  let name =
-    try
-      match search_info "name" bc with
-      | Bcode.BString s -> s
-      | _ -> raise Bad_format
-    with
-    | Not_found -> raise Bad_format
+  let start_trackers, tracker_chs = List.split (List.map (fun tier ->
+    let ch = Lwt_pipe.create () in
+    Msg.Worker (Tracker.start
+      ~info_hash
+      ~tier
+      ~peer_id:t.peer_id
+      ~local_port:6881
+      ~status_ch:status_ch
+      ~peer_mgr_ch:peer_mgr_ch
+      ~ch), ch) t.info.Info.announce_list)
   in
-  try
-    let files = search_info "files" bc in
-    match files with
-    | Bcode.BList l ->
-        List.map (function
-          | Bcode.BDict d ->
-            { file_size = int_assoc "length" d;
-              file_path = name :: List.map (function
-                | Bcode.BString s -> s
-                | _ -> raise Bad_format) (list_assoc "path" d) }
-          | _ -> raise Bad_format) l
-    | _ -> raise Bad_format
-  with
-  | Not_found -> (* single file mode *)
-    try
-      match search_info "length" bc with
-      | Bcode.BInt n -> [{ file_path = [name]; file_size = n }]
-      | _ -> raise Bad_format
-    with
-    | Not_found -> raise Bad_format
+  let start_track_sup =
+    Super.start Super.OneForOne "TrackerSup" ~children:start_trackers
+      ~ch:tracker_sup_ch
+  in
+  lwt handles, have = Fs.open_and_check_file t.id t.info in
+  let left = Info.bytes_left have pieces in
+  let db = PieceMgr.create_piece_db have t.info.Info.pieces in
+  let _ = Super.start ~super_ch:fake_ch Super.AllForOne "TorrentSup"
+    ~children:[
+      Msg.Worker (Status.start ~ch:status_ch ~info_hash ~left);
+      Msg.Worker (PeerMgr.start ~ch:peer_mgr_ch ~peer_id ~info_hash
+        ~piece_mgr_ch ~pieces);
+      Msg.Worker (Fs.start ~ch:fs_ch ~pieces ~handles);
+      Msg.Worker (PieceMgr.start ~ch:piece_mgr_ch ~status_ch db ~info_hash);
+      Msg.Supervisor start_track_sup
+    ]
+    ~ch:sup_ch
+  in
+  List.iter (fun ch -> Lwt_pipe.write ch Msg.Start) tracker_chs;
+  Lwt.return_unit
 
-let total_length (bc : Bcode.t) : int64 =
-  try
-    match search_info "length" bc with
-    | Bcode.BInt n -> n
-    | _ -> raise Bad_format
-  with
-  | Not_found ->
-      match search_info "files" bc with
-      | Bcode.BList l ->
-          begin try List.fold_left (fun acc d ->
-            match d with
-            | Bcode.BDict d ->
-                begin match List.assoc "length" d with
-                | Bcode.BInt n -> Int64.add acc n
-                | _ -> raise Bad_format
-                end
-            | _ -> raise Bad_format) 0L l
-          with
-          | Not_found -> raise Bad_format
-          end
-       | _ -> raise Bad_format
+let handle_message t msg : unit Lwt.t =
+  match msg with
+  | `Start ->
+    start t
+  | msg ->
+    debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let dummy_piece = {
-  piece_offset = 0L;
-  piece_length = 0;
-  piece_digest = Digest.dummy
-}
-
-let extract_pieces ~piece_len:plen ~total_len:tlen ~sha1s =
-  let no_pieces = Array.length sha1s in
-  let a = Array.create no_pieces dummy_piece in
-  let plen' = Int64.of_int plen in
-  let rec loop (rlen : int64) off i =
-    if i >= no_pieces then a
-    else
-      if Int64.compare rlen plen' < 0 then
-        if i < no_pieces-1 then raise Bad_format
-        else begin (* last piece *)
-          assert (Int64.compare (Int64.of_int (Int64.to_int rlen)) rlen = 0);
-          a.(i) <- { piece_offset = off; piece_digest = sha1s.(i); piece_length = Int64.to_int rlen };
-          a
-        end
-      else begin
-        a.(i) <- {
-          piece_offset = off;
-          piece_digest = sha1s.(i);
-          piece_length = plen
-        };
-        loop (Int64.sub rlen plen') (Int64.add off plen') (i+1)
-      end
-  in loop tlen 0L 0
-  
-let make bc =
-  try
-    let name = info_name bc in
-    let sha1s = info_pieces bc in
-    let ih = info_hash bc in
-    let plen = piece_length bc in
-    let tlen = total_length bc in
-    let alist = try announce_list bc with Not_found -> [[ announce bc ]] in
-    let pieces = extract_pieces ~piece_len:plen ~total_len:tlen ~sha1s:sha1s in
-    let files = info_files bc in
-    { name = name; info_hash = ih; announce_list = alist; piece_length = plen;
-      total_length = tlen; pieces = pieces; files = files }
-  with
-  | Not_found ->
-      failwith "could not create torrent info"
-  | Bad_format ->
-      failwith "bad format torrent info"
-
-let gen_peer_id () =
-  let header = "-OC" ^ "0001" ^ "-" in
-  let random_digit () = char_of_int ((Random.int 10) + (int_of_char '0')) in
-  let random_string len =
-    let s = String.create len in
-    let rec loop i =
-      if i >= len then s else (s.[i] <- random_digit (); loop (i+1))
-    in loop 0 in
-  let pid = header ^ random_string (20 - String.length header) in
-  (* Lwt_log.ign_debug_f "Generated Peer ID: %s" pid; *)
-  pid
-
-open Format
-
-let rec pp_announce_list fmt xs =
-  let rec loop fmt = function
-    | [] -> ()
-    | [x] -> fprintf fmt "[@[<hov 2>%a@]]" pp_tier x
-    | x :: xs -> fprintf fmt "[@[<hov 2>%a@]]@,%a" pp_tier x loop xs
-  in loop fmt xs
-
-and pp_tier fmt = function
-  | [] -> ()
-  | [x] -> fprintf fmt "%s" (Uri.to_string x)
-  | x :: xs -> fprintf fmt "%s;@ %a" (Uri.to_string x) pp_tier xs
-
-let pp_files fmt files =
-  let rec loop i fmt = function
-  | [] -> ()
-  | fi :: files ->
-      fprintf fmt "%d. %s (%s)@,%a" i (String.concat "/" fi.file_path)
-        (Util.string_of_file_size fi.file_size) (loop (i+1)) files
-  in loop 1 fmt files
-
-let pp_info fmt info =
-  fprintf fmt "             name: %s@," info.name;
-  fprintf fmt "        info hash: %s@," (Digest.to_string info.info_hash);
-  fprintf fmt "    announce-list: @[<v>%a@]@,"
-    pp_announce_list info.announce_list;
-  fprintf fmt "     total length: %s@," (Util.string_of_file_size info.total_length);
-  fprintf fmt "     piece length: %s@," (Util.string_of_file_size (Int64.of_int info.piece_length));
-  fprintf fmt " number of pieces: %d@," (Array.length info.pieces);
-  fprintf fmt "            files: @[<v>%a@]" pp_files info.files
-
-let pp ?fmt:(fmt=Format.std_formatter) info =
-  fprintf fmt "@[<v>%a@]@." pp_info info
+let download path =
+  let ch = Lwt_pipe.create () in
+  let done_mv = Lwt_mvar.create_empty () in
+  let run id =
+    let info = Info.make (Bcode.from_file path) in
+    let peer_id = Info.gen_peer_id () in
+    Info.pp info;
+    let t =
+      { info; peer_id; id; done_mv }
+    in
+    Lwt_pipe.iter_s (handle_message t) ch
+  in
+  let _ = Proc.spawn ~name:"Client" run (fun _ -> Lwt.return_unit)
+    (fun _ -> Lwt.return_unit)
+  in
+  Lwt_pipe.write ch `Start;
+  Lwt_mvar.take done_mv

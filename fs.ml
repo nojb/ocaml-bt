@@ -13,7 +13,7 @@ let safe_to_int n =
 
 type t = {
   handles : (Lwt_io.input_channel * Lwt_io.output_channel * int64) list;
-  pieces : Torrent.piece_info array;
+  pieces : Info.piece_info array;
   id : Proc.Id.t
 }
 
@@ -53,7 +53,7 @@ let read_block t i (Msg.Block (boff, blen)) : string Lwt.t =
     Lwt_io.read_into_exactly ic data doff len >>= fun () ->
     Lwt.return (doff + len)
   in
-  let start = Int64.(add pi.Torrent.piece_offset (of_int boff)) in
+  let start = Int64.(add pi.Info.piece_offset (of_int boff)) in
   lwt n = Lwt_list.fold_left_s read_chunk 0
     (get_chunks t.handles ~offset:start ~size:blen)
   in
@@ -69,7 +69,7 @@ let write_block t i (Msg.Block (boff, blen)) data : unit Lwt.t =
     Lwt_io.write_from_exactly oc data doff len >>= fun () ->
     Lwt.return (doff + len)
   in
-  let start = Int64.(add pi.Torrent.piece_offset (of_int boff)) in
+  let start = Int64.(add pi.Info.piece_offset (of_int boff)) in
   lwt n = Lwt_list.fold_left_s write_chunk 0 
     (get_chunks t.handles ~offset:start ~size:blen) in
   assert (n = blen);
@@ -77,19 +77,19 @@ let write_block t i (Msg.Block (boff, blen)) data : unit Lwt.t =
 
 (** raises End_of_file if [pi] refers to a piece beyond the
  * end of file *)
-let check_piece handles (pi : Torrent.piece_info) : bool Lwt.t =
-  let data = String.create pi.Torrent.piece_length in
+let check_piece handles (pi : Info.piece_info) : bool Lwt.t =
+  let data = String.create pi.Info.piece_length in
   let read_chunk doff (ic, _, off, len) =
     Lwt_io.set_position ic off >>= fun () ->
     Lwt_io.read_into_exactly ic data doff len >>= fun () ->
     Lwt.return (doff + len)
   in
   lwt n = Lwt_list.fold_left_s read_chunk 0
-    (get_chunks handles ~offset:pi.Torrent.piece_offset ~size:pi.Torrent.piece_length)
+    (get_chunks handles ~offset:pi.Info.piece_offset ~size:pi.Info.piece_length)
   in
-  assert (n = pi.Torrent.piece_length);
-  let digest = Torrent.Digest.string data in
-  Lwt.return (Torrent.Digest.equal digest pi.Torrent.piece_digest)
+  assert (n = pi.Info.piece_length);
+  let digest = Info.Digest.string data in
+  Lwt.return (Info.Digest.equal digest pi.Info.piece_digest)
 
 let check_file id handles pieces : Bits.t Lwt.t =
   let n = Array.length pieces in
@@ -158,9 +158,9 @@ let open_file path =
 
 let open_and_check_file id info : 'a Lwt.t =
   lwt handles = Lwt_list.map_s (fun fi ->
-    open_file fi.Torrent.file_path >>= fun (ic, oc) ->
-    Lwt.return (ic, oc, fi.Torrent.file_size)) info.Torrent.files in
-  check_file id handles info.Torrent.pieces >>= fun have ->
+    open_file fi.Info.file_path >>= fun (ic, oc) ->
+    Lwt.return (ic, oc, fi.Info.file_size)) info.Info.files in
+  check_file id handles info.Info.pieces >>= fun have ->
   debug id "Torrent data check successful" >>= fun () ->
   Lwt.return (handles, have)
 

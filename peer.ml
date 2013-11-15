@@ -60,7 +60,7 @@ type t = {
   (* last_piece_tick : int; *)
   (* interesting_pieces : PieceSet.t; *)
   (* mutable last_pn : int; *)
-  pieces : Torrent.piece_info array;
+  pieces : Info.piece_info array;
   peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t;
   sender_ch : Msg.sender_msg Lwt_pipe.t;
   piece_mgr_ch : Msg.piece_mgr_msg Lwt_pipe.t;
@@ -195,7 +195,7 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
         last_msg = 0;
         id }
     in
-    Lwt_pipe.write peer_mgr_ch (Connect (ih, id));
+    Lwt_pipe.write peer_mgr_ch (Connect id);
     Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn ~name:"Peer" run (Super.default_stop super_ch)
