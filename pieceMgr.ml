@@ -56,7 +56,7 @@ type db = {
   have : IntSet.t;
   pending : IntSet.t;
   downloading : PieceBlockSet.t;
-  all_pieces : Info.piece_info array
+  pieces : Info.piece_info array
   (** info about all the pieces in the torrent *)
 }
 
@@ -101,7 +101,9 @@ and grab_pending db n eligible captured pending : db * PieceBlockSet.t =
   else
     let p = IntSet.choose pending in
     if Bits.is_set eligible p then
-      let bl = blocks_of_piece default_block_size db.all_pieces.(p).Info.piece_length in
+      let bl =
+        blocks_of_piece default_block_size db.pieces.(p).Info.piece_length
+      in
       let ip =
         { no_blocks = BlockSet.cardinal bl;
           have_blocks = BlockSet.empty;
@@ -162,5 +164,5 @@ let create_piece_db have pieces =
     have;
     pending;
     downloading = PieceBlockSet.empty;
-    all_pieces = pieces }
+    pieces }
     
