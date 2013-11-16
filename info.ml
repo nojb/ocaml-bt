@@ -15,7 +15,7 @@ type peer_id = PeerId.t
 module Digest = struct
   type t =
     string
-  let dummy =
+  let zero =
     String.make 20 '\000'
   let compare (s1 : t) (s2 : t) =
     compare s1 s2
@@ -77,183 +77,128 @@ let bytes_left have (pieces : piece_info array) =
     if has then Int64.add acc (Int64.of_int pieces.(i).piece_length)
     else acc) 0L have
 
-exception Bad_format
-
-let search_info (s : string) (bc : Bcode.t) : Bcode.t =
-  Bcode.search s (Bcode.search "info" bc)
-
 (* let comment bc = *)
 (*   Bcode.search_string "comment" bc *)
 (*  *)
 (* let creation_date bc = *)
 (*   Bcode.search_string "creation date" bc *)
-(*  *)
 
-let announce (bc : Bcode.t) : Uri.t =
-  try
-    Uri.of_string (Bcode.search_string "announce" bc)
-  with
-  | Bcode.Bad_type -> raise Bad_format
-
-let announce_list bc : Uri.t list list =
-  try
-    let l = Bcode.search_list "announce-list" bc in
-    List.map
-      (function
-        | Bcode.BList l ->
-            List.map
-              (function
-                | Bcode.BString s -> Uri.of_string s
-                | _ -> raise Bad_format) l
-        | _ -> raise Bad_format) l
-  with
-  | Bcode.Bad_type -> raise Bad_format
+let announce_list bc =
+  let open Bcode in
+  let open Option in
+  let announce_list () =
+    find "announce-list" bc >>= to_list >>=
+    map (fun l -> to_list l >>= map (fun s -> to_string s >|= Uri.of_string))
+  in
+  let announce () =
+    find "announce" bc >>= to_string >>= fun announce ->
+    return [[Uri.of_string announce]]
+  in
+  either announce_list announce ()
 
 let split_at n s =
   let len = String.length s in
-  if len mod n <> 0 then raise Bad_format
-  else Array.init (len/n) (fun i -> String.sub s (n*i) 20)
+  if len mod n <> 0 then Option.fail ()
+  else Option.return (Array.init (len/n) (fun i -> String.sub s (n*i) n))
 
-let info_pieces (bc : Bcode.t) : digest array =
-  let pieces = search_info "pieces" bc in
-  match pieces with
-  | Bcode.BString sha1s -> split_at 20 sha1s
-  | _ -> raise Bad_format
+let sha1s bc =
+  let open Option in
+  Bcode.(find "info" bc >>= find "pieces" >>= to_string >>= split_at 20)
 
-let number_pieces (bc : Bcode.t) : int =
-  let pieces = search_info "pieces" bc in
-  match pieces with
-  | Bcode.BString sha1s ->
-      let n = String.length sha1s in
-      if n mod 20 <> 0 then raise Bad_format
-      else n/20
-  | _ -> raise Bad_format
+let info_hash (bc : Bcode.t) =
+  let open Option in
+  Bcode.find "info" bc >>= fun info ->
+  return (Sha1.to_bin (Sha1.string (Bcode.bencode info)))
 
-let info_hash (bc : Bcode.t) : digest =
-  Sha1.to_bin (Sha1.string (Bcode.bencode (Bcode.search "info" bc)))
+let piece_length bc =
+  let open Option in
+  Bcode.(find "info" bc >>= find "piece length" >>= to_int)
 
-let piece_length (bc : Bcode.t) : int =
-  match search_info "piece length" bc with
-  | Bcode.BInt n -> Int64.to_int n
-  | _ -> raise Bad_format
+let name bc =
+  let open Option in
+  Bcode.(find "info" bc >>= find "name" >>= to_string)
 
-let info_name (bc : Bcode.t) : string =
-  match search_info "name" bc with
-  | Bcode.BString s -> s
-  | _ -> raise Bad_format
-
-let maybe_assoc k l =
-  try Some (List.assoc k l) with Not_found -> None
-  
-let list_assoc k l =
-  match List.assoc k l with
-  | Bcode.BList l -> l
-  | _ -> raise Bad_format
-
-let int_assoc k l =
-  match List.assoc k l with
-  | Bcode.BInt n -> n
-  | _ -> raise Bad_format
-
-let info_files (bc : Bcode.t) : file_info list =
-  let name =
-    try
-      match search_info "name" bc with
-      | Bcode.BString s -> s
-      | _ -> raise Bad_format
-    with
-    | Not_found -> raise Bad_format
+let files bc =
+  let open Option in
+  let open Bcode in
+  find "info" bc >>= fun info ->
+  find "name" info >>= to_string >>= fun name ->
+  let many_files () =
+    find "files" info >>= to_list >>=
+    map (fun d ->
+      find "length" d >>= to_int64 >>= fun file_size ->
+      find "path" d >>= to_list >>= map to_string >>= fun path ->
+      return {file_size; file_path = name :: path})
   in
-  try
-    let files = search_info "files" bc in
-    match files with
-    | Bcode.BList l ->
-        List.map (function
-          | Bcode.BDict d ->
-            { file_size = int_assoc "length" d;
-              file_path = name :: List.map (function
-                | Bcode.BString s -> s
-                | _ -> raise Bad_format) (list_assoc "path" d) }
-          | _ -> raise Bad_format) l
-    | _ -> raise Bad_format
-  with
-  | Not_found -> (* single file mode *)
-    try
-      match search_info "length" bc with
-      | Bcode.BInt n -> [{ file_path = [name]; file_size = n }]
-      | _ -> raise Bad_format
-    with
-    | Not_found -> raise Bad_format
+  let single_file () =
+    find "length" info >>= to_int64 >>= fun n ->
+    return [{file_size = n; file_path = [name]}]
+  in
+  either many_files single_file ()
 
-let total_length (bc : Bcode.t) : int64 =
-  try
-    match search_info "length" bc with
-    | Bcode.BInt n -> n
-    | _ -> raise Bad_format
-  with
-  | Not_found ->
-      match search_info "files" bc with
-      | Bcode.BList l ->
-          begin try List.fold_left (fun acc d ->
-            match d with
-            | Bcode.BDict d ->
-                begin match List.assoc "length" d with
-                | Bcode.BInt n -> Int64.add acc n
-                | _ -> raise Bad_format
-                end
-            | _ -> raise Bad_format) 0L l
-          with
-          | Not_found -> raise Bad_format
-          end
-       | _ -> raise Bad_format
+let total_length (bc : Bcode.t) =
+  let open Option in
+  let open Bcode in
+  find "info" bc >>= fun info ->
+  let many_files () =
+    find "files" info >>= to_list >>=
+    fold (fun acc d -> find "length" d >>= to_int64 >|= Int64.add acc) 0L
+  in
+  let single_file () =
+    find "length" info >>= to_int64
+  in
+  either single_file many_files ()
 
 let dummy_piece = {
   piece_offset = 0L;
   piece_length = 0;
-  piece_digest = Digest.dummy
+  piece_digest = Digest.zero
 }
 
-let extract_pieces ~piece_len:plen ~total_len:tlen ~sha1s =
+let pieces piece_length (total_length : int64) sha1s =
   let no_pieces = Array.length sha1s in
-  let a = Array.create no_pieces dummy_piece in
-  let plen' = Int64.of_int plen in
-  let rec loop (rlen : int64) off i =
-    if i >= no_pieces then a
-    else
-      if Int64.compare rlen plen' < 0 then
-        if i < no_pieces-1 then raise Bad_format
-        else begin (* last piece *)
-          assert (Int64.compare (Int64.of_int (Int64.to_int rlen)) rlen = 0);
-          a.(i) <- { piece_offset = off; piece_digest = sha1s.(i); piece_length = Int64.to_int rlen };
-          a
-        end
-      else begin
-        a.(i) <- {
-          piece_offset = off;
+  let pieces = Array.create no_pieces dummy_piece in
+  let piece_length' = Int64.of_int piece_length in
+  let len = ref total_length in
+  let off = ref 0L in
+  for i = 0 to no_pieces-1 do
+    if Int64.(compare !len piece_length') < 0 then
+      if i < no_pieces-1 then
+        failwith "Info.pieces: small piece before last one found"
+      else
+        pieces.(i) <-
+          { piece_offset = !off;
+            piece_digest = sha1s.(i);
+            piece_length = Int64.to_int !len }
+    else begin
+      pieces.(i) <-
+        { piece_offset = !off;
           piece_digest = sha1s.(i);
-          piece_length = plen
-        };
-        loop (Int64.sub rlen plen') (Int64.add off plen') (i+1)
-      end
-  in loop tlen 0L 0
-  
+          piece_length = piece_length };
+      len := Int64.(sub !len piece_length');
+      off := Int64.(add !off piece_length')
+    end
+  done;
+  pieces
+
 let make bc =
-  try
-    let name = info_name bc in
-    let sha1s = info_pieces bc in
-    let ih = info_hash bc in
-    let plen = piece_length bc in
-    let tlen = total_length bc in
-    let alist = try announce_list bc with Not_found -> [[ announce bc ]] in
-    let pieces = extract_pieces ~piece_len:plen ~total_len:tlen ~sha1s:sha1s in
-    let files = info_files bc in
-    { name = name; info_hash = ih; announce_list = alist; piece_length = plen;
-      total_length = tlen; pieces = pieces; files = files }
-  with
-  | Not_found ->
-      failwith "could not create torrent info"
-  | Bad_format ->
-      failwith "bad format torrent info"
+  let open Option in
+  let info =
+    name bc >>= fun name ->
+    sha1s bc >>= fun sha1s ->
+    info_hash bc >>= fun info_hash ->
+    piece_length bc >>= fun piece_length ->
+    total_length bc >>= fun total_length ->
+    announce_list bc >>= fun announce_list ->
+    let pieces = pieces piece_length total_length sha1s in
+    files bc >>= fun files ->
+    return
+      { name; info_hash; announce_list; piece_length;
+        total_length; pieces; files }
+  in
+  match info with
+  | Some info -> info
+  | None -> failwith "error while parsing torrent metainfo file"
 
 let gen_peer_id () =
   let header = "-OC" ^ "0001" ^ "-" in

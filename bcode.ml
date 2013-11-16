@@ -4,40 +4,31 @@ type t =
   | BList of t list
   | BDict of (string * t) list
 
-exception Bad_type
-
-let rec search (s : string) (bc : t) : t =
+let find (s : string) (bc : t) : t option =
   match bc with
-  | BDict d -> List.assoc s d
-  | _ -> raise Bad_type
+  | BDict d ->
+    begin try Some (List.assoc s d)
+    with Not_found -> None
+    end
+  | _ -> None
 
-let search_string (s : string) (bc : t) : string =
-  match search s bc with
-  | BString s -> s
-  | _ -> raise Bad_type
+let to_list = function
+  | BList l -> Some l
+  | _ -> None
 
-let search_int (s : string) (bc : t) : int64 =
-  match search s bc with
-  | BInt n -> n
-  | _ -> raise Bad_type
+let to_int64 = function
+  | BInt n -> Some n
+  | _ -> None
 
-let search_int' (s : string) (bc : t) : int =
-  match search s bc with
+let to_int = function
   | BInt n ->
-      if Int64.(compare n (of_int (to_int n))) = 0 then
-        Int64.to_int n
-      else
-        raise Bad_type
-  | _ ->
-      raise Bad_type
+    if Int64.(compare n (of_int (to_int n))) = 0 then Some (Int64.to_int n)
+    else None
+  | _ -> None
 
-let search_maybe_int' (s : string) (bc : t) : int option =
-  try Some (search_int' s bc) with Not_found -> None
-
-let search_list (s : string) (bc : t) : t list =
-  match search s bc with
-  | BList l -> l
-  | _ -> raise Bad_type
+let to_string = function
+  | BString s -> Some s
+  | _ -> None
 
 (** Bcode parsing *)
 

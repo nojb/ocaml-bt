@@ -186,50 +186,44 @@ let try_udp_server t ss url =
   in request_connect 0
 
 let decode_http_response (d : Bcode.t) =
-  let decode_success () =
-    let co = Bcode.search_int' "complete" d in
-    let ic = Bcode.search_int' "incomplete" d in
-    let iv = Bcode.search_int' "interval" d in
-    let mi = Bcode.search_maybe_int' "min interval" d in
-    let peers =
-      try
-        match Bcode.search "peers" d with
-        | Bcode.BList pr ->
-          List.map (fun d ->
-            let ip = Bcode.search_string "ip" d in
-            let port = Bcode.search_int' "port" d in
-            let addr = Unix.inet_addr_of_string ip in
-            (addr, port)) pr
-        | Bcode.BString pr ->
-          let rec loop i =
-            if i >= String.length pr then []
-            else
-              (Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d"
-                (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
-                (int_of_char pr.[i+2]) (int_of_char pr.[i+3])),
-                (int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5])) :: loop (i+6)
-          in loop 0
-        | _ ->
-          raise DecodeError
-      with
-      | _ -> raise DecodeError
+  let open Bcode in
+  let open Option in
+  let success () =
+    let complete = find "complete" d >>= to_int in
+    let incomplete = find "incomplete" d >>= to_int in
+    find "interval" d >>= to_int >>= fun interval ->
+    let min_interval = find "min interval" d >>= to_int in
+    let compact_peers peers =
+      to_string peers >>= fun pr ->
+      let rec loop i =
+        if i >= String.length pr then []
+        else
+          (Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d"
+            (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
+            (int_of_char pr.[i+2]) (int_of_char pr.[i+3])),
+            (int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5])) :: loop (i+6)
+      in return (loop 0)
     in
-    Success
-      { new_peers = peers;
-        complete = Some co;
-        incomplete = Some ic;
-        interval = iv;
-        min_interval = mi }
+    let usual_peers peers =
+      to_list peers >>=
+      map (fun d ->
+        find "ip" d >>= to_string >>= fun ip ->
+        find "port" d >>= to_int >>= fun port ->
+        let addr = Unix.inet_addr_of_string ip in
+        return (addr, port))
+    in
+    find "peers" d >>= either compact_peers usual_peers >>= fun new_peers ->
+    return (Success {new_peers; complete; incomplete; interval; min_interval})
   in
-  try
-    Warning (Bcode.search_string "warning" d)
-  with
-  | Not_found ->
-    try
-      Error (Bcode.search_string "error" d)
-    with
-    | Not_found ->
-      decode_success ()
+  let error () =
+    find "error" d >>= to_string >>= fun s ->
+    return (Error s)
+  in
+  let warning () =
+    find "warning" d >>= to_string >>= fun s ->
+    return (Warning s)
+  in
+  either warning (either error success) ()
 
 let try_http_server t ss (uri : Uri.t) : response Lwt.t =
   let uri =
@@ -254,7 +248,9 @@ let try_http_server t ss (uri : Uri.t) : response Lwt.t =
     lwt body = Cohttp_lwt_body.string_of_body body in
     (* debug id "Got tracker response" >> *)
     let dict = Bcode.from_string body in
-    Lwt.return (decode_http_response dict)
+    match decode_http_response dict with
+    | Some response -> Lwt.return response
+    | None -> raise_lwt DecodeError
     (* if not (Cohttp_lwt_unix.Response.has_body resp) then *)
     (*   let err = "Response has no body" in *)
     (*   Log.debug err >> fail (HTTPError err) (* return (Left err) *) *)
