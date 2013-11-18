@@ -32,4 +32,4 @@ end
 
 module Make (O : ORD) (P : PRIO) : S with type key = O.t and type prio = P.t
 
-module Int : PRIO
+module Int : PRIO with type t = int

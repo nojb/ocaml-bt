@@ -1,8 +1,8 @@
 val start :
   Lwt_io.input_channel ->
   Lwt_io.output_channel ->
-  peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t ->
+  peer_mgr_ch: Msg.peer_mgr_msg Lwt_pipe.t ->
   Info.Digest.t ->
   pieces: Info.piece_info array ->
-  piece_mgr_ch : Msg.piece_mgr_msg Lwt_pipe.t ->
+  piece_mgr_ch: PieceMgr.msg Lwt_pipe.t ->
   Msg.child list

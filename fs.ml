@@ -37,13 +37,20 @@ let rec get_chunks handles ~offset ~size =
           (ic, oc, offset, size1) :: get_chunks handles ~offset:0L ~size:(size - size1)
       end
 
+type msg =
+  [ `CheckPiece of int * bool Lwt_mvar.t
+  | `ReadBlock of int * Msg.block * string Lwt_mvar.t
+  | `WritePiece of int * string ]
+
 let string_of_msg = function
-  | Msg.CheckPiece (pn, _) ->
+  | `CheckPiece (pn, _) ->
     sprintf "CheckPiece: %d" pn
-  | Msg.ReadBlock (pn, Msg.Block (boff, blen), _) ->
-    sprintf "ReadBlock: piece: %d offset: %d length: %d" pn boff blen
-  | Msg.WriteBlock (pn, Msg.Block (boff, blen), _) ->
-    sprintf "WriteBlock: piece: %d offset: %d length: %d" pn boff blen
+  | `ReadBlock (pn, Msg.Block (boff, blen), _) ->
+    sprintf "ReadBlock: index: %d offset: %d length: %d" pn boff blen
+  (* | Msg.WriteBlock (pn, Msg.Block (boff, blen), _) -> *)
+  (*   sprintf "WriteBlock: piece: %d offset: %d length: %d" pn boff blen *)
+  | `WritePiece (index, s) ->
+    sprintf "WritePiece: index: %d length: %d" index (String.length s)
 
 let read_block t i (Msg.Block (boff, blen)) : string Lwt.t =
   let pi = t.pieces.(i) in
@@ -61,19 +68,34 @@ let read_block t i (Msg.Block (boff, blen)) : string Lwt.t =
   debug t.id "read_block: offset: %d length: %d" boff blen >>= fun () ->
   Lwt.return data
 
-let write_block t i (Msg.Block (boff, blen)) data : unit Lwt.t =
-  let pi = t.pieces.(i) in
-  assert (String.length data = blen);
+(* let write_block t i (Msg.Block (boff, blen)) data : unit Lwt.t = *)
+(*   let pi = t.pieces.(i) in *)
+(*   assert (String.length data = blen); *)
+(*   let write_chunk doff (_, oc, off, len) = *)
+(*     Lwt_io.set_position oc off >>= fun () -> *)
+(*     Lwt_io.write_from_exactly oc data doff len >>= fun () -> *)
+(*     Lwt.return (doff + len) *)
+(*   in *)
+(*   let start = Int64.(add pi.Info.piece_offset (of_int boff)) in *)
+(*   lwt n = Lwt_list.fold_left_s write_chunk 0  *)
+(*     (get_chunks t.handles ~offset:start ~size:blen) in *)
+(*   assert (n = blen); *)
+(*   debug t.id "write_block: offset: %d length: %d" boff blen *)
+
+let write_piece t index s : unit Lwt.t =
+  let pi = t.pieces.(index) in
+  assert (String.length s = pi.Info.piece_length);
   let write_chunk doff (_, oc, off, len) =
     Lwt_io.set_position oc off >>= fun () ->
-    Lwt_io.write_from_exactly oc data doff len >>= fun () ->
+    Lwt_io.write_from_exactly oc s doff len >>= fun () ->
     Lwt.return (doff + len)
   in
-  let start = Int64.(add pi.Info.piece_offset (of_int boff)) in
-  lwt n = Lwt_list.fold_left_s write_chunk 0 
-    (get_chunks t.handles ~offset:start ~size:blen) in
-  assert (n = blen);
-  debug t.id "write_block: offset: %d length: %d" boff blen
+  Lwt_list.fold_left_s write_chunk 0
+    (get_chunks t.handles ~offset:pi.Info.piece_offset
+      ~size:pi.Info.piece_length) >>= fun n ->
+  assert (n = pi.Info.piece_length);
+  debug t.id "write_piece: index: %d length: %d successful"
+    index (String.length s)
 
 (** raises End_of_file if [pi] refers to a piece beyond the
  * end of file *)
@@ -109,12 +131,14 @@ let check_file id handles pieces : Bits.t Lwt.t =
 let handle_message t msg : unit Lwt.t =
   debug t.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
-  | Msg.CheckPiece (pn, mv) ->
+  | `CheckPiece (pn, mv) ->
     check_piece t.handles t.pieces.(pn) >>= Lwt_mvar.put mv
-  | Msg.ReadBlock (pn, bl, mv) ->
+  | `ReadBlock (pn, bl, mv) ->
     read_block t pn bl >>= Lwt_mvar.put mv
-  | Msg.WriteBlock (pn, bl, data) ->
-    write_block t pn bl data
+  | `WritePiece (index, s) ->
+    write_piece t index s
+  (* | `WriteBlock (pn, bl, data) -> *)
+  (*   write_block t pn bl data *)
 
 let start ~super_ch ~handles ~pieces ~ch =
   let run id =

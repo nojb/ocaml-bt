@@ -26,7 +26,7 @@ type t = {
   peers : unit M.t;
   peer_id : Info.peer_id;
   info_hash : Info.Digest.t;
-  piece_mgr_ch : Msg.piece_mgr_msg Lwt_pipe.t;
+  piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
   ch : Msg.peer_mgr_msg Lwt_pipe.t;
   pool_ch : Msg.super_msg Lwt_pipe.t;
   id : Proc.Id.t

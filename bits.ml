@@ -153,6 +153,18 @@ let pad v n =
   String.blit v 0 v' 0 len;
   v'
 
+let blit src srcoff dst dstoff len =
+  String.blit src srcoff dst dstoff len
+
+let to_list v =
+  let rec loop i =
+    if i >= String.length v then []
+    else
+      if is_set v i then i :: loop (i+1)
+      else loop (i+1)
+  in
+  loop 0
+
 let arbitrary len =
   let int_multiples m n =
     QCheck.Arbitrary.(map (map n (fun x -> x / m)) (fun x -> x * m))

@@ -55,14 +55,14 @@ let start t : unit Lwt.t =
   in
   lwt handles, have = Fs.open_and_check_file t.id t.info in
   let left = Info.bytes_left have pieces in
-  let db = PieceMgr.create_piece_db have t.info.Info.pieces in
   let _ = Super.start ~super_ch:fake_ch Super.AllForOne "TorrentSup"
     ~children:[
       Msg.Worker (Status.start ~ch:status_ch ~info_hash ~left);
       Msg.Worker (PeerMgr.start ~ch:peer_mgr_ch ~peer_id ~info_hash
         ~piece_mgr_ch ~pieces);
       Msg.Worker (Fs.start ~ch:fs_ch ~pieces ~handles);
-      Msg.Worker (PieceMgr.start ~ch:piece_mgr_ch ~status_ch db ~info_hash);
+      Msg.Worker (PieceMgr.start ~ch:piece_mgr_ch ~fs_ch ~status_ch
+        ~have ~pieces ~info_hash);
       Msg.Supervisor start_track_sup
     ]
     ~ch:sup_ch

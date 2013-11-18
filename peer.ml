@@ -1,58 +1,39 @@
 open Msg
-open Printf
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
 let debug = Proc.debug
 
+let failwith_lwt fmt =
+  Printf.ksprintf (fun msg -> raise_lwt (Failure msg)) fmt
+
+let max_pipelined_requests = 5
+
 let string_of_msg = function
   | FromPeer msg ->
-    sprintf "FromPeer: %s" (string_of_peer_msg msg)
+    Printf.sprintf "FromPeer: %s" (string_of_peer_msg msg)
   | FromSender sz ->
-    sprintf "From Sender: %d" sz
+    Printf.sprintf "FromSender: %d" sz
   | FromTimer ->
     "FromTimer"
 
-(* let string_of_peer_msg = function *)
-(*   | KeepAlive -> *)
-(*     "KeepAlive" *)
-(*   | Choke -> *)
-(*     "Choke" *)
-(*   | Unchoke -> *)
-(*     "Unchoke" *)
-(*   | Interested -> *)
-(*     "Interested" *)
-(*   | NotInterested -> *)
-(*     "NotInterested" *)
-(*   | Have index -> *)
-(*     sprintf "Have: index: %d" index *)
-(*   | BitField bits -> *)
-(*     sprintf "BitField: length: %d" (Bits.length bits) *)
-(*   | Request (index, Block (offset, length)) -> *)
-(*     sprintf "Request: index: %d offset: %d length: %d" index offset length *)
-(*   | Piece (index, offset, _) -> *)
-(*     sprintf "Piece: index: %d offset: %d" index offset *)
-(*   | Cancel (index, Block (offset, length)) -> *)
-(*     sprintf "Cancel: index: %d offset: %d length: %d" index offset length *)
-(*   | Port port -> *)
-(*     sprintf "Port: %d" port *)
-
-module Block = struct
-  type t = int * block
-  let compare = compare
-end
-
-module BlockSet = Set.Make(Block)
+type piece_progress = {
+  mutable index : int;
+  mutable received : int;
+  mutable last_offset : int;
+  buffer : string
+}
 
 type t = {
   mutable we_interested : bool;
   mutable we_choking : bool;
-  mutable block_queue : BlockSet.t;
   mutable peer_interested : bool;
   mutable peer_choking : bool;
-  mutable peer_pieces : Bits.t;
+  peer_pieces : Bits.t;
   mutable last_msg : int;
+  mutable current : piece_progress option;
+  mutable outstanding : (int * Msg.block) list;
   (* missing_pieces : int; *)
   (* up_rate : rate; *)
   (* down_rate : rate; *)
@@ -63,45 +44,52 @@ type t = {
   pieces : Info.piece_info array;
   peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t;
   sender_ch : Msg.sender_msg Lwt_pipe.t;
-  piece_mgr_ch : Msg.piece_mgr_msg Lwt_pipe.t;
+  piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
   id : Proc.Id.t
 }
 
-let string_of_msg = function
-  | FromPeer msg ->
-    sprintf "FromPeer: %s" (string_of_peer_msg msg)
-  | FromSender sz ->
-    sprintf "FromSender: %d bytes sent" sz
-  | FromTimer ->
-    "FromTimer"
-
 let lo_mark = 5
 let hi_mark = 25
+let default_block_size = 16 * 1024
 
-let send_sender t msg =
+let send t msg =
   t.last_msg <- 0;
   Lwt_pipe.write t.sender_ch msg
 
-let grab_blocks t n : (int * block) list Lwt.t =
-  let mv = Lwt_mvar.create_empty () in
-  Lwt_pipe.write t.piece_mgr_ch (GrabBlocks (n, t.peer_pieces, mv));
-  Lwt_mvar.take mv
-
-let fill_blocks t =
-  if not t.peer_choking && t.we_interested then
-    let sz = BlockSet.cardinal t.block_queue in
-    if sz < lo_mark then begin
-      lwt blks = grab_blocks t (hi_mark - sz) in
-      List.iter (fun (pn, b) ->
-        if not (BlockSet.mem (pn, b) t.block_queue) then
-          send_sender t (SendMsg (Request (pn, b)))) blks;
-      t.block_queue <-
-        List.fold_left (fun bq b -> BlockSet.add b bq) t.block_queue blks;
-      Lwt.return_unit
-    end else
-      Lwt.return_unit
-  else
+let request_more_blocks t =
+  match t.current with
+  | None ->
     Lwt.return_unit
+  | Some c ->
+    debug t.id "requesting more blocks from the PieceMgr for piece%4d"
+      c.index >>= fun () ->
+    let plen = t.pieces.(c.index).Info.piece_length in
+    while List.length t.outstanding < max_pipelined_requests &&
+      c.last_offset < plen do
+      let blen = min default_block_size (plen-c.last_offset) in
+      let b = Msg.Block (c.last_offset, blen) in
+      c.last_offset <- c.last_offset + blen;
+      t.outstanding <- (c.index, b) :: t.outstanding;
+      send t (Msg.SendMsg (Msg.Request (c.index, b)))
+    done;
+    Lwt.return_unit
+
+let request_new_piece t =
+  let mv = Lwt_mvar.create_empty () in
+  Lwt_pipe.write t.piece_mgr_ch (`GrabPiece (t.peer_pieces, mv));
+  Lwt_mvar.take mv >>= function
+    | None ->
+      t.current <- None;
+      Lwt.return_unit
+    | Some index ->
+      t.current <- Some { index; received = 0; last_offset = 0; buffer =
+        String.create (t.pieces.(index).Info.piece_length) };
+      request_more_blocks t
+
+let tell_peer_has t pns : bool Lwt.t =
+  let mv = Lwt_mvar.create_empty () in
+  Lwt_pipe.write t.piece_mgr_ch (`PeerHave (pns, mv));
+  Lwt_mvar.take mv
 
 exception UnknownPiece of int
 
@@ -109,13 +97,19 @@ let handle_peer_msg t = function
   | KeepAlive ->
     Lwt.return_unit
   | Choke ->
-    Lwt_pipe.write t.piece_mgr_ch (PutbackBlocks (BlockSet.elements t.block_queue));
-    t.block_queue <- BlockSet.empty;
     t.peer_choking <- true;
-    Lwt.return_unit
+    begin match t.current with
+    | None ->
+      Lwt.return_unit
+    | Some c ->
+      (* FIXME cancel pending requests *)
+      Lwt_pipe.write t.piece_mgr_ch (`PutbackPiece c.index);
+      t.current <- None;
+      Lwt.return_unit
+    end
   | Unchoke ->
     t.peer_choking <- false;
-    fill_blocks t
+    request_new_piece t
   | Interested ->
     t.peer_interested <- true;
     Lwt.return_unit
@@ -125,31 +119,54 @@ let handle_peer_msg t = function
   | Have index ->
     if index >= 0 && index < Array.length t.pieces then begin
       Bits.set t.peer_pieces index;
+      tell_peer_has t [index] >>= fun interested ->
+      if interested then begin
+        t.we_interested <- true;
+        send t (SendMsg Interested)
+      end;
+      Lwt.return_unit
       (* later : track interest, decr missing counter *)
-      fill_blocks t
     end else
       raise_lwt (UnknownPiece index)
   | BitField bits ->
-    if Bits.count t.peer_pieces = 0 then begin
-      t.peer_pieces <- bits;
-      Lwt.return_unit
-    end else
-      Lwt.return_unit
-  | Request (index, block) ->
-    if not t.we_choking then send_sender t (SendPiece (index, block));
+    (* if Bits.count t.peer_pieces = 0 then begin *)
+    (* FIXME padding, should only come after handshake *)
+    Bits.blit bits 0 t.peer_pieces 0 (Bits.length t.peer_pieces);
+    tell_peer_has t (Bits.to_list bits) >>= fun interested ->
+    t.we_interested <- interested;
+    send t (SendMsg (if interested then Interested else NotInterested));
     Lwt.return_unit
+  | Request (index, block) ->
+    if t.we_choking then
+      failwith_lwt "peer violating protocol, terminating exchange"
+    else begin
+      send t (SendPiece (index, block));
+      Lwt.return_unit
+    end
   | Piece (index, offset, block) ->
-    let blk = Block (offset, String.length block) in
-    if BlockSet.mem (index, blk) t.block_queue then begin
-      (* FIXME FIXME Store Block Here *)
-      t.block_queue <- BlockSet.remove (index, blk) t.block_queue;
-      Lwt.return ()
-    end else
-      debug t.id "Received unregistered piece: index: %d offset: %d length: %d"
-        index offset (String.length block)
+    begin match t.current with
+    | None ->
+      failwith_lwt "Peer received piece while not downloading, terminating"
+    | Some c ->
+      if c.index <> index then
+        failwith_lwt "Peer sent some blocks for unrequested piece, terminating"
+      else begin
+        (* FIXME check that the length is ok *)
+        t.outstanding <-
+          List.filter (fun (i, Msg.Block (o, _)) ->
+            not (i = index && o = offset)) t.outstanding;
+        String.blit block 0 c.buffer offset (String.length block);
+        c.received <- c.received + String.length block;
+        if c.received = t.pieces.(index).Info.piece_length then begin
+          Lwt_pipe.write t.piece_mgr_ch (`PieceReceived (index, c.buffer));
+          request_new_piece t
+        end else
+          request_more_blocks t
+      end
+    end
   | Cancel (index, block) ->
-    send_sender t (SendCancel (index, block));
-    Lwt.return ()
+    send t (SendCancel (index, block));
+    Lwt.return_unit
   | msg ->
     debug t.id "Unahandled: %s" (string_of_peer_msg msg)
 
@@ -160,7 +177,7 @@ let handle_sender_msg t sz =
 let handle_timer_tick t =
   let keep_alive () =
     if t.last_msg >= 24 then
-      send_sender t (SendMsg KeepAlive)
+      send t (SendMsg KeepAlive)
     else
       t.last_msg <- t.last_msg + 1
   in
@@ -184,19 +201,29 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
     let t =
       { we_interested = true;
         we_choking = false;
-        block_queue = BlockSet.empty;
         peer_interested = true;
         peer_choking = false;
         peer_pieces = Bits.create (Array.length pieces);
+        outstanding = [];
+        last_msg = 0;
+        current = None;
         pieces;
+        peer_mgr_ch;
         sender_ch;
         piece_mgr_ch;
-        peer_mgr_ch;
-        last_msg = 0;
         id }
     in
     Lwt_pipe.write peer_mgr_ch (Connect id);
-    Lwt_pipe.iter_s (handle_message t) ch
+    try_lwt
+      Lwt_pipe.iter_s (handle_message t) ch
+    with
+    | exn ->
+      match t.current with
+      | Some c ->
+        Lwt_pipe.write t.piece_mgr_ch (`PutbackPiece c.index);
+        raise exn
+      | None ->
+        raise exn
   in
   Proc.spawn ~name:"Peer" run (Super.default_stop super_ch)
     (fun _ -> Lwt.return_unit)

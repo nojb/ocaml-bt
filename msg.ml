@@ -71,12 +71,6 @@ let string_of_peer_msg = function
 (*   | Cancel _ -> 17 *)
 (*   | Port -> 7 *)
 
-type piece_mgr_msg =
-  (** Ask for grabbing some blocks *)
-  | GrabBlocks of int * Bits.t * (int * block) list Lwt_mvar.t
-  (** Put these blocks back for retrieval *)
-  | PutbackBlocks of (int * block) list
-
 type peer_mgr_msg =
   | PeersFromTracker    of peer list
   | NewIncoming         of Lwt_unix.file_descr
@@ -94,8 +88,3 @@ type sender_msg =
   | SendMsg     of peer_msg
   | SendPiece   of int * block
   | SendCancel  of int * block
-
-type fs_msg =
-  | CheckPiece of int * bool Lwt_mvar.t
-  | ReadBlock of int * block * string Lwt_mvar.t
-  | WriteBlock of int * block * string
