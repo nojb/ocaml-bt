@@ -39,20 +39,20 @@ let rec get_chunks handles ~offset ~size =
 
 type msg =
   [ `CheckPiece of int * bool Lwt_mvar.t
-  | `ReadBlock of int * Msg.block * string Lwt_mvar.t
+  | `ReadBlock of int * Wire.block * string Lwt_mvar.t
   | `WritePiece of int * string ]
 
 let string_of_msg = function
   | `CheckPiece (pn, _) ->
     sprintf "CheckPiece: %d" pn
-  | `ReadBlock (pn, Msg.Block (boff, blen), _) ->
+  | `ReadBlock (pn, Wire.Block (boff, blen), _) ->
     sprintf "ReadBlock: index: %d offset: %d length: %d" pn boff blen
   (* | Msg.WriteBlock (pn, Msg.Block (boff, blen), _) -> *)
   (*   sprintf "WriteBlock: piece: %d offset: %d length: %d" pn boff blen *)
   | `WritePiece (index, s) ->
     sprintf "WritePiece: index: %d length: %d" index (String.length s)
 
-let read_block t i (Msg.Block (boff, blen)) : string Lwt.t =
+let read_block t i (Wire.Block (boff, blen)) : string Lwt.t =
   let pi = t.pieces.(i) in
   let data = String.create blen in
   let read_chunk doff (ic, _, off, len) =

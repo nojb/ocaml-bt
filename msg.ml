@@ -12,61 +12,8 @@ and super_msg =
 type peer =
   Unix.inet_addr * int
 
-type block =
-  | Block of int * int
-
-type peer_msg =
-  | KeepAlive
-  | Choke
-  | Unchoke
-  | Interested
-  | NotInterested
-  | Have of int
-  | BitField of Bits.t
-  | Request of int * block
-  | Piece of int * int * string
-  | Cancel of int * block
-  | Port of int
-
-let string_of_peer_msg = function
-  | KeepAlive ->
-    "KeepAlive"
-  | Choke ->
-    "Choke"
-  | Unchoke ->
-    "Unchoke"
-  | Interested ->
-    "Interested"
-  | NotInterested ->
-    "NotInterested"
-  | Have index ->
-    sprintf "Have: index: %d" index
-  | BitField bits ->
-    sprintf "BitField: length: %d" (Bits.length bits)
-  | Request (index, Block (offset, length)) ->
-    sprintf "Request: index: %d offset: %d length: %d" index offset length
-  | Piece (index, offset, _) ->
-    sprintf "Piece: index: %d offset: %d" index offset
-  | Cancel (index, Block (offset, length)) ->
-    sprintf "Cancel: index: %d offset: %d length: %d" index offset length
-  | Port port ->
-    sprintf "Port: %d" port
-
-(* let peer_msg_size = function *)
-(*   | KeepAlive -> 4 *)
-(*   | Choke *)
-(*   | Unchoke *)
-(*   | Interested *)
-(*   | NotInterested -> 5 *)
-(*   | Have _ -> 9 *)
-(*   | BitField bits -> 5 + Bits.length (Bits.pad 8 bits) *)
-(*   | Request _ -> 17 *)
-(*   | Piece (_, _, block) -> String.length block + 13 *)
-(*   | Cancel _ -> 17 *)
-(*   | Port -> 7 *)
-
 type msg_ty =
-  | PeerMsg of peer_msg
+  | PeerMsg of Wire.msg
   | BytesSent of int
   | PieceCompleted of int
   | Tick
@@ -80,6 +27,6 @@ type peer_mgr_msg =
   | Disconnect  of Proc.Id.t
 
 type sender_msg =
-  | SendMsg     of peer_msg
-  | SendPiece   of int * block
-  | SendCancel  of int * block
+  | SendMsg     of Wire.msg
+  | SendPiece   of int * Wire.block
+  | SendCancel  of int * Wire.block

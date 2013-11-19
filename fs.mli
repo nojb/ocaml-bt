@@ -1,6 +1,6 @@
 type msg =
   [ `CheckPiece of int * bool Lwt_mvar.t
-  | `ReadBlock of int * Msg.block * string Lwt_mvar.t
+  | `ReadBlock of int * Wire.block * string Lwt_mvar.t
   | `WritePiece of int * string ]
 
 val open_and_check_file :

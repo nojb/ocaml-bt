@@ -12,7 +12,7 @@ let max_pipelined_requests = 5
 
 let string_of_msg = function
   | PeerMsg msg ->
-    Printf.sprintf "%s" (string_of_peer_msg msg)
+    Printf.sprintf "%s" (Wire.string_of_msg msg)
   | BytesSent sz ->
     Printf.sprintf "BytesSent: %d" sz
   | Tick ->
@@ -35,7 +35,7 @@ type t = {
   peer_pieces : Bits.t;
   mutable last_msg : int;
   mutable current : piece_progress option;
-  mutable outstanding : (int * Msg.block) list;
+  mutable outstanding : (int * Wire.block) list;
   (* missing_pieces : int; *)
   (* up_rate : rate; *)
   (* down_rate : rate; *)
@@ -69,10 +69,10 @@ let request_more_blocks t =
     while List.length t.outstanding < max_pipelined_requests &&
       c.last_offset < plen do
       let blen = min default_block_size (plen-c.last_offset) in
-      let b = Msg.Block (c.last_offset, blen) in
+      let b = Wire.Block (c.last_offset, blen) in
       c.last_offset <- c.last_offset + blen;
       t.outstanding <- (c.index, b) :: t.outstanding;
-      send t (Msg.SendMsg (Request (c.index, b)))
+      send t (Msg.SendMsg (Wire.Request (c.index, b)))
     done;
     Lwt.return_unit
 
@@ -96,9 +96,9 @@ let tell_peer_has t pns : bool Lwt.t =
 exception UnknownPiece of int
 
 let handle_peer_msg t = function
-  | KeepAlive ->
+  | Wire.KeepAlive ->
     Lwt.return_unit
-  | Choke ->
+  | Wire.Choke ->
     t.peer_choking <- true;
     begin match t.current with
     | None ->
@@ -109,43 +109,43 @@ let handle_peer_msg t = function
       t.current <- None;
       Lwt.return_unit
     end
-  | Unchoke ->
+  | Wire.Unchoke ->
     t.peer_choking <- false;
     request_new_piece t
-  | Interested ->
+  | Wire.Interested ->
     t.peer_interested <- true;
     Lwt.return_unit
-  | NotInterested ->
+  | Wire.NotInterested ->
     t.peer_interested <- false;
     Lwt.return_unit
-  | Have index ->
+  | Wire.Have index ->
     if index >= 0 && index < Array.length t.pieces then begin
       Bits.set t.peer_pieces index;
       tell_peer_has t [index] >>= fun interested ->
       if interested then begin
         t.we_interested <- true;
-        send t (SendMsg Interested)
+        send t (SendMsg Wire.Interested)
       end;
       Lwt.return_unit
       (* later : track interest, decr missing counter *)
     end else
       raise_lwt (UnknownPiece index)
-  | BitField bits ->
+  | Wire.BitField bits ->
     (* if Bits.count t.peer_pieces = 0 then begin *)
     (* FIXME padding, should only come after handshake *)
     Bits.blit bits 0 t.peer_pieces 0 (Bits.length t.peer_pieces);
     tell_peer_has t (Bits.to_list bits) >>= fun interested ->
     t.we_interested <- interested;
-    send t (SendMsg (if interested then Interested else NotInterested));
+    send t (SendMsg (if interested then Wire.Interested else Wire.NotInterested));
     Lwt.return_unit
-  | Request (index, block) ->
+  | Wire.Request (index, block) ->
     if t.we_choking then
       failwith_lwt "peer violating protocol, terminating exchange"
     else begin
       send t (SendPiece (index, block));
       Lwt.return_unit
     end
-  | Piece (index, offset, block) ->
+  | Wire.Piece (index, offset, block) ->
     begin match t.current with
     | None ->
       failwith_lwt "Peer received piece while not downloading, terminating"
@@ -155,7 +155,7 @@ let handle_peer_msg t = function
       else begin
         (* FIXME check that the length is ok *)
         t.outstanding <-
-          List.filter (fun (i, Msg.Block (o, _)) ->
+          List.filter (fun (i, Wire.Block (o, _)) ->
             not (i = index && o = offset)) t.outstanding;
         String.blit block 0 c.buffer offset (String.length block);
         c.received <- c.received + String.length block;
@@ -166,16 +166,16 @@ let handle_peer_msg t = function
           request_more_blocks t
       end
     end
-  | Cancel (index, block) ->
+  | Wire.Cancel (index, block) ->
     send t (SendCancel (index, block));
     Lwt.return_unit
   | msg ->
-    debug t.id "Unahandled: %s" (string_of_peer_msg msg)
+    debug t.id "Unahandled: %s" (Wire.string_of_msg msg)
 
 let handle_timer_tick t =
   let keep_alive () =
     if t.last_msg >= 24 then
-      send t (SendMsg KeepAlive)
+      send t (SendMsg Wire.KeepAlive)
     else
       t.last_msg <- t.last_msg + 1
   in
@@ -191,7 +191,7 @@ let handle_message t msg : unit Lwt.t =
     handle_timer_tick t;
     Lwt.return_unit
   | PieceCompleted index ->
-    send t (SendMsg (Have index));
+    send t (SendMsg (Wire.Have index));
     Lwt.return_unit
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
