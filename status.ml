@@ -69,4 +69,3 @@ let start ~super_ch ~ch ~info_hash ~left =
     Lwt.return_unit
   in
   Proc.spawn ~name:"Status" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)

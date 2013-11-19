@@ -2,6 +2,7 @@ type t
 
 val create : int -> t
 val length : t -> int
+val copy : t -> t
 val count : t -> int
 val equal : t -> t -> bool
 val set : t -> int -> unit

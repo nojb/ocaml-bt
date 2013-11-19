@@ -10,6 +10,9 @@ let create len =
 let length v =
   String.length v
 
+let copy v =
+  String.copy v
+
 let count v =
   let rec loop acc i =
     if i >= String.length v then acc

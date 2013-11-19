@@ -84,6 +84,6 @@ let start policy name ~children ~super_ch ~ch =
     | Stop -> Lwt.return_unit
   in
   let id =
-    Proc.spawn ~name run (default_stop super_ch) (fun _ -> Lwt.return_unit)
+    Proc.spawn ~name run (default_stop super_ch)
   in
   id, ch

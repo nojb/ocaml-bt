@@ -65,8 +65,7 @@ let stream_of_channel id (ic : Lwt_io.input_channel) : peer_msg Lwt_stream.t =
 let start ~super_ch ic ~peer_ch =
   let run id =
     (* let t = { send_peer; id } in *)
-    Lwt_stream.iter (fun msg -> Lwt_pipe.write peer_ch (FromPeer msg))
+    Lwt_stream.iter (fun msg -> Lwt_pipe.write peer_ch (PeerMsg msg))
       (stream_of_channel id ic)
   in
   Proc.spawn ~name:"Receiver" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)

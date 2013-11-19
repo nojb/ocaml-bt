@@ -371,4 +371,3 @@ let start ~super_ch ~ch ~info_hash ~peer_id ~local_port
     Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn ~name:"Tracker" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)

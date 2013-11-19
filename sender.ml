@@ -85,7 +85,7 @@ let handle_message id oc peer_ch msg =
   match msg with
   | SendMsg msg ->
     lwt sz = send_msg id oc msg in
-    Lwt_pipe.write peer_ch (FromSender sz);
+    Lwt_pipe.write peer_ch (BytesSent sz);
     Lwt.return ()
   | msg ->
     debug id "Unhandled: %s" (string_of_msg msg)
@@ -95,4 +95,3 @@ let start ~super_ch oc ~ch ~peer_ch =
     Lwt_pipe.iter_s (handle_message id oc peer_ch) ch
   in
   Proc.spawn ~name:"Sender" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)

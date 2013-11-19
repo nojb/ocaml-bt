@@ -25,6 +25,8 @@ type t = {
   id : Proc.Id.t
 }
 
+module H = Hashtbl.Make (Proc.Id)
+
 let start t : unit Lwt.t =
   let info_hash = t.info.Info.info_hash in
   let pieces = t.info.Info.pieces in
@@ -37,6 +39,7 @@ let start t : unit Lwt.t =
   let peer_mgr_ch = Lwt_pipe.create () in
   let tracker_sup_ch = Lwt_pipe.create () in
   let fake_ch = Lwt_pipe.create () in
+  let choke_mgr_ch = Lwt_pipe.create () in
 
   let start_trackers, tracker_chs = List.split (List.map (fun tier ->
     let ch = Lwt_pipe.create () in
@@ -55,14 +58,16 @@ let start t : unit Lwt.t =
   in
   lwt handles, have = Fs.open_and_check_file t.id t.info in
   let left = Info.bytes_left have pieces in
+  let peer_rates = H.create 17 in
   let _ = Super.start ~super_ch:fake_ch Super.AllForOne "TorrentSup"
     ~children:[
       Msg.Worker (Status.start ~ch:status_ch ~info_hash ~left);
-      Msg.Worker (PeerMgr.start ~ch:peer_mgr_ch ~peer_id ~info_hash
-        ~piece_mgr_ch ~pieces);
+      Msg.Worker (PeerMgr.start ~ch:peer_mgr_ch ~choke_mgr_ch ~peer_id
+        ~info_hash ~piece_mgr_ch ~pieces);
+      Msg.Worker (ChokeMgr.start ~ch:choke_mgr_ch ~peer_rates);
       Msg.Worker (Fs.start ~ch:fs_ch ~pieces ~handles);
-      Msg.Worker (PieceMgr.start ~ch:piece_mgr_ch ~fs_ch ~status_ch
-        ~have ~pieces ~info_hash);
+      Msg.Worker (PieceMgr.start ~ch:piece_mgr_ch ~fs_ch ~choke_mgr_ch
+        ~status_ch ~have ~pieces ~info_hash);
       Msg.Supervisor start_track_sup
     ]
     ~ch:sup_ch
@@ -90,7 +95,6 @@ let download path =
     Lwt_pipe.iter_s (handle_message t) ch
   in
   let _ = Proc.spawn ~name:"Client" run (fun _ -> Lwt.return_unit)
-    (fun _ -> Lwt.return_unit)
   in
   Lwt_pipe.write ch `Start;
   Lwt_mvar.take done_mv

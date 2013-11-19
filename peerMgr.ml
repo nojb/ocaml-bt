@@ -8,14 +8,14 @@ let debug = Proc.debug
 
 let failwith_lwt msg = raise_lwt (Failure msg)
 
-module M = Map.Make (Proc.Id)
+module H = Hashtbl.Make (Proc.Id)
 
 let string_of_msg = function
   | PeersFromTracker peers ->
     sprintf "PeersFromTracker: count: %d" (List.length peers)
   | NewIncoming _ ->
     "NewIncoming"
-  | Connect tid ->
+  | Connect (tid, _) ->
     sprintf "Connect: id: %s" (Proc.Id.to_string tid)
   | Disconnect tid ->
     sprintf "Disconnect: id: %s" (Proc.Id.to_string tid)
@@ -23,9 +23,10 @@ let string_of_msg = function
 type t = {
   mutable pending_peers : peer list;
   pieces : Info.piece_info array;
-  peers : unit M.t;
+  peers : Msg.msg_ty Lwt_pipe.t H.t;
   peer_id : Info.peer_id;
   info_hash : Info.Digest.t;
+  choke_mgr_ch : ChokeMgr.msg Lwt_pipe.t;
   piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
   ch : Msg.peer_mgr_msg Lwt_pipe.t;
   pool_ch : Msg.super_msg Lwt_pipe.t;
@@ -104,7 +105,7 @@ let list_split n xs =
   in loop 0 xs
 
 let fill_peers t : unit Lwt.t =
-  let no_peers = M.cardinal t.peers in
+  let no_peers = H.length t.peers in
   if no_peers < max_peers then
     let to_add, rest =
       list_split (max_peers-no_peers) t.pending_peers in
@@ -120,10 +121,18 @@ let handle_message t msg : unit Lwt.t =
   | PeersFromTracker peers ->
     t.pending_peers <- t.pending_peers @ peers;
     fill_peers t
+  | Connect (id, ch) ->
+    H.replace t.peers id ch;
+    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.AddPeer (id, ch));
+    Lwt.return_unit
+  | Disconnect (id) ->
+    H.remove t.peers id;
+    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.RemovePeer id);
+    Lwt.return_unit
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let start ~super_ch ~ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
+let start ~super_ch ~ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
   (* FIXME register pool thread with my supervisor so that
    * it gets automatically finished when the supervisor goes away *)
   let run id =
@@ -134,10 +143,11 @@ let start ~super_ch ~ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
     Lwt_pipe.write super_ch (SpawnNew (Supervisor start_pool));
     let t =
       { pending_peers = [];
-        peers = M.empty;
+        peers = H.create 17;
         peer_id;
         pieces;
         info_hash;
+        choke_mgr_ch;
         piece_mgr_ch;
         ch;
         pool_ch;
@@ -146,4 +156,3 @@ let start ~super_ch ~ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
     Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn ~name:"PeerMgr" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)

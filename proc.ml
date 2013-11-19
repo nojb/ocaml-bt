@@ -47,17 +47,15 @@ let async ?name f =
 (* let async ?name f = *)
 (*   ignore (run ?name f) *)
 (*  *)
-let spawn ?name f on_stop on_cleanup =
+let spawn ?name f on_stop =
   let f id =
     try_lwt
       (protect f) id >>= fun () ->
-      on_cleanup id >>= fun () ->
       on_stop id
     with
     | Lwt.Canceled ->
-      on_cleanup id
+      Lwt.return_unit
     | exn ->
-      on_cleanup id >>= fun () ->
       on_stop id
   in
   let id = Id.fresh name in

@@ -146,7 +146,6 @@ let start ~super_ch ~handles ~pieces ~ch =
     Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn ~name:"Fs" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)
 
 let with_cwd path f =
   let cwd = Sys.getcwd () in

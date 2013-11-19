@@ -71,18 +71,19 @@ let string_of_peer_msg = function
 (*   | Cancel _ -> 17 *)
 (*   | Port -> 7 *)
 
+type msg_ty =
+  | PeerMsg of peer_msg
+  | BytesSent of int
+  | PieceCompleted of int
+  | Tick
+
 type peer_mgr_msg =
   | PeersFromTracker    of peer list
   | NewIncoming         of Lwt_unix.file_descr
   (* | NewTorrent          of Torrent.digest * torrent_local *)
   (* | StopTorrent         of Torrent.digest *)
-  | Connect     of Proc.Id.t
+  | Connect     of Proc.Id.t * msg_ty Lwt_pipe.t
   | Disconnect  of Proc.Id.t
-
-type msg_ty =
-  | FromPeer    of peer_msg
-  | FromSender  of int
-  | FromTimer
 
 type sender_msg =
   | SendMsg     of peer_msg

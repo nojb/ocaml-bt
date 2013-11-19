@@ -9,7 +9,7 @@ type msg =
   (** Put these blocks back for retrieval *)
   | `PeerHave of int list * bool Lwt_mvar.t
   (** A peer has announce that it has a set of pieces *)
-  (* | `GetDone of Bits.t Lwt_mvar.t *)
+  | `GetDone of Bits.t Lwt_mvar.t
   (** Get the bitset of pieces which are done *)
   | `PieceReceived of int * string ]
   (** A complete piece has been received from a peer *)
@@ -22,6 +22,8 @@ let string_of_msg = function
   | `PeerHave (pns, _) ->
     Printf.sprintf "PeerHave: %d pieces" (List.length pns)
       (* (String.concat ", " (List.map string_of_int pns)) *)
+  | `GetDone _ ->
+    "GetDone"
   | `PieceReceived (index, s) ->
     Printf.sprintf "PieceReceived: index: %d length: %d"
       index (String.length s)
@@ -41,6 +43,8 @@ type t = {
   (** Channel used to talk to this Piece Manager *)
   fs_ch : Fs.msg Lwt_pipe.t;
   (** Channel used to talk to the File system *)
+  choke_mgr_ch : ChokeMgr.msg Lwt_pipe.t;
+  (** Channel to talk to the Choke manager *)
   status_ch : Status.msg Lwt_pipe.t;
   (** Channel to send messages to Status *)
   info_hash : Info.digest;
@@ -78,6 +82,9 @@ let handle_message t msg histo : H.t Lwt.t =
     in
     Lwt_mvar.put mv interesting >>= fun () ->
     Lwt.return histo
+  | `GetDone (mv) ->
+    Lwt_mvar.put mv (Bits.copy t.completed) >>= fun () ->
+    Lwt.return histo
   | `PieceReceived (i, s) ->
     if Bits.is_set t.completed i then
       debug t.id "Received a piece that we already have, ignoring" >>= fun () ->
@@ -92,6 +99,7 @@ let handle_message t msg histo : H.t Lwt.t =
         Bits.set t.completed i;
         debug t.id "Received a valid piece #%d, comitting to disk" i >>= fun () ->
         Lwt_pipe.write t.fs_ch (`WritePiece (i, s));
+        Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PieceCompleted i);
         (** FIXME check if we are done *)
         Lwt.return histo
       end else
@@ -103,14 +111,14 @@ let handle_message t msg histo : H.t Lwt.t =
     debug t.id "Unhandled: %s" (string_of_msg msg) >>= fun () ->
     Lwt.return histo
 
-let start ~super_ch ~ch ~fs_ch ~status_ch ~have ~pieces ~info_hash =
+let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~status_ch ~have
+  ~pieces ~info_hash =
   let run id =
     let t =
       { completed = have; requested = Bits.create (Bits.length have);
-        pieces; ch; fs_ch; status_ch; info_hash; id }
+        pieces; ch; fs_ch; choke_mgr_ch; status_ch; info_hash; id }
     in
     Lwt_pipe.fold_s (handle_message t) ch H.empty >>= fun _ ->
     Lwt.return_unit
   in
   Proc.spawn ~name:"PieceMgr" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)

@@ -11,12 +11,14 @@ let failwith_lwt fmt =
 let max_pipelined_requests = 5
 
 let string_of_msg = function
-  | FromPeer msg ->
-    Printf.sprintf "FromPeer: %s" (string_of_peer_msg msg)
-  | FromSender sz ->
-    Printf.sprintf "FromSender: %d" sz
-  | FromTimer ->
-    "FromTimer"
+  | PeerMsg msg ->
+    Printf.sprintf "%s" (string_of_peer_msg msg)
+  | BytesSent sz ->
+    Printf.sprintf "BytesSent: %d" sz
+  | Tick ->
+    "Tick"
+  | PieceCompleted index ->
+    Printf.sprintf "PieceCompleted: index: %d" index
 
 type piece_progress = {
   mutable index : int;
@@ -70,7 +72,7 @@ let request_more_blocks t =
       let b = Msg.Block (c.last_offset, blen) in
       c.last_offset <- c.last_offset + blen;
       t.outstanding <- (c.index, b) :: t.outstanding;
-      send t (Msg.SendMsg (Msg.Request (c.index, b)))
+      send t (Msg.SendMsg (Request (c.index, b)))
     done;
     Lwt.return_unit
 
@@ -170,10 +172,6 @@ let handle_peer_msg t = function
   | msg ->
     debug t.id "Unahandled: %s" (string_of_peer_msg msg)
 
-let handle_sender_msg t sz =
-  (* later: update some rates *)
-  Lwt.return_unit
-
 let handle_timer_tick t =
   let keep_alive () =
     if t.last_msg >= 24 then
@@ -187,13 +185,16 @@ let handle_timer_tick t =
 let handle_message t msg : unit Lwt.t =
   debug t.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
-  | FromPeer msg ->
+  | PeerMsg msg ->
     handle_peer_msg t msg
-  | FromSender sz ->
-    handle_sender_msg t sz
-  | FromTimer ->
+  | Tick ->
     handle_timer_tick t;
     Lwt.return_unit
+  | PieceCompleted index ->
+    send t (SendMsg (Have index));
+    Lwt.return_unit
+  | msg ->
+    debug t.id "Unhandled: %s" (string_of_msg msg)
 
 let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
   ~sender_ch ~piece_mgr_ch =
@@ -213,20 +214,23 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
         piece_mgr_ch;
         id }
     in
-    Lwt_pipe.write peer_mgr_ch (Connect id);
+    Lwt_pipe.write peer_mgr_ch (Connect (id, ch));
+    (* let mv = Lwt_mvar.create_empty () in *)
+    (* Lwt_pipe.write piece_mgr_ch (`GetDone mv); *)
+    (* Lwt_mvar.take mv >>= fun bits -> *)
+    (* send t (SendMsg (BitField bits)); *)
     try_lwt
       Lwt_pipe.iter_s (handle_message t) ch
     with
     | exn ->
-      match t.current with
-      | Some c ->
-        Lwt_pipe.write t.piece_mgr_ch (`PutbackPiece c.index);
-        raise exn
-      | None ->
-        raise exn
+      Lwt_pipe.write t.peer_mgr_ch (Disconnect id);
+      begin match t.current with
+      | Some c -> Lwt_pipe.write t.piece_mgr_ch (`PutbackPiece c.index)
+      | None -> ()
+      end;
+      raise exn
   in
   Proc.spawn ~name:"Peer" run (Super.default_stop super_ch)
-    (fun _ -> Lwt.return_unit)
 
 let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
   let sender_ch = Lwt_pipe.create () in
