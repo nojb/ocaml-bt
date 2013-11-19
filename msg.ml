@@ -9,12 +9,6 @@ and super_msg =
   | PleaseDie
   | SpawnNew of child
 
-type tracker_msg =
-  | Stop
-  | TrackerTick of int
-  | Start
-  | Complete
-
 type peer =
   Unix.inet_addr * int
 

@@ -72,7 +72,7 @@ let start t : unit Lwt.t =
     ]
     ~ch:sup_ch
   in
-  List.iter (fun ch -> Lwt_pipe.write ch Msg.Start) tracker_chs;
+  List.iter (fun ch -> Lwt_pipe.write ch Tracker.Start) tracker_chs;
   Lwt.return_unit
 
 let handle_message t msg : unit Lwt.t =

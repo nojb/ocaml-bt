@@ -8,11 +8,17 @@ let debug = Proc.debug
 let failwith_lwt msg =
   raise_lwt (Failure msg)
 
+type msg =
+  | Stop
+  | TrackerTick of int
+  | Start
+  | Complete
+
 let string_of_msg = function
-  | Msg.Stop -> "Stop"
-  | Msg.TrackerTick n -> sprintf "TrackerTick: %d" n
-  | Msg.Start -> "Start"
-  | Msg.Complete -> "Complete"
+  | Stop -> "Stop"
+  | TrackerTick n -> sprintf "TrackerTick: %d" n
+  | Start -> "Start"
+  | Complete -> "Complete"
 
 type status =
   | Started
@@ -44,7 +50,7 @@ let fail_timer_interval = 15 * 60
 
 type t = {
   status_ch           : Status.msg Lwt_pipe.t;
-  ch          : Msg.tracker_msg Lwt_pipe.t;
+  ch          : msg Lwt_pipe.t;
   peer_mgr_ch         : Msg.peer_mgr_msg Lwt_pipe.t;
   info_hash             : Info.Digest.t;
   peer_id               : Info.peer_id;
@@ -68,7 +74,7 @@ let timer_update t (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
     let _ = Proc.spawn
       (fun _ ->
         Lwt_unix.sleep (float interval) >|= fun () ->
-        Lwt_pipe.write t.ch (Msg.TrackerTick nt)) in
+        Lwt_pipe.write t.ch (TrackerTick nt)) in
     debug t.id "Set Timer to: %d" interval >>
     Lwt.return_unit
   | _ ->
@@ -328,18 +334,18 @@ let poke_tracker t : (int * int option) Lwt.t =
 let handle_message t msg : unit Lwt.t =
   debug t.id "%s" (string_of_msg msg) >>
   match msg with
-  | Msg.TrackerTick x ->
+  | TrackerTick x ->
     if x+1 = t.next_tick then
       poke_tracker t >>= timer_update t
     else
       Lwt.return_unit
-  | Msg.Stop ->
+  | Stop ->
     t.status <- Stopped;
     poke_tracker t >>= timer_update t
-  | Msg.Start ->
+  | Start ->
     t.status <- Started;
     poke_tracker t >>= timer_update t
-  | Msg.Complete ->
+  | Complete ->
     t.status <- Completed;
     poke_tracker t >>= timer_update t
 
