@@ -20,12 +20,19 @@ let handle_message id oc peer_ch msg =
   | SendMsg msg ->
     Wire.write oc msg >>= fun sz ->
     Lwt_pipe.write peer_ch (BytesSent sz);
-    Lwt.return ()
+    Lwt.return_unit
   | msg ->
     debug id "Unhandled: %s" (string_of_msg msg)
 
-let start ~super_ch oc ~ch ~peer_ch =
+let start oc ~ch ~peer_ch =
   let run id =
-    Lwt_pipe.iter_s (handle_message id oc peer_ch) ch
+    try_lwt
+      Lwt_pipe.iter_s (handle_message id oc peer_ch) ch
+    with
+    | exn ->
+      Lwt_pipe.write peer_ch (Msg.SenderAborted exn);
+      Lwt.return_unit
+    finally
+      Lwt_io.close oc
   in
-  Proc.spawn ~name:"Sender" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"Sender" run (fun _ -> Lwt.return_unit)

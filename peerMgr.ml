@@ -29,7 +29,6 @@ type t = {
   choke_mgr_ch : ChokeMgr.msg Lwt_pipe.t;
   piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
   ch : Msg.peer_mgr_msg Lwt_pipe.t;
-  pool_ch : Msg.super_msg Lwt_pipe.t;
   id : Proc.Id.t
 }
 
@@ -71,14 +70,7 @@ let handle_good_handshake t id ic oc peer_id : unit Lwt.t =
     (Info.PeerId.to_string peer_id) >>= fun () ->
   let pieces = t.pieces in
   let piece_mgr_ch = t.piece_mgr_ch in
-  let children =
-    Peer.start ic oc ~peer_mgr_ch:t.ch t.info_hash ~pieces ~piece_mgr_ch
-  in
-  let start_peer_sup =
-    let ch = Lwt_pipe.create () in
-    Super.start Super.AllForOne "PeerSup" ~children ~ch
-  in
-  Lwt_pipe.write t.pool_ch (SpawnNew (Supervisor start_peer_sup));
+  ignore (Peer.start ic oc ~peer_mgr_ch:t.ch t.info_hash ~pieces ~piece_mgr_ch);
   Lwt.return_unit
 
 let connect t (addr, port) =
@@ -133,14 +125,7 @@ let handle_message t msg : unit Lwt.t =
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
 let start ~super_ch ~ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
-  (* FIXME register pool thread with my supervisor so that
-   * it gets automatically finished when the supervisor goes away *)
   let run id =
-    let pool_ch = Lwt_pipe.create () in
-    let start_pool =
-      Super.start Super.OneForOne "PeerMgrPool" ~children:[] ~ch:pool_ch
-    in
-    Lwt_pipe.write super_ch (SpawnNew (Supervisor start_pool));
     let t =
       { pending_peers = [];
         peers = H.create 17;
@@ -150,7 +135,6 @@ let start ~super_ch ~ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces 
         choke_mgr_ch;
         piece_mgr_ch;
         ch;
-        pool_ch;
         id }
     in
     Lwt_pipe.iter_s (handle_message t) ch

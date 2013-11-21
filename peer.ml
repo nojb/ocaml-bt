@@ -19,6 +19,8 @@ let string_of_msg = function
     "Tick"
   | ReceiverAborted exn ->
     Printf.sprintf "ReceiverAborted: %s" (Printexc.to_string exn)
+  | SenderAborted exn ->
+    Printf.sprintf "SenderAborted: %s" (Printexc.to_string exn)
   | PieceCompleted index ->
     Printf.sprintf "PieceCompleted: index: %d" index
 
@@ -196,13 +198,15 @@ let handle_message t msg : unit Lwt.t =
   | PieceCompleted index ->
     send t (SendMsg (Wire.Have index));
     Lwt.return_unit
-  | ReceiverAborted _ ->
+  | ReceiverAborted _
+  | SenderAborted _ ->
     raise Exit
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces ic
-  ~sender_ch ~piece_mgr_ch =
+let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
+  let sender_ch = Lwt_pipe.create () in
+  let ch = Lwt_pipe.create () in
   let receiver _ =
     try_lwt
       Lwt_stream.iter (fun msg -> Lwt_pipe.write ch (Msg.PeerMsg msg))
@@ -231,6 +235,8 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces ic
         piece_mgr_ch;
         id }
     in
+    ignore (Sender.start oc ~ch:sender_ch ~peer_ch:ch);
+    (* Worker (Sender.start oc ~ch:sender_ch ~peer_ch:ch); *)
     Proc.async receiver;
     Lwt_pipe.write peer_mgr_ch (Connect (id, ch));
     let mv = Lwt_mvar.create_empty () in
@@ -248,12 +254,4 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces ic
       end;
       raise exn
   in
-  Proc.spawn ~name:"Peer" run (Super.default_stop super_ch)
-
-let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
-  let sender_ch = Lwt_pipe.create () in
-  let ch = Lwt_pipe.create () in
-  [
-    Worker (Sender.start oc ~ch:sender_ch ~peer_ch:ch);
-    Worker (start_peer ~peer_mgr_ch ~ch ih ~pieces ic ~sender_ch ~piece_mgr_ch)
-  ]
+  Proc.spawn ~name:"Peer" run (fun _ -> Lwt.return_unit)

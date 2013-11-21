@@ -17,6 +17,7 @@ type msg_ty =
   | BytesSent of int
   | PieceCompleted of int
   | ReceiverAborted of exn
+  | SenderAborted of exn
   | Tick
 
 type peer_mgr_msg =
