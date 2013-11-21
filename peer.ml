@@ -17,6 +17,8 @@ let string_of_msg = function
     Printf.sprintf "BytesSent: %d" sz
   | Tick ->
     "Tick"
+  | ReceiverAborted exn ->
+    Printf.sprintf "ReceiverAborted: %s" (Printexc.to_string exn)
   | PieceCompleted index ->
     Printf.sprintf "PieceCompleted: index: %d" index
 
@@ -45,6 +47,7 @@ type t = {
   (* mutable last_pn : int; *)
   pieces : Info.piece_info array;
   peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t;
+  ic : Lwt_io.input_channel;
   sender_ch : Msg.sender_msg Lwt_pipe.t;
   piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
   id : Proc.Id.t
@@ -193,11 +196,24 @@ let handle_message t msg : unit Lwt.t =
   | PieceCompleted index ->
     send t (SendMsg (Wire.Have index));
     Lwt.return_unit
+  | ReceiverAborted _ ->
+    raise Exit
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
+let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces ic
   ~sender_ch ~piece_mgr_ch =
+  let receiver _ =
+    try_lwt
+      Lwt_stream.iter (fun msg -> Lwt_pipe.write ch (Msg.PeerMsg msg))
+        (Lwt_stream.from (fun () -> Wire.read ic >|= fun msg -> Some msg))
+    with
+    | exn ->
+      Lwt_pipe.write ch (Msg.ReceiverAborted exn);
+      Lwt.return_unit
+    finally
+      Lwt_io.close ic
+  in
   let run id =
     let t =
       { we_interested = true;
@@ -210,15 +226,17 @@ let start_peer ~super_ch ~peer_mgr_ch ~ch ih ~pieces
         current = None;
         pieces;
         peer_mgr_ch;
+        ic;
         sender_ch;
         piece_mgr_ch;
         id }
     in
+    Proc.async receiver;
     Lwt_pipe.write peer_mgr_ch (Connect (id, ch));
-    (* let mv = Lwt_mvar.create_empty () in *)
-    (* Lwt_pipe.write piece_mgr_ch (`GetDone mv); *)
-    (* Lwt_mvar.take mv >>= fun bits -> *)
-    (* send t (SendMsg (BitField bits)); *)
+    let mv = Lwt_mvar.create_empty () in
+    Lwt_pipe.write piece_mgr_ch (`GetDone mv);
+    Lwt_mvar.take mv >>= fun bits ->
+    if Bits.count bits > 0 then send t (SendMsg (Wire.BitField bits));
     try_lwt
       Lwt_pipe.iter_s (handle_message t) ch
     with
@@ -237,6 +255,5 @@ let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
   let ch = Lwt_pipe.create () in
   [
     Worker (Sender.start oc ~ch:sender_ch ~peer_ch:ch);
-    Worker (Receiver.start ic ~peer_ch:ch);
-    Worker (start_peer ~peer_mgr_ch ~ch ih ~pieces ~sender_ch ~piece_mgr_ch)
+    Worker (start_peer ~peer_mgr_ch ~ch ih ~pieces ic ~sender_ch ~piece_mgr_ch)
   ]

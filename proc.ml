@@ -32,6 +32,7 @@ let (>>=) = Lwt.(>>=)
 let protect f =
   fun id ->
     try_lwt
+      debug id "Process starting" >>= fun () ->
       f id >>= fun res ->
       debug id "Process terminating gracefully" >>= fun () ->
       Lwt.return res
