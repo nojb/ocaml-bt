@@ -9,6 +9,7 @@ type msg =
   (** Put these blocks back for retrieval *)
   | `PeerHave of int list * bool Lwt_mvar.t
   (** A peer has announce that it has a set of pieces *)
+  | `PeerUnHave of int list
   | `GetDone of Bits.t Lwt_mvar.t
   (** Get the bitset of pieces which are done *)
   | `PieceReceived of int * string ]
@@ -22,6 +23,8 @@ let string_of_msg = function
   | `PeerHave (pns, _) ->
     Printf.sprintf "PeerHave: %d pieces" (List.length pns)
       (* (String.concat ", " (List.map string_of_int pns)) *)
+  | `PeerUnHave (pns) ->
+    Printf.sprintf "PeerUnHave: %d pieces" (List.length pns)
   | `GetDone _ ->
     "GetDone"
   | `PieceReceived (index, s) ->
@@ -82,6 +85,8 @@ let handle_message t msg histo : H.t Lwt.t =
     in
     Lwt_mvar.put mv interesting >>= fun () ->
     Lwt.return histo
+  | `PeerUnHave (pns) ->
+    Lwt.return (List.fold_left (fun h n -> H.remove n h) histo pns)
   | `GetDone (mv) ->
     Lwt_mvar.put mv (Bits.copy t.completed) >>= fun () ->
     Lwt.return histo
@@ -100,6 +105,8 @@ let handle_message t msg histo : H.t Lwt.t =
         debug t.id "Received a valid piece #%d, comitting to disk" i >>= fun () ->
         Lwt_pipe.write t.fs_ch (`WritePiece (i, s));
         Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PieceCompleted i);
+        debug t.id "Now have %d/%d pieces"
+          (Bits.count t.completed) (Array.length t.pieces) >>= fun () ->
         (** FIXME check if we are done *)
         Lwt.return histo
       end else

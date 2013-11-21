@@ -19,6 +19,8 @@ type msg_ty =
   | ReceiverAborted of exn
   | SenderAborted of exn
   | Tick
+  | Choke
+  | UnChoke
 
 type peer_mgr_msg =
   | PeersFromTracker    of peer list

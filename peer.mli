@@ -5,5 +5,6 @@ val start :
   Info.Digest.t ->
   pieces: Info.piece_info array ->
   piece_mgr_ch: PieceMgr.msg Lwt_pipe.t ->
+  fs_ch: Fs.msg Lwt_pipe.t ->
+  choke_mgr_ch: ChokeMgr.msg Lwt_pipe.t ->
   Proc.Id.t
-  (* Msg.child list *)

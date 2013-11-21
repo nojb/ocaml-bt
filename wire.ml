@@ -40,6 +40,19 @@ let string_of_msg = function
   | Port port ->
     sprintf "Port: %d" port
 
+let size_of_msg = function
+  | KeepAlive -> 4
+  | Choke
+  | Unchoke
+  | Interested
+  | NotInterested -> 5
+  | Have _ -> 9
+  | BitField bits -> 5 + Bits.length (Bits.pad bits 8)
+  | Request _ -> 17
+  | Piece (_, _, block) -> String.length block + 13
+  | Cancel _ -> 17
+  | Port _ -> 7
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 

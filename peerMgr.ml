@@ -26,6 +26,7 @@ type t = {
   peers : Msg.msg_ty Lwt_pipe.t H.t;
   peer_id : Info.peer_id;
   info_hash : Info.Digest.t;
+  fs_ch: Fs.msg Lwt_pipe.t;
   choke_mgr_ch : ChokeMgr.msg Lwt_pipe.t;
   piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
   ch : Msg.peer_mgr_msg Lwt_pipe.t;
@@ -70,7 +71,8 @@ let handle_good_handshake t id ic oc peer_id : unit Lwt.t =
     (Info.PeerId.to_string peer_id) >>= fun () ->
   let pieces = t.pieces in
   let piece_mgr_ch = t.piece_mgr_ch in
-  ignore (Peer.start ic oc ~peer_mgr_ch:t.ch t.info_hash ~pieces ~piece_mgr_ch);
+  ignore (Peer.start ic oc ~peer_mgr_ch:t.ch t.info_hash ~pieces ~piece_mgr_ch
+    ~fs_ch:t.fs_ch ~choke_mgr_ch:t.choke_mgr_ch);
   Lwt.return_unit
 
 let connect t (addr, port) =
@@ -115,16 +117,16 @@ let handle_message t msg : unit Lwt.t =
     fill_peers t
   | Connect (id, ch) ->
     H.replace t.peers id ch;
-    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.AddPeer (id, ch));
+    (* Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.AddPeer (id, ch, dlr, ulr)); *)
     Lwt.return_unit
   | Disconnect (id) ->
     H.remove t.peers id;
-    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.RemovePeer id);
+    (* Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.RemovePeer id); *)
     Lwt.return_unit
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let start ~super_ch ~ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
+let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
   let run id =
     let t =
       { pending_peers = [];
@@ -132,6 +134,7 @@ let start ~super_ch ~ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces 
         peer_id;
         pieces;
         info_hash;
+        fs_ch;
         choke_mgr_ch;
         piece_mgr_ch;
         ch;

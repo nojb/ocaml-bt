@@ -5,6 +5,7 @@ type msg =
   | `PutbackPiece of int
   (** A peer has announce that it has a set of pieces *)
   | `PeerHave of int list * bool Lwt_mvar.t
+  | `PeerUnHave of int list
   (** Get the bitset of pieces which are done *)
   | `GetDone of Bits.t Lwt_mvar.t
   (** A complete piece has been received from a peer *)

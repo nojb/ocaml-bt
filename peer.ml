@@ -12,7 +12,7 @@ let max_pipelined_requests = 5
 
 let string_of_msg = function
   | PeerMsg msg ->
-    Printf.sprintf "%s" (Wire.string_of_msg msg)
+    Printf.sprintf "PeerMsg: %s" (Wire.string_of_msg msg)
   | BytesSent sz ->
     Printf.sprintf "BytesSent: %d" sz
   | Tick ->
@@ -23,6 +23,10 @@ let string_of_msg = function
     Printf.sprintf "SenderAborted: %s" (Printexc.to_string exn)
   | PieceCompleted index ->
     Printf.sprintf "PieceCompleted: index: %d" index
+  | Choke ->
+    "Choke"
+  | UnChoke ->
+    "UnChoke"
 
 type piece_progress = {
   mutable index : int;
@@ -50,8 +54,15 @@ type t = {
   pieces : Info.piece_info array;
   peer_mgr_ch : Msg.peer_mgr_msg Lwt_pipe.t;
   ic : Lwt_io.input_channel;
+  oc : Lwt_io.output_channel;
   sender_ch : Msg.sender_msg Lwt_pipe.t;
   piece_mgr_ch : PieceMgr.msg Lwt_pipe.t;
+  choke_mgr_ch : ChokeMgr.msg Lwt_pipe.t;
+  ul : float Lwt_react.S.t;
+  dl : float Lwt_react.S.t;
+  update_dl : int -> unit;
+  update_ul : int -> unit;
+  ticker : unit Lwt.t;
   id : Proc.Id.t
 }
 
@@ -100,11 +111,14 @@ let tell_peer_has t pns : bool Lwt.t =
 
 exception UnknownPiece of int
 
-let handle_peer_msg t = function
+let handle_peer_msg t msg =
+  t.update_dl (Wire.size_of_msg msg);
+  match msg with
   | Wire.KeepAlive ->
     Lwt.return_unit
   | Wire.Choke ->
     t.peer_choking <- true;
+    (* Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PeerChoked t.id); *)
     begin match t.current with
     | None ->
       Lwt.return_unit
@@ -116,12 +130,15 @@ let handle_peer_msg t = function
     end
   | Wire.Unchoke ->
     t.peer_choking <- false;
+    (* Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PeerUnChoked t.id); *)
     request_new_piece t
   | Wire.Interested ->
     t.peer_interested <- true;
+    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PeerInterested t.id);
     Lwt.return_unit
   | Wire.NotInterested ->
     t.peer_interested <- false;
+    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PeerNotInterested t.id);
     Lwt.return_unit
   | Wire.Have index ->
     if index >= 0 && index < Array.length t.pieces then begin
@@ -184,7 +201,9 @@ let handle_timer_tick t =
     else
       t.last_msg <- t.last_msg + 1
   in
-  keep_alive ()
+  keep_alive ();
+  Lwt_pipe.write t.choke_mgr_ch
+    (ChokeMgr.PeerRateUpdate (t.id, Lwt_react.S.value t.ul, Lwt_react.S.value t.dl))
   (* later- tell Status, tell ChokeMgr *)
 
 let handle_message t msg : unit Lwt.t =
@@ -200,58 +219,102 @@ let handle_message t msg : unit Lwt.t =
     Lwt.return_unit
   | ReceiverAborted _
   | SenderAborted _ ->
-    raise Exit
-  | msg ->
-    debug t.id "Unhandled: %s" (string_of_msg msg)
+    raise_lwt Exit
+  | BytesSent sz ->
+    t.update_ul sz;
+    Lwt.return_unit
+  | Choke ->
+    t.we_choking <- true;
+    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PeerChoked t.id);
+    Lwt.return_unit
+  | UnChoke ->
+    t.we_choking <- false;
+    Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PeerUnChoked t.id);
+    Lwt.return_unit
+  (* | msg -> *)
+  (*   debug t.id "Unhandled: %s" (string_of_msg msg) *)
 
-let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch =
+let receiver ic ch _ =
+  try_lwt
+    Lwt_stream.iter (fun msg -> Lwt_pipe.write ch (Msg.PeerMsg msg))
+      (Lwt_stream.from (fun () -> Wire.read ic >|= fun msg -> Some msg))
+  with
+  | exn ->
+    Lwt_pipe.write ch (Msg.ReceiverAborted exn);
+    Lwt.return_unit
+  finally
+    Lwt_io.close ic
+
+let make_rate r =
+  let reset, updatereset = Lwt_react.E.create () in
+  let total () = Lwt_react.S.fold (+) 0 r in
+  let average () =
+    let start = Unix.gettimeofday () in
+    Lwt_react.S.map (fun x -> (float x) /. (Unix.gettimeofday () -. start)) (total ())
+  in
+  let rt = Lwt_react.S.switch (average ()) (Lwt_react.E.map average reset) in
+  rt, updatereset
+
+let rate_update_frequency = 3
+
+let start ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch ~fs_ch ~choke_mgr_ch =
   let sender_ch = Lwt_pipe.create () in
   let ch = Lwt_pipe.create () in
-  let receiver _ =
-    try_lwt
-      Lwt_stream.iter (fun msg -> Lwt_pipe.write ch (Msg.PeerMsg msg))
-        (Lwt_stream.from (fun () -> Wire.read ic >|= fun msg -> Some msg))
-    with
-    | exn ->
-      Lwt_pipe.write ch (Msg.ReceiverAborted exn);
-      Lwt.return_unit
-    finally
-      Lwt_io.close ic
+  let dl, update_dl = Lwt_react.E.create () in
+  let ul, update_ul = Lwt_react.E.create () in
+  let dl, resetdl = make_rate dl in
+  let ul, resetul = make_rate ul in
+  let rec ticker id =
+    Lwt_unix.sleep (float rate_update_frequency) >>= fun () ->
+    Lwt_pipe.write choke_mgr_ch
+      (ChokeMgr.PeerRateUpdate (id, Lwt_react.S.value ul, Lwt_react.S.value dl));
+    resetdl ();
+    resetul ();
+    ticker id
   in
   let run id =
     let t =
-      { we_interested = true;
-        we_choking = false;
-        peer_interested = true;
-        peer_choking = false;
+      { we_interested = true; we_choking = false;
+        peer_interested = true; peer_choking = false;
         peer_pieces = Bits.create (Array.length pieces);
         outstanding = [];
         last_msg = 0;
         current = None;
         pieces;
         peer_mgr_ch;
-        ic;
+        ic; oc;
         sender_ch;
         piece_mgr_ch;
+        choke_mgr_ch;
+        ul; dl;
+        update_dl; update_ul;
+        ticker = ticker id;
         id }
     in
-    ignore (Sender.start oc ~ch:sender_ch ~peer_ch:ch);
-    (* Worker (Sender.start oc ~ch:sender_ch ~peer_ch:ch); *)
-    Proc.async receiver;
+    ignore (Sender.start oc ~ch:sender_ch ~fs_ch ~peer_ch:ch);
+    Proc.async (receiver ic ch);
     Lwt_pipe.write peer_mgr_ch (Connect (id, ch));
+    Lwt_pipe.write choke_mgr_ch (ChokeMgr.AddPeer (id, ch));
     let mv = Lwt_mvar.create_empty () in
     Lwt_pipe.write piece_mgr_ch (`GetDone mv);
     Lwt_mvar.take mv >>= fun bits ->
     if Bits.count bits > 0 then send t (SendMsg (Wire.BitField bits));
     try_lwt
       Lwt_pipe.iter_s (handle_message t) ch
-    with
-    | exn ->
-      Lwt_pipe.write t.peer_mgr_ch (Disconnect id);
-      begin match t.current with
-      | Some c -> Lwt_pipe.write t.piece_mgr_ch (`PutbackPiece c.index)
-      | None -> ()
-      end;
-      raise exn
+    finally
+      begin
+        Lwt.cancel t.ticker;
+        ignore (Lwt_io.close t.ic);
+        ignore (Lwt_io.close t.oc);
+        Lwt_pipe.write t.peer_mgr_ch (Disconnect id);
+        Lwt_pipe.write t.piece_mgr_ch (`PeerUnHave (Bits.to_list t.peer_pieces));
+        Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.RemovePeer id);
+        match t.current with
+        | Some c ->
+          Lwt_pipe.write t.piece_mgr_ch (`PutbackPiece c.index);
+          Lwt.return_unit
+        | None ->
+          Lwt.return_unit
+      end
   in
   Proc.spawn ~name:"Peer" run (fun _ -> Lwt.return_unit)

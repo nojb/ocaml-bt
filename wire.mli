@@ -14,6 +14,8 @@ type msg =
   | Cancel of int * block
   | Port of int
 
+val size_of_msg : msg -> int
+
 exception BadMsg of int * int
 
 val string_of_msg : msg -> string
