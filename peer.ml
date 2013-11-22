@@ -316,8 +316,8 @@ let start addr port peer_id ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch ~fs_ch ~
   let run id =
     let self =
       { addr; port; peer_id;
-        we_interested = true; we_choking = false;
-        peer_interested = true; peer_choking = false;
+        we_interested = false; we_choking = true;
+        peer_interested = false; peer_choking = true;
         peer_pieces = Bits.create (Array.length pieces);
         outstanding = [];
         last_msg = 0;
