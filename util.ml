@@ -8,7 +8,7 @@ let string_of_file_size (b : int64) : string =
   else
     let exp = int_of_float (log b' /. log step) in
     let b'' = round (10.0 *. b' /. step ** (float exp)) /. 10.0 in
-    Printf.sprintf "%g %cB" b'' ("KMGTPE".[exp-1])
+    Printf.sprintf "%g %ciB" b'' ("KMGTPE".[exp-1])
 (*     Printf.sprintf "%.1f %ciB" *)
 (*       (b' /. step ** (float exp)) ("KMGTPE".[exp-1]) *)
 

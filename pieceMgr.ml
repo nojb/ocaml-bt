@@ -3,31 +3,31 @@ let (>>=) = Lwt.(>>=)
 let debug = Proc.debug
 
 type msg =
-  [ `GrabPiece of Bits.t * int option Lwt_mvar.t
+  | GrabPiece of Bits.t * int option Lwt_mvar.t
   (** Ask for grabbing some blocks *)
-  | `PutbackPiece of int
+  | PutbackPiece of int
   (** Put these blocks back for retrieval *)
-  | `PeerHave of int list * bool Lwt_mvar.t
+  | PeerHave of int list * bool Lwt_mvar.t
   (** A peer has announce that it has a set of pieces *)
-  | `PeerUnHave of int list
-  | `GetDone of Bits.t Lwt_mvar.t
+  | PeerUnHave of int list
+  | GetDone of Bits.t Lwt_mvar.t
   (** Get the bitset of pieces which are done *)
-  | `PieceReceived of int * string ]
+  | PieceReceived of int * string
   (** A complete piece has been received from a peer *)
 
 let string_of_msg = function
-  | `GrabPiece (have, _) ->
+  | GrabPiece (have, _) ->
     Printf.sprintf "GrabPiece: have: %d" (Bits.count have)
-  | `PutbackPiece n ->
+  | PutbackPiece n ->
     Printf.sprintf "PutbackPiece: n: %d" n
-  | `PeerHave (pns, _) ->
+  | PeerHave (pns, _) ->
     Printf.sprintf "PeerHave: %d pieces" (List.length pns)
       (* (String.concat ", " (List.map string_of_int pns)) *)
-  | `PeerUnHave (pns) ->
+  | PeerUnHave (pns) ->
     Printf.sprintf "PeerUnHave: %d pieces" (List.length pns)
-  | `GetDone _ ->
+  | GetDone _ ->
     "GetDone"
-  | `PieceReceived (index, s) ->
+  | PieceReceived (index, s) ->
     Printf.sprintf "PieceReceived: index: %d length: %d"
       index (String.length s)
 
@@ -56,76 +56,76 @@ type t = {
   (** The PieceMgr's thread id *)
 }
 
-let grab_piece t (eligible : Bits.t) histo : int option Lwt.t =
+let grab_piece self (eligible : Bits.t) histo : int option Lwt.t =
   let interesting =
-    Bits.logand eligible (Bits.lognot (Bits.logor t.requested t.completed))
+    Bits.logand eligible (Bits.lognot (Bits.logor self.requested self.completed))
   in
   if Bits.count interesting = 0 then
-    debug t.id "no interesting pieces - maybe end game mode?" >>= fun () ->
+    debug self.id "no interesting pieces - maybe end game mode?" >>= fun () ->
     Lwt.return None
   else begin
     let rarest = H.pick (Bits.is_set interesting) histo in
     let pc = List.nth rarest (Random.int (List.length rarest)) in
-    Bits.set t.requested pc;
-    debug t.id "Requesting piece#%4d" pc >>= fun () ->
+    Bits.set self.requested pc;
+    debug self.id "Requesting piece#%4d" pc >>= fun () ->
     Lwt.return (Some pc)
   end
 
-let handle_message t msg histo : H.t Lwt.t =
-  debug t.id "%s" (string_of_msg msg) >>= fun () ->
+let handle_message self msg histo : H.t Lwt.t =
+  debug self.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
-  | `GrabPiece (eligible, mv) ->
-    grab_piece t eligible histo >>= Lwt_mvar.put mv >>= fun () ->
+  | GrabPiece (eligible, mv) ->
+    grab_piece self eligible histo >>= Lwt_mvar.put mv >>= fun () ->
     Lwt.return histo
-  | `PeerHave (pns, mv) ->
+  | PeerHave (pns, mv) ->
     let histo = List.fold_left (fun h n -> H.add n h) histo pns in
     let interesting =
       List.exists (fun n ->
-        not (Bits.is_set t.requested n || Bits.is_set t.completed n)) pns
+        not (Bits.is_set self.requested n || Bits.is_set self.completed n)) pns
     in
     Lwt_mvar.put mv interesting >>= fun () ->
     Lwt.return histo
-  | `PeerUnHave (pns) ->
+  | PeerUnHave (pns) ->
     Lwt.return (List.fold_left (fun h n -> H.remove n h) histo pns)
-  | `GetDone (mv) ->
-    Lwt_mvar.put mv (Bits.copy t.completed) >>= fun () ->
+  | GetDone (mv) ->
+    Lwt_mvar.put mv (Bits.copy self.completed) >>= fun () ->
     Lwt.return histo
-  | `PieceReceived (i, s) ->
-    if Bits.is_set t.completed i then
-      debug t.id "Received a piece that we already have, ignoring" >>= fun () ->
+  | PieceReceived (i, s) ->
+    if Bits.is_set self.completed i then
+      debug self.id "Received a piece that we already have, ignoring" >>= fun () ->
       Lwt.return histo
-    else if not (Bits.is_set t.requested i) then
-      debug t.id "Received a piece that has not been requested, ignoring" >>=
+    else if not (Bits.is_set self.requested i) then
+      debug self.id "Received a piece that has not been requested, ignoring" >>=
         fun () ->
       Lwt.return histo
     else begin
-      Bits.unset t.requested i;
-      if Info.Digest.string s = t.pieces.(i).Info.piece_digest then begin
-        Bits.set t.completed i;
-        debug t.id "Received a valid piece #%d, comitting to disk" i >>= fun () ->
-        Lwt_pipe.write t.fs_ch (`WritePiece (i, s));
-        Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.PieceCompleted i);
-        debug t.id "Now have %d/%d pieces"
-          (Bits.count t.completed) (Array.length t.pieces) >>= fun () ->
+      Bits.unset self.requested i;
+      if Info.Digest.string s = self.pieces.(i).Info.piece_digest then begin
+        Bits.set self.completed i;
+        debug self.id "Received a valid piece #%d, comitting to disk" i >>= fun () ->
+        Lwt_pipe.write self.fs_ch (`WritePiece (i, s));
+        Lwt_pipe.write self.choke_mgr_ch (ChokeMgr.PieceCompleted i);
+        debug self.id "Now have %d/%d pieces"
+          (Bits.count self.completed) (Array.length self.pieces) >>= fun () ->
         (** FIXME check if we are done *)
         Lwt.return histo
       end else
-        debug t.id "Received a piece, but SHA-1 hash does not check out,
+        debug self.id "Received a piece, but SHA-1 hash does not check out,
         ignoring" >>= fun () ->
         Lwt.return histo
     end
   | msg ->
-    debug t.id "Unhandled: %s" (string_of_msg msg) >>= fun () ->
+    debug self.id "Unhandled: %s" (string_of_msg msg) >>= fun () ->
     Lwt.return histo
 
 let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~status_ch ~have
   ~pieces ~info_hash =
   let run id =
-    let t =
+    let self =
       { completed = have; requested = Bits.create (Bits.length have);
         pieces; ch; fs_ch; choke_mgr_ch; status_ch; info_hash; id }
     in
-    Lwt_pipe.fold_s (handle_message t) ch H.empty >>= fun _ ->
+    Lwt_pipe.fold_s (handle_message self) ch H.empty >>= fun _ ->
     Lwt.return_unit
   in
   Proc.spawn ~name:"PieceMgr" run (Super.default_stop super_ch)

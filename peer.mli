@@ -1,4 +1,7 @@
 val start :
+  Unix.inet_addr ->
+  int ->
+  Info.PeerId.t ->
   Lwt_io.input_channel ->
   Lwt_io.output_channel ->
   peer_mgr_ch: Msg.peer_mgr_msg Lwt_pipe.t ->

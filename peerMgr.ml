@@ -66,12 +66,14 @@ let handshake id peer_id ic oc ih =
   (* debug t.id "Waiting to hear back from the other side" >>= fun () -> *)
   recv_handshake ic ih
 
-let handle_good_handshake t id ic oc peer_id : unit Lwt.t =
+let handle_good_handshake t addr port id ic oc peer_id : unit Lwt.t =
   debug id "good handshake received from: %S"
     (Info.PeerId.to_string peer_id) >>= fun () ->
   let pieces = t.pieces in
   let piece_mgr_ch = t.piece_mgr_ch in
-  ignore (Peer.start ic oc ~peer_mgr_ch:t.ch t.info_hash ~pieces ~piece_mgr_ch
+  ignore (Peer.start
+    addr port
+    peer_id ic oc ~peer_mgr_ch:t.ch t.info_hash ~pieces ~piece_mgr_ch
     ~fs_ch:t.fs_ch ~choke_mgr_ch:t.choke_mgr_ch);
   Lwt.return_unit
 
@@ -82,7 +84,7 @@ let connect t (addr, port) =
     debug id "Connected to %s:%d, initiating handshake"
       (Unix.string_of_inet_addr addr) port >>
     handshake id t.peer_id ic oc t.info_hash >>=
-    handle_good_handshake t id ic oc
+    handle_good_handshake t addr port id ic oc
   in
   Proc.async ~name:"Connector" connector
 

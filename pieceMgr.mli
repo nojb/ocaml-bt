@@ -1,15 +1,15 @@
 type msg =
   (** Ask for grabbing some blocks *)
-  [ `GrabPiece of Bits.t * int option Lwt_mvar.t
+  | GrabPiece of Bits.t * int option Lwt_mvar.t
   (** Put these blocks back for retrieval *)
-  | `PutbackPiece of int
+  | PutbackPiece of int
   (** A peer has announce that it has a set of pieces *)
-  | `PeerHave of int list * bool Lwt_mvar.t
-  | `PeerUnHave of int list
+  | PeerHave of int list * bool Lwt_mvar.t
+  | PeerUnHave of int list
   (** Get the bitset of pieces which are done *)
-  | `GetDone of Bits.t Lwt_mvar.t
+  | GetDone of Bits.t Lwt_mvar.t
   (** A complete piece has been received from a peer *)
-  | `PieceReceived of int * string ]
+  | PieceReceived of int * string
 
 val start :
   super_ch: Msg.super_msg Lwt_pipe.t ->

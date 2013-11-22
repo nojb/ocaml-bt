@@ -3,6 +3,7 @@ module PeerId : sig
   val to_string : t -> string
   val of_string : string -> t
   val of_input_channel : Lwt_io.input_channel -> t Lwt.t
+  val to_hex_short : t -> string
 end
 
 type peer_id = PeerId.t

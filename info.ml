@@ -8,6 +8,14 @@ module PeerId = struct
     let buf = String.create 20 in
     Lwt.bind (Lwt_io.read_into_exactly ic buf 0 20)
       (fun _ -> Lwt.return buf)
+  let to_hex_short s =
+    Printf.sprintf "%02x%02x%02x%02x%02x%02x"
+      (int_of_char s.[14])
+      (int_of_char s.[15])
+      (int_of_char s.[16])
+      (int_of_char s.[17])
+      (int_of_char s.[18])
+      (int_of_char s.[19])
 end
 
 type peer_id = PeerId.t
