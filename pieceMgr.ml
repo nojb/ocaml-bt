@@ -33,9 +33,11 @@ let string_of_msg = function
 
 let rarest_piece_jitter = 42
 
-module H = Histo.Make (Histo.Int) (Histo.Int)
+module H = Histo.MakeImp (Histo.Int) (Histo.Int)
 
 type t = {
+  histo : H.t;
+  (** Piece histogram *)
   completed : Bits.t;
   (** Pieces we have completed *)
   requested : Bits.t;
@@ -56,76 +58,73 @@ type t = {
   (** The PieceMgr's thread id *)
 }
 
-let grab_piece self (eligible : Bits.t) histo : int option Lwt.t =
+let grab_piece self (eligible : Bits.t) : int option Lwt.t =
   let interesting =
-    Bits.logand eligible (Bits.lognot (Bits.logor self.requested self.completed))
+    Bits.logand eligible (Bits.lognot
+      (Bits.logor self.requested self.completed))
   in
   if Bits.count interesting = 0 then
     debug self.id "no interesting pieces - maybe end game mode?" >>= fun () ->
     Lwt.return None
   else begin
-    let rarest = H.pick (Bits.is_set interesting) histo in
+    let rarest = H.pick self.histo (Bits.is_set interesting) in
     let pc = List.nth rarest (Random.int (List.length rarest)) in
     Bits.set self.requested pc;
     debug self.id "Requesting piece#%4d" pc >>= fun () ->
     Lwt.return (Some pc)
   end
 
-let handle_message self msg histo : H.t Lwt.t =
+let peer_have self pns mv =
+  List.iter (H.add self.histo) pns;
+  let interesting =
+    List.exists (fun n ->
+      not (Bits.is_set self.requested n || Bits.is_set self.completed n)) pns
+  in
+  Lwt_mvar.put mv interesting
+
+let peer_unhave self pns =
+  List.iter (H.remove self.histo) pns;
+  Lwt.return_unit
+
+let piece_received self i s =
+  if Bits.is_set self.completed i then
+    debug self.id "Received a piece that we already have, ignoring"
+  else if not (Bits.is_set self.requested i) then
+    debug self.id "Received a piece that has not been requested, ignoring"
+  else begin
+    Bits.unset self.requested i;
+    if Info.Digest.string s = self.pieces.(i).Info.piece_digest then begin
+      Bits.set self.completed i;
+      debug self.id "Received a valid piece #%d, comitting to disk" i >>= fun () ->
+      Lwt_pipe.write self.fs_ch (`WritePiece (i, s));
+      Lwt_pipe.write self.choke_mgr_ch (ChokeMgr.PieceCompleted i);
+      debug self.id "Now have %d/%d pieces"
+        (Bits.count self.completed) (Array.length self.pieces)
+      (** FIXME check if we are done *)
+    end else
+      debug self.id "Received a piece, but SHA-1 hash does not check out,
+      ignoring"
+  end
+
+let handle_message self msg : unit Lwt.t =
   debug self.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
-  | GrabPiece (eligible, mv) ->
-    grab_piece self eligible histo >>= Lwt_mvar.put mv >>= fun () ->
-    Lwt.return histo
-  | PeerHave (pns, mv) ->
-    let histo = List.fold_left (fun h n -> H.add n h) histo pns in
-    let interesting =
-      List.exists (fun n ->
-        not (Bits.is_set self.requested n || Bits.is_set self.completed n)) pns
-    in
-    Lwt_mvar.put mv interesting >>= fun () ->
-    Lwt.return histo
-  | PeerUnHave (pns) ->
-    Lwt.return (List.fold_left (fun h n -> H.remove n h) histo pns)
-  | GetDone (mv) ->
-    Lwt_mvar.put mv (Bits.copy self.completed) >>= fun () ->
-    Lwt.return histo
-  | PieceReceived (i, s) ->
-    if Bits.is_set self.completed i then
-      debug self.id "Received a piece that we already have, ignoring" >>= fun () ->
-      Lwt.return histo
-    else if not (Bits.is_set self.requested i) then
-      debug self.id "Received a piece that has not been requested, ignoring" >>=
-        fun () ->
-      Lwt.return histo
-    else begin
-      Bits.unset self.requested i;
-      if Info.Digest.string s = self.pieces.(i).Info.piece_digest then begin
-        Bits.set self.completed i;
-        debug self.id "Received a valid piece #%d, comitting to disk" i >>= fun () ->
-        Lwt_pipe.write self.fs_ch (`WritePiece (i, s));
-        Lwt_pipe.write self.choke_mgr_ch (ChokeMgr.PieceCompleted i);
-        debug self.id "Now have %d/%d pieces"
-          (Bits.count self.completed) (Array.length self.pieces) >>= fun () ->
-        (** FIXME check if we are done *)
-        Lwt.return histo
-      end else
-        debug self.id "Received a piece, but SHA-1 hash does not check out,
-        ignoring" >>= fun () ->
-        Lwt.return histo
-    end
+  | GrabPiece (eligible, mv)  -> grab_piece self eligible >>= Lwt_mvar.put mv
+  | PeerHave (pns, mv)        -> peer_have self pns mv
+  | PeerUnHave (pns)          -> peer_unhave self pns
+  | GetDone (mv)              -> Lwt_mvar.put mv (Bits.copy self.completed)
+  | PieceReceived (i, s)      -> piece_received self i s
   | msg ->
-    debug self.id "Unhandled: %s" (string_of_msg msg) >>= fun () ->
-    Lwt.return histo
+    debug self.id "Unhandled: %s" (string_of_msg msg)
 
 let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~status_ch ~have
   ~pieces ~info_hash =
   let run id =
     let self =
-      { completed = have; requested = Bits.create (Bits.length have);
+      { histo = H.create (); completed = have;
+        requested = Bits.create (Bits.length have);
         pieces; ch; fs_ch; choke_mgr_ch; status_ch; info_hash; id }
     in
-    Lwt_pipe.fold_s (handle_message self) ch H.empty >>= fun _ ->
-    Lwt.return_unit
+    Lwt_pipe.iter_s (handle_message self) ch
   in
   Proc.spawn ~name:"PieceMgr" run (Super.default_stop super_ch)
