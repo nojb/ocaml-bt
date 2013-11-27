@@ -80,9 +80,249 @@ let timer_update t (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
   | _ ->
     Lwt.return_unit
 
-let try_udp_server t ss url =
-  let fresh_transaction_id () = Random.int32 Int32.max_int in
-  let socket = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
+(* let fully_send fd s off len = *)
+(*   let rec loop off rem = *)
+(*     if rem <= 0 then Lwt.return_unit *)
+(*     else *)
+(*       Lwt_unix.write fd s off len >>= fun sent -> *)
+(*       loop (off + sent) (rem - sent) *)
+(*   in *)
+(*   loop off len *)
+
+let udp_send fd buf =
+  Lwt_unix.write fd buf 0 (String.length buf) >>= fun len ->
+  if len <> String.length buf then
+    failwith_lwt "udp_send: could not send entire packet"
+  else
+    Lwt.return_unit
+
+let udp_packet_length = 512
+
+let read_udp_packet fd =
+  let buf = String.create udp_packet_length in
+  Lwt_unix.read fd buf 0 udp_packet_length >>= fun len ->
+  Lwt.return (String.sub buf 0 len)
+
+let udp_fresh_transaction_id () =
+  Random.int32 Int32.max_int
+
+let rec udp_request_connect self fd ss n =
+  let trans_id = udp_fresh_transaction_id () in
+  let write_packet =
+    let open Put in
+    BE.int64 0x41727101980L >>=
+    BE.int32 0l >>=
+    BE.int32 trans_id
+  in
+  udp_send fd (Put.run write_packet) >>= fun () ->
+  let handle_error = function
+    | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
+      if n >= 8 then
+        failwith_lwt "udp_request_connect: too many retries"
+      else
+        debug self.id "UDP Connect Request Timeout after %d s; Retrying..."
+          (truncate (15.0 *. 2.0 ** float n)) >>= fun () ->
+        udp_request_connect self fd ss (n+1)
+    | exn -> Lwt.fail exn
+  in
+  Lwt_unix.setsockopt_float fd Lwt_unix.SO_RCVTIMEO (15.0 *. 2.0 ** float n);
+  Lwt.catch (fun () -> udp_connect_response self fd ss trans_id) handle_error
+  (* Lwt_io.BE.write_int64 oc 0x41727101980L >>= fun () -> *)
+  (* Lwt_io.BE.write_int32 oc 0l >>= fun () -> (\* connect *\) *)
+  (* Lwt_io.BE.write_int32 oc trans_id >>= fun () -> *)
+  (* try_lwt *)
+  (*   Lwt_unix.with_timeout (15.0 *. 2.0 ** float n) *)
+  (*     (fun () -> udp_connect_response self ic oc ss trans_id) *)
+  (* with *)
+  (* | Lwt_unix.Timeout -> *)
+  (*   if n >= 8 then *)
+  (*     failwith_lwt "Too many retries" *)
+  (*   else *)
+  (*     debug self.id "UDP Connect Request Timeout after %d s; Retrying..." *)
+  (*       (truncate (15.0 *. 2.0 ** float n)) >>= fun () -> *)
+  (*     udp_request_connect self ic oc ss (n+1) *)
+
+and udp_connect_response self fd ss trans_id =
+  read_udp_packet fd >>= fun buf ->
+  let read_packet : response Lwt.t Get.t =
+    let open Get in
+    Get.BE.int32 >>= fun n ->
+    if n = 3l then
+      Get.string >|= fun msg -> Lwt.return (Error msg)
+    else begin
+      Get.BE.int32 >>= fun trans_id' ->
+      assert (Int32.compare trans_id trans_id' = 0);
+      Get.BE.int64 >|= fun conn_id ->
+      udp_request_announce self fd ss conn_id 0
+    end
+  in
+  Get.run read_packet buf
+  (* Lwt_io.BE.read_int32 ic >>= fun n -> *)
+  (* assert (n = 0l || n = 3l); *)
+  (* if n = 3l then (\* error *\) *)
+  (*   Lwt_io.read ic >>= fun msg -> Lwt.return (Error msg) *)
+  (* else begin *)
+  (*   Lwt_io.BE.read_int32 ic >>= fun trans_id' -> *)
+  (*   assert (Int32.compare trans_id trans_id' = 0); *)
+  (*   Lwt_io.BE.read_int64 ic >>= fun conn_id -> *)
+  (*   udp_request_announce self ic oc ss conn_id 0 *)
+  (* end *)
+
+and udp_request_announce self fd ss conn_id n =
+  let trans_id = udp_fresh_transaction_id () in
+  let create_packet =
+    let open Put in
+    BE.int64 conn_id >>=
+    BE.int32 1l >>=
+    BE.int32 trans_id >>=
+    string (Info.Digest.to_bin self.info_hash) >>=
+    string (Info.PeerId.to_string self.peer_id) >>=
+    BE.int64 ss.Status.downloaded >>=
+    BE.int64 ss.Status.left >>=
+    BE.int64 ss.Status.uploaded >>=
+    BE.int32
+      begin match self.status with
+        | Running -> 0l
+        | Completed -> 1l
+        | Started -> 2l
+        | Stopped -> 3l
+      end >>=
+    BE.int32 0l >>=
+    BE.int32 0l >>=
+    BE.int32 (-1l) >>=
+    BE.int16 self.local_port
+  in
+  let handle_error = function
+    | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
+      debug self.id "UDP Announce Request Timeout after %d s; Retrying..."
+        (truncate (15.0 *. 2.0 ** float n)) >>= fun () ->
+      if n >= 2 then udp_request_connect self fd ss (n+1)
+      else udp_request_announce self fd ss conn_id (n+1)
+    | exn ->
+      Lwt.fail exn
+  in
+  udp_send fd (Put.run create_packet) >>= fun () ->
+  Lwt_unix.setsockopt_float fd Lwt_unix.SO_RCVTIMEO (15.0 *. 2.0 ** float n);
+  Lwt.catch (fun () -> udp_announce_response fd trans_id) handle_error
+
+(*   Lwt_io.BE.write_int64 oc conn_id >>= fun () -> *)
+(*   Lwt_io.BE.write_int32 oc 1l >>= fun () -> (\* announce *\) *)
+(*   Lwt_io.BE.write_int32 oc trans_id >>= fun () -> *)
+(*   Lwt_io.write oc (Info.Digest.to_bin self.info_hash) >>= fun () -> *)
+(*   Lwt_io.write oc (Info.PeerId.to_string self.peer_id) >>= fun () -> *)
+(*   Lwt_io.BE.write_int64 oc ss.Status.downloaded >>= fun () -> *)
+(*   Lwt_io.BE.write_int64 oc ss.Status.left >>= fun () -> *)
+(*   Lwt_io.BE.write_int64 oc ss.Status.uploaded >>= fun () -> *)
+(*   Lwt_io.BE.write_int32 oc *)
+(*     begin match self.status with *)
+(*       | Running -> 0l *)
+(*       | Completed -> 1l *)
+(*       | Started -> 2l *)
+(*       | Stopped -> 3l *)
+(*     end >>= fun () -> *)
+(*   Lwt_io.BE.write_int32 oc 0l >>= fun () -> *)
+(*   Lwt_io.BE.write_int32 oc 0l >>= fun () -> *)
+(*   Lwt_io.BE.write_int32 oc (Int32.of_int (-1)) >>= fun () -> *)
+(*   Lwt_io.BE.write_int16 oc self.local_port >>= fun () -> *)
+(*   try_lwt *)
+(*     Lwt_unix.with_timeout (15.0 *. 2.0 ** float n) *)
+(*     (fun () -> udp_announce_response ic trans_id) *)
+(* with *)
+(* | Lwt_unix.Timeout -> *)
+(*   debug self.id "UDP Announce Request Timeout after %d s; Retrying..." *)
+(*     (truncate (15.0 *. 2.0 ** float n)) >> *)
+(*   if n >= 2 then udp_request_connect self ic oc ss (n+1) *)
+(*   else udp_request_announce self ic oc ss conn_id (n+1) *)
+
+and udp_announce_response fd trans_id =
+  let read_packet =
+    let open Get in
+    BE.int32 >>= fun n ->
+    assert (n = 1l || n = 3l);
+    if n = 3l then (* error *)
+      string >|= fun msg -> Error msg
+    else begin
+      BE.int32 >>= fun trans_id' ->
+      assert (Int32.compare trans_id trans_id' = 0);
+      BE.int32 >>= fun interval ->
+      BE.int32 >>= fun leechers ->
+      BE.int32 >>= fun seeders ->
+      (* string >>= fun peers -> *)
+      (* if String.length peers mod 6 <> 0 then *)
+      (*   failwith_lwt "udp_announce_response: bad peer info in packet"; *)
+      let rec loop () =
+        let peer_info =
+          BE.uint8 >>= fun a ->
+          BE.uint8 >>= fun b ->
+          BE.uint8 >>= fun c ->
+          BE.uint8 >>= fun d ->
+          BE.uint16 >>= fun port ->
+          let addr =
+            Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d" a b c d)
+          in
+          return (addr, port)
+        in
+        either (end_of_input >|= fun () -> [])
+          (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest))
+      in
+      loop () >|= fun new_peers ->
+      Success
+        { new_peers;
+          complete = Some (Int32.to_int seeders);
+          incomplete = Some (Int32.to_int leechers);
+          interval = Int32.to_int interval;
+          min_interval = None }
+    end
+  in
+  try
+    read_udp_packet fd >|= Get.run_full read_packet
+  with
+  | Get.Get_error -> failwith_lwt "udp_announce_response: packet too short"
+  | exn -> Lwt.fail exn
+             
+(*   Lwt_io.BE.read_int32 ic >>= fun n -> *)
+(*   assert (n = 1l || n = 3l); *)
+(*   if n = 3l then (\* error *\) *)
+(*     Lwt_io.read ic >>= fun msg -> Lwt.return (Error msg) *)
+(*   else begin *)
+(*     Lwt_io.BE.read_int32 ic >>= fun trans_id' -> *)
+(*     assert (Int32.compare trans_id trans_id' = 0); *)
+(*     Lwt_io.read_int32 ic >>= fun interval -> *)
+(*     Lwt_io.read_int32 ic >>= fun leechers -> *)
+(*     Lwt_io.read_int32 ic >>= fun seeders -> *)
+(*     let rec loop () = (\* FIXME tail-recursive *\) *)
+(*       try_lwt *)
+(*         let ip = String.create 4 in *)
+(*         Lwt_io.read_into_exactly ic ip 0 4 >>= fun () -> *)
+(*         (\* lwt ip = Util.inet_addr_of_int64 (Lwt_io.read_int64 ic) in *\) *)
+(*         let ip = Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d" *)
+(*           (int_of_char ip.[0]) (int_of_char ip.[1]) (int_of_char ip.[2]) *)
+(*           (int_of_char ip.[3])) *)
+(*         in *)
+(*         Lwt_io.read_int16 ic >>= fun port -> *)
+(*         loop () >>= fun peers -> *)
+(*         Lwt.return ((ip, port) :: peers) *)
+(*       with *)
+(*       | End_of_file -> Lwt.return_nil *)
+(*     in *)
+(*     loop () >>= fun peers -> *)
+(*     Lwt.return (Success *)
+(*       { new_peers = peers; *)
+(*         complete = Some (Int32.to_int seeders); (\* safe in 64-bit *\) *)
+(*         incomplete = Some (Int32.to_int leechers); (\* safe in 64-bit *\) *)
+(*         interval = Int32.to_int interval; (\* safe in 64-bit *\) *)
+(*         min_interval = None }) *)
+(* end *)
+
+(* let write_udp_packet fd buf = *)
+(*   Lwt_unix.write fd buf 0 (String.length buf) >>= fun len -> *)
+(*   if len <> String.length buf then *)
+(*     failwith_lwt "write_udp_packet: len: %d should be: %d" *)
+(*       len (String.length buf) *)
+(*   else *)
+(*     Lwt.return_unit *)
+
+let try_udp_server self ss url =
   let host = match Uri.host url with
     | None -> failwith "Empty Hostname"
     | Some host -> host
@@ -91,105 +331,11 @@ let try_udp_server t ss url =
     | None -> failwith "Empty Port"
     | Some port -> port
   in
-  lwt he = Lwt_unix.gethostbyname host in
-  let iaddr = he.Lwt_unix.h_addr_list.(0) in
-  let saddr = Lwt_unix.ADDR_INET (iaddr, port) in
-  Lwt_unix.connect socket saddr >>
-  let ic = Lwt_io.of_fd ~mode:Lwt_io.input socket in
-  let oc = Lwt_io.of_fd ~mode:Lwt_io.output socket in
-  let rec connect_response trans_id () =
-    lwt n = Lwt_io.BE.read_int32 ic in
-    assert (n = 0l || n = 3l);
-    if n = 3l then (* error *)
-      lwt msg = Lwt_io.read ic in
-      Lwt.return (Error msg)
-    else begin
-      lwt trans_id' = Lwt_io.BE.read_int32 ic in
-      assert (Int32.compare trans_id trans_id' = 0);
-      lwt conn_id = Lwt_io.BE.read_int64 ic in
-      request_announce conn_id 0
-    end
-  and announce_response trans_id () =
-    lwt n = Lwt_io.BE.read_int32 ic in
-    assert (n = 1l || n = 3l);
-    if n = 3l then (* error *)
-      lwt msg = Lwt_io.read ic in
-      Lwt.return (Error msg)
-    else begin
-      lwt trans_id' = Lwt_io.BE.read_int32 ic in
-      assert (Int32.compare trans_id trans_id' = 0);
-      lwt interval = Lwt_io.read_int32 ic in
-      lwt leechers = Lwt_io.read_int32 ic in
-      lwt seeders = Lwt_io.read_int32 ic in
-      let rec loop () = (* FIXME tail-recursive *)
-        try_lwt
-          let ip = String.create 4 in
-          Lwt_io.read_into_exactly ic ip 0 4 >>
-          (* lwt ip = Util.inet_addr_of_int64 (Lwt_io.read_int64 ic) in *)
-          let ip = Unix.inet_addr_of_string (sprintf "%03d.%03d.%03d.%03d"
-            (int_of_char ip.[0]) (int_of_char ip.[1]) (int_of_char ip.[2])
-            (int_of_char ip.[3]))
-          in
-          lwt port = Lwt_io.read_int16 ic in
-          lwt peers = loop () in
-          Lwt.return ((ip, port) :: peers)
-        with
-        | End_of_file -> Lwt.return_nil
-      in
-      lwt peers = loop () in
-      Lwt.return (Success
-        { new_peers = peers;
-          complete = Some (Int32.to_int seeders); (* safe in 64-bit *)
-          incomplete = Some (Int32.to_int leechers); (* safe in 64-bit *)
-          interval = Int32.to_int interval; (* safe in 64-bit *)
-          min_interval = None })
-    end
-  and request_announce conn_id n =
-      let trans_id = fresh_transaction_id () in
-      Lwt_io.BE.write_int64 oc conn_id >>
-      Lwt_io.BE.write_int32 oc 1l >> (* announce *)
-      Lwt_io.BE.write_int32 oc trans_id >>
-      Lwt_io.write oc (Info.Digest.to_bin t.info_hash) >>
-      Lwt_io.write oc (Info.PeerId.to_string t.peer_id) >>
-      Lwt_io.BE.write_int64 oc ss.Status.downloaded >>
-      Lwt_io.BE.write_int64 oc ss.Status.left >>
-      Lwt_io.BE.write_int64 oc ss.Status.uploaded >>
-      Lwt_io.BE.write_int32 oc
-        begin match t.status with
-        | Running -> 0l
-        | Completed -> 1l
-        | Started -> 2l
-        | Stopped -> 3l
-        end >>
-      Lwt_io.BE.write_int32 oc 0l >>
-      Lwt_io.BE.write_int32 oc 0l >>
-      Lwt_io.BE.write_int32 oc (Int32.of_int (-1)) >>
-      Lwt_io.BE.write_int16 oc t.local_port >>
-      try_lwt
-        Lwt_unix.with_timeout (15.0 *. 2.0 ** float n)
-          (announce_response trans_id)
-      with
-      | Lwt_unix.Timeout ->
-        debug t.id "UDP Announce Request Timeout after %d s; Retrying..."
-          (truncate (15.0 *. 2.0 ** float n)) >>
-        if n >= 2 then request_connect (n+1)
-        else request_announce conn_id (n+1)
-  and request_connect n =
-    let trans_id = fresh_transaction_id () in
-    Lwt_io.BE.write_int64 oc 0x41727101980L >>
-    Lwt_io.BE.write_int32 oc 0l >> (* connect *)
-    Lwt_io.BE.write_int32 oc trans_id >>
-    try_lwt
-      Lwt_unix.with_timeout (15.0 *. 2.0 ** float n) (connect_response trans_id)
-    with
-    | Lwt_unix.Timeout ->
-      if n >= 8 then
-        failwith_lwt "Too many retries"
-      else
-        debug t.id "UDP Connect Request Timeout after %d s; Retrying..."
-          (truncate (15.0 *. 2.0 ** float n)) >>
-        request_connect (n+1)
-  in request_connect 0
+  Lwt_unix.gethostbyname host >>= fun he ->
+  let addr = he.Lwt_unix.h_addr_list.(0) in
+  let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
+  Lwt_unix.connect fd (Lwt_unix.ADDR_INET (addr, port)) >>= fun () ->
+  udp_request_connect self fd ss 0
 
 let decode_http_response (d : Bcode.t) =
   let open Bcode in
@@ -251,7 +397,7 @@ let try_http_server t ss (uri : Uri.t) : response Lwt.t =
   match_lwt Cohttp_lwt_unix.Client.get uri with
   | None -> raise_lwt (HTTPError "no response")
   | Some (resp, body) ->
-    lwt body = Cohttp_lwt_body.string_of_body body in
+    Cohttp_lwt_body.string_of_body body >>= fun body ->
     (* debug id "Got tracker response" >> *)
     let dict = Bcode.from_string body in
     match decode_http_response dict with
@@ -267,28 +413,29 @@ let try_server t ss url =
   debug t.id "Querying Tracker: %s" (Uri.to_string url) >>
   match Uri.scheme url with
   | Some "http" ->
-    try_http_server t ss url
+    failwith_lwt "skipping over http tracker"
+    (* try_http_server t ss url *)
   | Some "udp" ->
     try_udp_server t ss url
   | Some other -> failwith_lwt (sprintf "Unknown Tracker Scheme: %S" other)
   | None -> failwith_lwt "No Tracker Scheme Specified"
 
-let query_trackers t ss : response Lwt.t =
+let query_trackers self ss : response Lwt.t =
   let rec loop i =
-    if i >= Array.length t.tier then
+    if i >= Array.length self.tier then
       raise_lwt EmptyAnnounceList
     else
       try_lwt
-        lwt resp = try_server t ss t.tier.(i) in
-        let tmp = t.tier.(0) in
-        t.tier.(0) <- t.tier.(i);
-        t.tier.(i) <- tmp;
+        try_server self ss self.tier.(i) >>= fun resp ->
+        let tmp = self.tier.(0) in
+        self.tier.(0) <- self.tier.(i);
+        self.tier.(i) <- tmp;
         Lwt.return resp
       with
       | Lwt.Canceled ->
         raise_lwt Lwt.Canceled
       | exn ->
-        debug t.id ~exn "Failed" >>= fun () ->
+        debug self.id ~exn "Failed" >>= fun () ->
         loop (i+1)
   in
   loop 0
@@ -360,20 +507,19 @@ let shuffle_array a =
 let start ~super_ch ~ch ~info_hash ~peer_id ~local_port
   ~tier ~status_ch ~peer_mgr_ch =
   let run id =
-    let t = {
-      ch;
-      status_ch;
-      peer_mgr_ch;
-      info_hash;
-      peer_id;
-      tier = Array.of_list tier;
-      local_port;
-      status        = Stopped;
-      next_tick     = 0;
-      id
-    }
+    let self =
+      { ch;
+        status_ch;
+        peer_mgr_ch;
+        info_hash;
+        peer_id;
+        tier = Array.of_list tier;
+        local_port;
+        status        = Stopped;
+        next_tick     = 0;
+        id }
     in
-    shuffle_array t.tier;
-    Lwt_pipe.iter_s (handle_message t) ch
+    shuffle_array self.tier;
+    Lwt_pipe.iter_s (handle_message self) ch
   in
   Proc.spawn ~name:"Tracker" run (Super.default_stop super_ch)

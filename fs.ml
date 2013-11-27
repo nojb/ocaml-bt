@@ -171,7 +171,7 @@ let open_file path =
           failwith_f "Fs.open_file: '%s/%s' exists and is not a directory"
             (Sys.getcwd ()) dir
       else
-        let n = Sys.command ("mkdir " ^ dir) in
+        let n = Sys.command (Printf.sprintf "mkdir \"%s\"" dir) in
         if n <> 0 then
           failwith_f "Fs.open_file: 'mkdir %s' returned error %d" dir n
         else

@@ -2,3 +2,4 @@ true: debug
 not <bcode.*> and not <parser.*>: syntax(camlp4o), package(lwt.syntax)
 true: package(lwt), package(uri), package(cohttp.lwt)
 true: package(sha), package(qcheck), package(lwt.react)
+true: bit_annot
