@@ -5,7 +5,6 @@ type msg =
   | Complete
 
 val start :
-  super_ch:Msg.super_msg Lwt_pipe.t ->
   ch: msg Lwt_pipe.t ->
   info_hash: Info.Digest.t ->
   peer_id: Info.peer_id ->

@@ -117,7 +117,7 @@ let handle_message self msg : unit Lwt.t =
   | msg ->
     debug self.id "Unhandled: %s" (string_of_msg msg)
 
-let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~status_ch ~have
+let start ~ch ~fs_ch ~choke_mgr_ch ~status_ch ~have
   ~pieces ~info_hash =
   let run id =
     let self =
@@ -127,4 +127,4 @@ let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~status_ch ~have
     in
     Lwt_pipe.iter_s (handle_message self) ch
   in
-  Proc.spawn ~name:"PieceMgr" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"PieceMgr" run

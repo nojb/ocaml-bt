@@ -1,6 +1,7 @@
 open Printf
 
 let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
 
 let debug = Proc.debug
 
@@ -140,12 +141,12 @@ let handle_message t msg : unit Lwt.t =
   (* | `WriteBlock (pn, bl, data) -> *)
   (*   write_block t pn bl data *)
 
-let start ~super_ch ~handles ~pieces ~ch =
+let start ~handles ~pieces ~ch =
   let run id =
     let t = { handles; pieces; id } in
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn ~name:"Fs" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"Fs" run
 
 let with_cwd path f =
   let cwd = Sys.getcwd () in
@@ -180,9 +181,9 @@ let open_file path =
   loop path
 
 let open_and_check_file id info : 'a Lwt.t =
-  lwt handles = Lwt_list.map_s (fun fi ->
-    open_file fi.Info.file_path >>= fun (ic, oc) ->
-    Lwt.return (ic, oc, fi.Info.file_size)) info.Info.files in
+  Lwt_list.map_s (fun fi ->
+    open_file fi.Info.file_path >|= fun (ic, oc) ->
+    (ic, oc, fi.Info.file_size)) info.Info.files >>= fun handles ->
   check_file id handles info.Info.pieces >>= fun have ->
   debug id "Torrent data check successful" >>= fun () ->
   Lwt.return (handles, have)

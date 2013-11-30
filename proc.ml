@@ -45,23 +45,10 @@ let async ?name f =
   let id = Id.fresh name in
   ignore ((protect f) id)
 
-(* let async ?name f = *)
-(*   ignore (run ?name f) *)
-(*  *)
-let spawn ?name f on_stop =
-  let f id =
-    try_lwt
-      (protect f) id >>= fun () ->
-      on_stop id
-    with
-    | Lwt.Canceled ->
-      Lwt.return_unit
-    | exn ->
-      on_stop id
-  in
+let spawn ?name f =
   let id = Id.fresh name in
   let t, w = Lwt.wait () in
-  let t' = t >>= f in
+  let t' = t >>= protect f in
   H.add all_threads id t';
   Lwt.on_termination t' (fun () -> H.remove all_threads id);
   Lwt.wakeup w id;

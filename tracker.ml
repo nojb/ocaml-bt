@@ -316,7 +316,8 @@ let try_server self ss url =
 let query_trackers self ss : response Lwt.t =
   let rec loop i =
     if i >= Array.length self.tier then
-      raise_lwt EmptyAnnounceList
+      debug self.id "got to the end of the announce list; restarting..." >>= fun () ->
+      Lwt.fail (Failure "end of announce_list")
     else
       try_lwt
         try_server self ss self.tier.(i) >>= fun resp ->
@@ -333,19 +334,11 @@ let query_trackers self ss : response Lwt.t =
   in
   loop 0
 
-(** [poke_tracker id c st] tries to contact the tracker and
-    asks for peers for the Torrent specified by [c.torrent_info].
-    Before doing this, it asks the [Status] thread to know how many
-    bytes are left to download. If the tracker request is successful,
-    a new timer is setup for the interval time requested by the tracker,
-    otherwise a default is used.
-    @returns st the state updated with new interval times and [status] *)
 let poke_tracker self : (int * int option) Lwt.t =
   let mv = Lwt_mvar.create_empty () in
   Lwt_pipe.write self.status_ch (`RequestStatus mv);
   Lwt_mvar.take mv >>= fun ss ->
-  let query () =
-    query_trackers self ss >>= function
+  let handle_success = function
     | Warning warn ->
       debug self.id "Tracker Warning Response: %s" warn >>= fun () ->
       Lwt.return (fail_timer_interval, None)
@@ -364,17 +357,18 @@ let poke_tracker self : (int * int option) Lwt.t =
       end;
       Lwt.return (ok.interval, ok.min_interval)
   in
-  let handle_error = function
-    | HTTPError err ->
-      debug self.id "Tracker HTTP Error: %s" err >>= fun () ->
-      Lwt.return (fail_timer_interval, None)
-    | DecodeError ->
-      debug self.id "Response Decode Error" >>= fun () ->
-      Lwt.return (fail_timer_interval, None)
-    | exn ->
-      Lwt.fail exn
+  let handle_error exn =
+    (* | HTTPError err -> *)
+    (*   debug self.id "Tracker HTTP Error: %s" err >>= fun () -> *)
+    (*   Lwt.return (fail_timer_interval, None) *)
+    (* | DecodeError -> *)
+    (*   debug self.id "Response Decode Error" >>= fun () -> *)
+    (*   Lwt.return (fail_timer_interval, None) *)
+    (* | exn -> *)
+    debug self.id ~exn "tracker error" >>= fun () ->
+    Lwt.return (fail_timer_interval, None)
   in
-  Lwt.catch query handle_error
+  Lwt.catch (fun () -> query_trackers self ss >>= handle_success) handle_error
 
 let handle_message self msg : unit Lwt.t =
   debug self.id "%s" (string_of_msg msg) >>
@@ -402,7 +396,7 @@ let shuffle_array a =
     a.(j) <- tmp
   done
 
-let start ~super_ch ~ch ~info_hash ~peer_id ~local_port
+let start ~ch ~info_hash ~peer_id ~local_port
   ~tier ~status_ch ~peer_mgr_ch =
   let run id =
     let self =
@@ -420,4 +414,4 @@ let start ~super_ch ~ch ~info_hash ~peer_id ~local_port
     shuffle_array self.tier;
     Lwt_pipe.iter_s (handle_message self) ch
   in
-  Proc.spawn ~name:"Tracker" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"Tracker" run

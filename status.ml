@@ -52,7 +52,7 @@ let handle_message t msg st : state Lwt.t =
     debug t.id "Unhandled: %s" (string_of_msg msg) >>= fun () ->
     Lwt.return st
 
-let start ~super_ch ~ch ~info_hash ~left =
+let start ~ch ~info_hash ~left =
   let run id =
     let st =
       { uploaded = 0L;
@@ -68,4 +68,4 @@ let start ~super_ch ~ch ~info_hash ~left =
     Lwt_pipe.fold_s (handle_message t) ch st >>= fun _ ->
     Lwt.return_unit
   in
-  Proc.spawn ~name:"Status" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"Status" run

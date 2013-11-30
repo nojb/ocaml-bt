@@ -9,7 +9,6 @@ val open_and_check_file :
   ((Lwt_io.input_channel * Lwt_io.output_channel * int64) list * Bits.t) Lwt.t
 
 val start :
-  super_ch: Msg.super_msg Lwt_pipe.t ->
   handles: (Lwt_io.input_channel * Lwt_io.output_channel * int64) list ->
   pieces: Info.piece_info array ->
   ch: msg Lwt_pipe.t ->

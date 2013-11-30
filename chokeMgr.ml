@@ -139,7 +139,7 @@ let handle_message t msg =
 
 let choking_frequency = 5
 
-let start ~super_ch ~ch =
+let start ~ch =
   let rec ticker () =
     Lwt_unix.sleep (float choking_frequency) >>= fun () ->
     Lwt_pipe.write ch Tick;
@@ -149,4 +149,4 @@ let start ~super_ch ~ch =
     let t = { peers = H.create 17; id; ticker = ticker () } in
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn ~name:"ChokeMgr" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"ChokeMgr" run

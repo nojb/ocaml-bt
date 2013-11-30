@@ -128,7 +128,7 @@ let handle_message t msg : unit Lwt.t =
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)
 
-let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
+let start ~ch ~fs_ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
   let run id =
     let t =
       { pending_peers = [];
@@ -144,4 +144,4 @@ let start ~super_ch ~ch ~fs_ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~
     in
     Lwt_pipe.iter_s (handle_message t) ch
   in
-  Proc.spawn ~name:"PeerMgr" run (Super.default_stop super_ch)
+  Proc.spawn ~name:"PeerMgr" run

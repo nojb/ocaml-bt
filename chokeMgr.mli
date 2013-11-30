@@ -10,6 +10,5 @@ type msg =
   | PeerRateUpdate of Proc.Id.t * float * float
 
 val start :
-  super_ch: Msg.super_msg Lwt_pipe.t ->
   ch: msg Lwt_pipe.t ->
   Proc.Id.t

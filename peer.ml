@@ -357,4 +357,4 @@ let start addr port peer_id ic oc ~peer_mgr_ch ih ~pieces ~piece_mgr_ch ~fs_ch ~
           Lwt.return_unit
       end
   in
-  Proc.spawn ~name:"Peer" run (fun _ -> Lwt.return_unit)
+  Proc.spawn ~name:"Peer" run

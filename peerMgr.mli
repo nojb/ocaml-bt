@@ -1,5 +1,4 @@
 val start :
-  super_ch: Msg.super_msg Lwt_pipe.t ->
   ch: Msg.peer_mgr_msg Lwt_pipe.t ->
   fs_ch: Fs.msg Lwt_pipe.t ->
   choke_mgr_ch: ChokeMgr.msg Lwt_pipe.t ->

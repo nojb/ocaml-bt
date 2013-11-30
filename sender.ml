@@ -44,4 +44,4 @@ let start oc ~ch ~fs_ch ~peer_ch =
     finally
       Lwt_io.close oc
   in
-  Proc.spawn ~name:"Sender" run (fun _ -> Lwt.return_unit)
+  Proc.spawn ~name:"Sender" run
