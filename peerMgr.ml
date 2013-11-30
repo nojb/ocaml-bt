@@ -119,11 +119,9 @@ let handle_message t msg : unit Lwt.t =
     fill_peers t
   | Connect (id, ch) ->
     H.replace t.peers id ch;
-    (* Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.AddPeer (id, ch, dlr, ulr)); *)
     Lwt.return_unit
   | Disconnect (id) ->
     H.remove t.peers id;
-    (* Lwt_pipe.write t.choke_mgr_ch (ChokeMgr.RemovePeer id); *)
     Lwt.return_unit
   | msg ->
     debug t.id "Unhandled: %s" (string_of_msg msg)

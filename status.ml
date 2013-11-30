@@ -26,19 +26,22 @@ type t = {
 }
 
 let string_of_msg = function
-  | `UpdateStats (complete, incomplete) ->
-    sprintf "TrackerStat %s%s"
-      (Util.map_some "" (fun ic -> " incomplete: " ^ string_of_int ic)
-        incomplete)
-      (Util.map_some "" (fun co -> " complete: " ^ string_of_int co)
-        complete)
+  | `UpdateStats (Some complete, Some incomplete) ->
+    sprintf "UpdateStat seeders: %d leechers: %d" complete incomplete
+  | `UpdateStats (None, Some leechers) ->
+    sprintf "UpdateStats leechers: %d" leechers
+  | `UpdateStats (Some seeders, None) ->
+    sprintf "UpdateStats seeders %d" seeders
+  | `UpdateStats (None, None) ->
+    "UpdateStats"
   | `CompletedPiece i ->
     sprintf "CompletedPiece index: %d" i
   | `TorrentCompleted ->
     "TorrentCompleted"
   | `RequestStatus _ ->
     "RequestStatus"
-  | `Tick -> "Tick"
+  | `Tick ->
+    "Tick"
 
 let handle_message t msg st : state Lwt.t =
   debug t.id "%s" (string_of_msg msg) >>= fun () ->

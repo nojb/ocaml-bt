@@ -241,7 +241,7 @@ let handle_timer_tick self =
   (* later- tell Status, tell ChokeMgr *)
 
 let handle_message self msg : unit Lwt.t =
-  (* debug self.id "%s" (string_of_msg msg) >>= fun () -> *)
+  debug self.id "%s" (string_of_msg msg) >>= fun () ->
   match msg with
   | PeerMsg msg ->
     handle_peer_msg self msg

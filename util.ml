@@ -12,10 +12,3 @@ let string_of_file_size (b : int64) : string =
 (*     Printf.sprintf "%.1f %ciB" *)
 (*       (b' /. step ** (float exp)) ("KMGTPE".[exp-1]) *)
 
-let map_some x f = function
-  | None -> x
-  | Some x -> f x
-  
-let maybe x = function
-  | None -> x
-  | Some x -> x

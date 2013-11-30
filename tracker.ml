@@ -48,7 +48,7 @@ type response =
 
 let fail_timer_interval = 15 * 60
 
-type t = {
+type self = {
   status_ch           : Status.msg Lwt_pipe.t;
   ch          : msg Lwt_pipe.t;
   peer_mgr_ch         : Msg.peer_mgr_msg Lwt_pipe.t;
@@ -61,21 +61,16 @@ type t = {
   id : Proc.Id.t
 }
 
-(** [timer_update id c st] is a Lwt thread that updates the [tick] counter
-    of [st] and launches a asynchronous thread to ping the tracker thread
-    after [st.interval] seconds.
-    @returns [st] updated with the new [tick] counter *)
-let timer_update t (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
-  match t.status with
+let timer_update self (interval, _) : unit Lwt.t = (* (interval, min_interval) = *)
+  match self.status with
   | Running ->
-    let nt = t.next_tick in
-    t.next_tick <- nt+1;
-    (* run *)
+    let nt = self.next_tick in
+    self.next_tick <- nt+1;
     let _ = Proc.spawn
       (fun _ ->
         Lwt_unix.sleep (float interval) >|= fun () ->
-        Lwt_pipe.write t.ch (TrackerTick nt)) in
-    debug t.id "Set Timer to: %d" interval >>
+        Lwt_pipe.write self.ch (TrackerTick nt)) in
+    debug self.id "Set Timer to: %d" interval >>
     Lwt.return_unit
   | _ ->
     Lwt.return_unit
