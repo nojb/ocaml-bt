@@ -62,7 +62,7 @@ let sha1s bc =
   split_at 20 |> Array.map Word160.from_bin
 
 let info_hash (bc : Bcode.t) =
-  Bcode.find "info" bc |> Bcode.bencode |> Word160.digest_of_string
+  Bcode.find "info" bc |> Bcode.bencode |> Put.run |> Word160.digest_of_string
 
 let piece_length bc =
   Bcode.find "info" bc |> Bcode.find "piece length" |> Bcode.to_int

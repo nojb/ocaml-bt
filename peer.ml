@@ -67,7 +67,8 @@ and t = {
   update_ul : int -> unit;
   ticker : unit Lwt.t;
   mutable handlers : (event -> unit) list;
-  extensions : (string, int) Hashtbl.t
+  extensions : (string, int) Hashtbl.t;
+  (* mutable ext_handshake : (string * Bcode.t) list *)
 }
 
 let string_of_sockaddr = function
@@ -132,7 +133,8 @@ let send_extended_hanshake pr =
         name, Bcode.BInt (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.BDict ["m", Bcode.BDict m] in
-  send pr (SendMsg (Wire.Extended (0, Bcode.bencode m)))
+  let m = Bcode.bencode m |> Put.run in
+  send pr (SendMsg (Wire.Extended (0, m)))
 
 let request_more_blocks pr =
   match pr.current with
@@ -247,7 +249,7 @@ let handle_peer_msg pr msg =
   | Wire.Cancel (index, block) ->
     send pr (SendCancel (index, block))
   | Wire.Extended (0, m) ->
-    let m = Bcode.from_string m |> Bcode.find "m" |> Bcode.to_dict in
+    let m = Get.run Bcode.bdecode m |> Bcode.find "m" |> Bcode.to_dict in
     List.iter (fun (name, id) ->
         let id = Bcode.to_int id in
         if id = 0 then Hashtbl.remove pr.extensions name

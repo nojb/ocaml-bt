@@ -223,7 +223,7 @@ and udp_announce_response fd ev trans_id =
     end
   in
   try
-    udp_recv fd >|= Get.run_full read_packet
+    udp_recv fd >|= Get.run read_packet
   with
   | Get.Get_error -> failwith_lwt "udp_announce_response: packet too short"
   | exn -> Lwt.fail exn
@@ -317,7 +317,7 @@ let http_announce ann url event =
     Cohttp_lwt_body.string_of_body body >>= fun body ->
     Trace.infof "Received response from HTTP tracker body: %S" body;
     try
-      Bcode.from_string body |> http_decode_response |> Lwt.return
+      Get.run Bcode.bdecode body |> http_decode_response |> Lwt.return
     with exn ->
       Lwt.fail (HTTPError ("decode error: " ^ Printexc.to_string exn))
 

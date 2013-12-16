@@ -11,7 +11,8 @@ val to_int : t -> int
 val to_string : t -> string
 val to_dict : t -> (string * t) list
 
-val from_file : string -> t
+val bdecode : t Get.t
+val bencode : t -> Put.t
 
-val bencode : t -> string
-val from_string : string -> t
+(* val from_file : string -> t *)
+(* val from_string : string -> t *)

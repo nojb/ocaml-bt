@@ -11,9 +11,12 @@ module BE : S
 module LE : S
 
 val string : string -> t
+val substring : string -> int -> int -> t
+val char : char -> t
   
 val bind : t -> t -> t
   
 val (>>=) : t -> t -> t
+val (>>) : t -> t -> t
 
 val run : t -> string

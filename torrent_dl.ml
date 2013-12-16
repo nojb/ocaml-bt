@@ -15,7 +15,7 @@ let handle_client_update upd =
 
 let download path =
   let t, w = Lwt.wait () in
-  let bc = Bcode.from_file path in
+  let bc = Get.run_file Bcode.bdecode path in
   let info = Info.create bc in
   Store.open_and_check_file info >>= fun h ->
   let cl = Client.create h info in

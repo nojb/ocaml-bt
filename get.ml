@@ -180,15 +180,23 @@ let either p1 p2 s i =
 
 exception Get_error
 
-let run p s =
-  match p s 0 with
-  | Success (x, _) -> x
-  | Failure -> raise Get_error
+(* let run p s = *)
+(*   match p s 0 with *)
+(*   | Success (x, _) -> x *)
+(*   | Failure -> raise Get_error *)
 
-let run_full p s =
+let run p s =
   match p s 0 with
   | Success (x, j) ->
     if j <> String.length s then raise Get_error
     else x
   | Failure ->
     raise Get_error
+
+let run_file p path =
+  let ic = open_in_bin path in
+  let len = in_channel_length ic in
+  let s = String.create len in
+  really_input ic s 0 len;
+  run p s
+  

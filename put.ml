@@ -5,7 +5,8 @@ let bind (n, f) (m, g) =
   (n+m, fun s i -> f s i; g s (i+n))
   
 let (>>=) = bind
-
+let (>>) = bind
+  
 module type S = sig
   val int64 : int64 -> t
   val int32 : int32 -> t
@@ -45,6 +46,13 @@ end
 
 let string str =
   String.length str, fun s i -> String.blit str 0 s i (String.length str)
+
+let substring s off len =
+  if String.length s > off + len then invalid_arg "Put.substring";
+  len, fun str i -> String.blit s 0 str i len
+
+let char c =
+  1, fun s i -> s.[i] <- c
 
 let run (n, f) =
   let s = String.create n in

@@ -43,5 +43,6 @@ val fix : (unit -> 'a t) -> 'a t
 
 exception Get_error
 
+(* val run : 'a t -> string -> 'a *)
 val run : 'a t -> string -> 'a
-val run_full : 'a t -> string -> 'a
+val run_file : 'a t -> string -> 'a

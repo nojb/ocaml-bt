@@ -61,22 +61,36 @@ let blist = Get.fix blist'
 let bdict = Get.fix bdict'
 let bitem = Get.fix bitem'
 
-let bencode item =
-  let b = Buffer.create 17 in
-  let rec loop = function
-  | BInt n -> Printf.bprintf b "i%se" (Int64.to_string n)
-  | BString s -> Printf.bprintf b "%d:%s" (String.length s) s
+let bdecode = bitem
+
+let rec bencode item =
+  let open Put in
+  match item with
+  | BInt n ->
+    char 'i' >> string (Int64.to_string n) >> char 'e'
+  | BString s ->
+    string (string_of_int (String.length s)) >> char ':' >> string s
   | BList l ->
-      Buffer.add_char b 'l';
-      List.iter loop l;
-      Buffer.add_char b 'e'
+    List.fold_left (fun i x -> i >> bencode x) (char 'l') l >> char 'e'
   | BDict d ->
-      Buffer.add_char b 'd';
-      List.iter (fun (k, v) ->
-        Printf.bprintf b "%d:%s" (String.length k) k;
-        loop v) d;
-      Buffer.add_char b 'e'
-  in loop item; Buffer.contents b
+    List.fold_left (fun i (k, v) ->
+        i >> string (string_of_int (String.length k)) >> char ':' >> string k >>
+        bencode v) (char 'd') d >> char 'e'
+  (* let b = Buffer.create 17 in *)
+  (* let rec loop = function *)
+  (* | BInt n -> Printf.bprintf b "i%se" (Int64.to_string n) *)
+  (* | BString s -> Printf.bprintf b "%d:%s" (String.length s) s *)
+  (* | BList l -> *)
+  (*     Buffer.add_char b 'l'; *)
+  (*     List.iter loop l; *)
+  (*     Buffer.add_char b 'e' *)
+  (* | BDict d -> *)
+  (*     Buffer.add_char b 'd'; *)
+  (*     List.iter (fun (k, v) -> *)
+  (*       Printf.bprintf b "%d:%s" (String.length k) k; *)
+  (*       loop v) d; *)
+  (*     Buffer.add_char b 'e' *)
+  (* in loop item; Buffer.contents b *)
 
 (* let test_bdecode () = *)
 (*   let ints = *)
@@ -94,15 +108,15 @@ let bencode item =
 (*     (fun item -> Get.run_full bitem (bencode item) = item) in *)
 (*   QCheck.run qc *)
 
-let from_file path =
-  let ic = open_in_bin path in
-  let len = in_channel_length ic in
-  let s = String.create len in
-  really_input ic s 0 len;
-  Get.run_full bitem s
+(* let from_file path = *)
+(*   let ic = open_in_bin path in *)
+(*   let len = in_channel_length ic in *)
+(*   let s = String.create len in *)
+(*   really_input ic s 0 len; *)
+(*   Get.run_full bitem s *)
 
-let from_string (s : string) : t =
-  Get.run_full bitem s
+(* let from_string (s : string) : t = *)
+(*   Get.run_full bitem s *)
 
 (* let _ = *)
 (*   test_bdecode () *)
