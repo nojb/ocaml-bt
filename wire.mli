@@ -13,8 +13,9 @@ type msg =
   | Piece of int * int * string
   | Cancel of int * block
   | Port of int
+  | Extended of int * string
 
-val size_of_msg : msg -> int
+(* val size_of_msg : msg -> int *)
 
 exception BadMsg of int * int
 

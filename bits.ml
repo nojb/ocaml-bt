@@ -84,6 +84,12 @@ let iter f v =
     f (get_byte v i <> 0)
   done
 
+let iteri f v =
+  let n = String.length v in
+  for i = 0 to n-1 do
+    f i (get_byte v i <> 0)
+  done
+
 let map f v =
   let n = String.length v in
   let s = String.create n in

@@ -19,6 +19,76 @@ let fail =
 
 let (>>=) = bind
 let (>|=) p f = bind p (fun x -> return (f x))
+let (>>) p q = bind p (fun _ -> q)
+    
+let alt p q =
+  fun s i ->
+    match p s i with | Failure -> q s i | Success _ as res -> res
+
+(* let (>>=) p f = bind p f *)
+(* let (>>) p q = bind p (fun _ -> q) *)
+(* let (>|=) p f = bind p (fun x -> return (f x)) *)
+let (>|) p x = bind p (fun _ -> return x)
+let (<|>) p q = alt p q
+
+let sat pred p =
+  fun s i ->
+    match p s i with
+    | Success (x, j) -> if pred x then Success (x, j) else Failure
+    | Failure -> Failure
+
+let any_char =
+  fun s i ->
+    if i >= String.length s then Failure
+    else Success (s.[i], i+1)
+
+let char c =
+  sat (fun ch -> ch = c) any_char
+
+(* parses all the characters satisfying [pred] into
+ * a string *)
+let chars1_pred (pred : char -> bool) =
+  fun s i ->
+    let rec loop j =
+      if j >= String.length s then
+        if j > i then Success (String.sub s i (j-i), j)
+        else Failure
+      else
+        if pred s.[j] then loop (j+1)
+        else
+          if j > i then Success (String.sub s i (j-i), j)
+          else Failure
+    in loop i
+
+let digits =
+  chars1_pred (fun ch -> '0' <= ch && ch <= '9')
+
+let rec many p =
+  many1 p <|> return []
+
+and many1 p =
+  p >>= fun x -> many p >|= fun xs -> x :: xs
+
+let any_int =
+  digits >|= int_of_string
+
+let any_int64 =
+  digits >|= Int64.of_string
+
+let wrapped p1 p p2 =
+  p1 >> p >>= fun res -> p2 >| res
+
+let string_of_length len =
+  fun s i ->
+    if i+len > String.length s then Failure
+    else Success (String.sub s i len, i+len)
+
+let pair p1 p2 =
+  p1 >>= fun x1 -> p2 >|= fun x2 -> (x1, x2)
+
+let fix f =
+  fun s i ->
+    (f ()) s i
 
 module type S = sig
   val uint8 : int t

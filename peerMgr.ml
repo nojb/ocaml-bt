@@ -6,19 +6,19 @@ let (>|=) = Lwt.(>|=)
 
 let debug = Proc.debug
 
-let failwith_lwt msg = raise_lwt (Failure msg)
+(* let failwith_lwt msg = raise_lwt (Failure msg) *)
 
-module H = Hashtbl.Make (Proc.Id)
+(* module H = Hashtbl.Make (Proc.Id) *)
 
-let string_of_msg = function
-  | PeersFromTracker peers ->
-    sprintf "PeersFromTracker: count: %d" (List.length peers)
-  | NewIncoming _ ->
-    "NewIncoming"
-  | Connect (tid, _) ->
-    sprintf "Connect: id: %s" (Proc.Id.to_string tid)
-  | Disconnect tid ->
-    sprintf "Disconnect: id: %s" (Proc.Id.to_string tid)
+(* let string_of_msg = function *)
+(*   | PeersFromTracker peers -> *)
+(*     sprintf "PeersFromTracker: count: %d" (List.length peers) *)
+(*   | NewIncoming _ -> *)
+(*     "NewIncoming" *)
+(*   | Connect (tid, _) -> *)
+(*     sprintf "Connect: id: %s" (Proc.Id.to_string tid) *)
+(*   | Disconnect tid -> *)
+(*     sprintf "Disconnect: id: %s" (Proc.Id.to_string tid) *)
 
 type t = {
   mutable pending_peers : peer list;
@@ -143,3 +143,4 @@ let start ~ch ~fs_ch ~choke_mgr_ch ~peer_id ~info_hash ~piece_mgr_ch ~pieces =
     Lwt_pipe.iter_s (handle_message t) ch
   in
   Proc.spawn ~name:"PeerMgr" run
+

@@ -13,6 +13,7 @@ val lognot : t -> t
 val logand : t -> t -> t
 val logor : t -> t -> t
 val iter : (bool -> unit) -> t -> unit
+val iteri : (int -> bool -> unit) -> t -> unit
 val map : (bool -> bool) -> t -> t
 val fold_left_i : ('a -> int -> bool -> 'a) -> 'a -> t -> 'a
 val to_string : t -> string

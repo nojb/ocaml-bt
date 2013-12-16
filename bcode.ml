@@ -4,60 +4,62 @@ type t =
   | BList of t list
   | BDict of (string * t) list
 
-let find (s : string) (bc : t) : t option =
+let find (s : string) (bc : t) : t =
   match bc with
   | BDict d ->
-    begin try Some (List.assoc s d)
-    with Not_found -> None
-    end
-  | _ -> None
+    List.assoc s d
+  | _ ->
+    invalid_arg "Bcode.find"
 
 let to_list = function
-  | BList l -> Some l
-  | _ -> None
+  | BList l -> l
+  | _ -> invalid_arg "Bcode.to_list"
 
 let to_int64 = function
-  | BInt n -> Some n
-  | _ -> None
+  | BInt n -> n
+  | _ -> invalid_arg "Bcode.to_int64"
 
 let to_int = function
   | BInt n ->
-    if Int64.(compare n (of_int (to_int n))) = 0 then Some (Int64.to_int n)
-    else None
-  | _ -> None
+    if Int64.(compare n (of_int (to_int n))) = 0 then Int64.to_int n
+    else invalid_arg "Bcode.to_int"
+  | _ ->
+    invalid_arg "Bcode.to_int"
 
 let to_string = function
-  | BString s -> Some s
-  | _ -> None
+  | BString s -> s
+  | _ -> invalid_arg "Bcode.to_string"
+
+let to_dict = function
+  | BDict d -> d
+  | _ -> invalid_arg "Bcode.to_dict"
 
 (** Bcode parsing *)
 
-open Parser
-
 let bint =
-  wrapped (char 'i') any_int64 (char 'e') >|= fun n -> BInt n
+  Get.(wrapped (char 'i') any_int64 (char 'e') >|= fun n -> BInt n)
 
 let bstring' =
-  any_int >>= fun n -> char ':' >> string_of_length n
+  Get.(any_int >>= fun n -> char ':' >> string_of_length n)
 
 let bstring =
-  bstring' >|= fun s -> BString s
+  Get.(bstring' >|= fun s -> BString s)
 
 let rec blist' () =
-  wrapped (char 'l') (many (fix bitem')) (char 'e') >|= fun l -> BList l
+  Get.(wrapped (char 'l') (many (fix bitem')) (char 'e') >|= fun l -> BList l)
 
 and bdict' () =
-  wrapped
+  Get.(wrapped
     (char 'd')
     (many (pair bstring' (fix bitem')))
-    (char 'e') >|= fun items -> BDict items
+    (char 'e') >|= fun items -> BDict items)
 
 and bitem' () =
-  bint <|> fix blist' <|> bstring <|> fix bdict'
+  Get.(bint <|> fix blist' <|> bstring <|> fix bdict')
 
-let blist = fix blist'
-let bdict = fix bdict'
-let bitem = fix bitem'
+let blist = Get.fix blist'
+let bdict = Get.fix bdict'
+let bitem = Get.fix bitem'
 
 let bencode item =
   let b = Buffer.create 17 in
@@ -76,31 +78,31 @@ let bencode item =
       Buffer.add_char b 'e'
   in loop item; Buffer.contents b
 
-let test_bdecode () =
-  let ints =
-    QCheck.Arbitrary.(map small_int (fun n -> BInt (Int64.of_int n))) in
-  let strings =
-    QCheck.Arbitrary.(map string (fun s -> BString s)) in
-  let any =
-    QCheck.Arbitrary.(fix ~max:4 ~base:(choose [ints; strings])
-      (fun arb ->
-        let lists = map (list arb) (fun l -> BList l) in
-        let dicts = map (list (pair string arb)) (fun d -> BDict d) in
-        choose [lists; dicts])) in
-  let qc = QCheck.mk_test ~n:100
-    ~name:"bencoding" any
-    (fun item -> run_parser (bencode item) bitem = item) in
-  QCheck.run qc
+(* let test_bdecode () = *)
+(*   let ints = *)
+(*     QCheck.Arbitrary.(map small_int (fun n -> BInt (Int64.of_int n))) in *)
+(*   let strings = *)
+(*     QCheck.Arbitrary.(map string (fun s -> BString s)) in *)
+(*   let any = *)
+(*     QCheck.Arbitrary.(fix ~max:4 ~base:(choose [ints; strings]) *)
+(*       (fun arb -> *)
+(*         let lists = map (list arb) (fun l -> BList l) in *)
+(*         let dicts = map (list (pair string arb)) (fun d -> BDict d) in *)
+(*         choose [lists; dicts])) in *)
+(*   let qc = QCheck.mk_test ~n:100 *)
+(*     ~name:"bencoding" any *)
+(*     (fun item -> Get.run_full bitem (bencode item) = item) in *)
+(*   QCheck.run qc *)
 
-let from_file (path : string) : t =
+let from_file path =
   let ic = open_in_bin path in
   let len = in_channel_length ic in
   let s = String.create len in
   really_input ic s 0 len;
-  run_parser s bitem
+  Get.run_full bitem s
 
 let from_string (s : string) : t =
-  run_parser s bitem
+  Get.run_full bitem s
 
 (* let _ = *)
 (*   test_bdecode () *)

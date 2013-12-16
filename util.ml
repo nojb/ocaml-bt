@@ -12,3 +12,8 @@ let string_of_file_size (b : int64) : string =
 (*     Printf.sprintf "%.1f %ciB" *)
 (*       (b' /. step ** (float exp)) ("KMGTPE".[exp-1]) *)
 
+let string_of_sockaddr = function
+  | Unix.ADDR_INET (addr, port) ->
+    Unix.string_of_inet_addr addr ^ ":" ^ string_of_int port
+  | Unix.ADDR_UNIX name ->
+    name
