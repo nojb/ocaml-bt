@@ -43,95 +43,44 @@ let string_of_msg = function
   | Extended (id, _) ->
     sprintf "EXTENDED %d" id
 
-(* let size_of_msg = function *)
-(*   | KeepAlive -> 4 *)
-(*   | Choke *)
-(*   | Unchoke *)
-(*   | Interested *)
-(*   | NotInterested -> 5 *)
-(*   | Have _ -> 9 *)
-(*   | BitField bits -> 5 + Bits.length (Bits.pad bits 8) *)
-(*   | Request _ -> 17 *)
-(*   | Piece (_, _, block) -> String.length block + 13 *)
-(*   | Cancel _ -> 17 *)
-(*   | Port _ -> 7 *)
-(*   | Extended (_, s) -> 6 + String.length s *)
-
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let write_int8 oc n =
-  Lwt_io.write_char oc (char_of_int n)
-
-let write oc msg =
+let put' msg : Put.t =
+  let open Put in
+  let open Put.BE in
   match msg with
   | KeepAlive ->
-    Lwt_io.BE.write_int oc 0 >>= fun () ->
-    Lwt.return 4
+    string ""
   | Choke ->
-    Lwt_io.BE.write_int oc 1 >>= fun () ->
-    write_int8 oc 0 >>= fun () ->
-    Lwt.return 5
+    int8 0
   | Unchoke ->
-    Lwt_io.BE.write_int oc 1 >>= fun () ->
-    write_int8 oc 1 >>= fun () ->
-    Lwt.return 5
+    int8 1
   | Interested ->
-    Lwt_io.BE.write_int oc 1 >>= fun () ->
-    write_int8 oc 2 >>= fun () ->
-    Lwt.return 5
+    int8 2
   | NotInterested ->
-    Lwt_io.BE.write_int oc 1 >>= fun () ->
-    write_int8 oc 3 >>= fun () ->
-    Lwt.return 5
+    int8 3
   | Have index ->
-    Lwt_io.BE.write_int oc 5 >>= fun () ->
-    write_int8 oc 4 >>= fun () ->
-    Lwt_io.BE.write_int oc index >>= fun () ->
-    Lwt.return 9
+    int8 4 >> int index
   | BitField bits ->
-    let bits = Bits.pad bits 8 in
-    let len = Bits.length bits in
-    Lwt_io.BE.write_int oc (1 + len) >>= fun () ->
-    write_int8 oc 5 >>= fun () ->
-    Lwt_io.write oc (Bits.to_bin bits) >>= fun () ->
-    Lwt.return (5 + len)
+    int8 5 >> string (Bits.pad bits 8 |> Bits.to_bin)
   | Request (index, Block (offset, length)) ->
-    Lwt_io.BE.write_int oc 13 >>= fun () ->
-    write_int8 oc 6 >>= fun () ->
-    Lwt_io.BE.write_int oc index >>= fun () ->
-    Lwt_io.BE.write_int oc offset >>= fun () ->
-    Lwt_io.BE.write_int oc length >>= fun () ->
-    Lwt.return 17
+    int8 6 >> int index >> int offset >> int length
   | Piece (index, offset, block) ->
-    let len = String.length block in
-    Lwt_io.BE.write_int oc (9 + len) >>= fun () ->
-    write_int8 oc 7 >>= fun () ->
-    Lwt_io.BE.write_int oc index >>= fun () ->
-    Lwt_io.BE.write_int oc offset >>= fun () ->
-    Lwt_io.write oc block >>= fun () ->
-    Lwt.return (13 + len)
+    int8 7 >> int index >> int offset >> string block
   | Cancel (index, Block (offset, length)) ->
-    Lwt_io.BE.write_int oc 13 >>= fun () ->
-    write_int8 oc 8 >>= fun () ->
-    Lwt_io.BE.write_int oc index >>= fun () ->
-    Lwt_io.BE.write_int oc offset >>= fun () ->
-    Lwt_io.BE.write_int oc length >>= fun () ->
-    Lwt.return 17
+    int8 8 >> int index >> int offset >> int length
   | Port port ->
-    Lwt_io.BE.write_int oc 3 >>= fun () ->
-    write_int8 oc 9 >>= fun () ->
-    Lwt_io.BE.write_int16 oc port >>= fun () ->
-    Lwt.return 7
+    int8 9 >> int16 port
   | Extended (id, s) ->
-    Lwt_io.BE.write_int oc (String.length s + 2) >>= fun () ->
-    Lwt_io.BE.write_int oc 20 >>= fun () ->
-    write_int8 oc id >>= fun () ->
-    Lwt_io.write oc s >>= fun () ->
-    Lwt.return (String.length s + 6)
+    int8 20 >> int8 id >> string s
 
-let read_int8 ic =
-  Lwt_io.read_char ic >|= int_of_char
+let put msg =
+  let p = put' msg in
+  Put.(BE.int (length p) >> p)
+
+let write oc msg =
+  put msg |> Put.run |> Lwt_io.write oc
     
 let read_exactly ic len =
   let buf = String.create len in
@@ -140,48 +89,55 @@ let read_exactly ic len =
 
 exception BadMsg of int * int
 
-let read_msg ic len msgid =
-  match msgid, len with
-  | 0, 1 -> Lwt.return Choke
-  | 1, 1 -> Lwt.return Unchoke
-  | 2, 1 -> Lwt.return Interested
-  | 3, 1 -> Lwt.return NotInterested
-  | 4, 5 ->
-    Lwt_io.BE.read_int ic >|= fun index ->
-    Have index
-  | 5, _ ->
-    let len' = len-1 in
-    read_exactly ic len' >|= fun buf -> BitField (Bits.of_bin buf)
-  | 6, 13 ->
-    Lwt_io.BE.read_int ic >>= fun index ->
-    Lwt_io.BE.read_int ic >>= fun start ->
-    Lwt_io.BE.read_int ic >|= fun lengt ->
-    Request (index, Block (start, lengt))
-  | 7, _ ->
-    let len' = len-9 in
-    Lwt_io.BE.read_int ic >>= fun index ->
-    Lwt_io.BE.read_int ic >>= fun start ->
-    read_exactly ic len' >|= fun block ->
-    Piece (index, start, block)
-  | 8, 13 ->
-    Lwt_io.BE.read_int ic >>= fun index ->
-    Lwt_io.BE.read_int ic >>= fun start ->
-    Lwt_io.BE.read_int ic >|= fun lengt ->
-    Cancel (index, Block (start, lengt))
-  | 9, 3 ->
-    Lwt_io.BE.read_int16 ic >|= fun port -> Port port
-  | 20, _ ->
-    let len = len-2 in
-    read_int8 ic >>= fun id ->
-    read_exactly ic len >|= fun s ->
-    Extended (id, s)
+let get' len id : msg Get.t =
+  let open Get in
+  let open Get.BE in
+  match id with
+  | 0 ->
+    return Choke
+  | 1 ->
+    return Unchoke
+  | 2 ->
+    return Interested
+  | 3 ->
+    return NotInterested
+  | 4 ->
+    int >>= fun index ->
+    return (Have index)
+  | 5 ->
+    string_of_length (len-1) >>= fun buf ->
+    return (BitField (Bits.of_bin buf))
+  | 6 ->
+    int >>= fun index ->
+    int >>= fun start ->
+    int >>= fun length ->
+    return (Request (index, Block (start, length)))
+  | 7 ->
+    int >>= fun index ->
+    int >>= fun start ->
+    string_of_length (len-9) >>= fun block ->
+    return (Piece (index, start, block))
+  | 8 ->
+    int >>= fun index ->
+    int >>= fun start ->
+    int >>= fun length ->
+    return (Cancel (index, Block (start, length)))
+  | 9 ->
+    uint16 >>= fun port ->
+    return (Port port)
+  | 20 ->
+    uint8 >>= fun id ->
+    string_of_length (len-2) >>= fun s ->
+    return (Extended (id, s))
   | _ ->
-    Lwt.fail (BadMsg (msgid, len))
+    fail (* fail (BadMsg (len, id)) *)
+
+let get len : msg Get.t =
+  if len = 0 then
+    Get.return KeepAlive
+  else
+    Get.(BE.uint8 >>= get' len)
 
 let read ic =
-  (* this is safe in 64-bit *)
   Lwt_io.BE.read_int ic >>= fun len ->
-  if len = 0 then
-    Lwt.return KeepAlive
-  else
-    read_int8 ic >>= read_msg ic len
+  read_exactly ic len >|= Get.run (get len)

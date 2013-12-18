@@ -15,10 +15,10 @@ type msg =
   | Port of int
   | Extended of int * string
 
-(* val size_of_msg : msg -> int *)
-
 exception BadMsg of int * int
 
 val string_of_msg : msg -> string
+val get : int -> msg Get.t
+val put : msg -> Put.t
 val read : Lwt_io.input_channel -> msg Lwt.t
-val write : Lwt_io.output_channel -> msg -> int Lwt.t
+val write : Lwt_io.output_channel -> msg -> unit Lwt.t

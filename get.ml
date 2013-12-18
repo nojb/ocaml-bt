@@ -25,9 +25,6 @@ let alt p q =
   fun s i ->
     match p s i with | Failure -> q s i | Success _ as res -> res
 
-(* let (>>=) p f = bind p f *)
-(* let (>>) p q = bind p (fun _ -> q) *)
-(* let (>|=) p f = bind p (fun x -> return (f x)) *)
 let (>|) p x = bind p (fun _ -> return x)
 let (<|>) p q = alt p q
 
@@ -96,6 +93,7 @@ module type S = sig
   val uint16 : int t
   val sint16 : int t
   val int32 : int32 t
+  val int : int t
   val int64 : int64 t
 end
 
@@ -134,6 +132,8 @@ module BE = struct
     if String.length s < i+4 then Failure
     else if Sys.big_endian then Success (unsafe_get_32 s i, i+4)
     else Success (swap32 (unsafe_get_32 s i), i+4)
+  let int =
+    int32 >|= Int32.to_int
   let int64 s i =
     if String.length s < i+8 then Failure
     else if Sys.big_endian then Success (unsafe_get_64 s i, i+8)
@@ -159,6 +159,8 @@ module LE = struct
     if String.length s < i+4 then Failure
     else if Sys.big_endian then Success (swap32 (unsafe_get_32 s i), i+4)
     else Success (unsafe_get_32 s i, i+4)
+  let int =
+    int32 >|= Int32.to_int
   let int64 s i =
     if String.length s < i+8 then Failure
     else if Sys.big_endian then Success (swap64 (unsafe_get_64 s i), i+8)
@@ -180,11 +182,6 @@ let either p1 p2 s i =
 
 exception Get_error
 
-(* let run p s = *)
-(*   match p s 0 with *)
-(*   | Success (x, _) -> x *)
-(*   | Failure -> raise Get_error *)
-
 let run p s =
   match p s 0 with
   | Success (x, j) ->
@@ -199,4 +196,3 @@ let run_file p path =
   let s = String.create len in
   really_input ic s 0 len;
   run p s
-  

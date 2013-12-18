@@ -6,6 +6,7 @@ module type S = sig
   val uint16 : int t
   val sint16 : int t
   val int32 : int32 t
+  val int : int t
   val int64 : int64 t
 end
 
@@ -43,6 +44,5 @@ val fix : (unit -> 'a t) -> 'a t
 
 exception Get_error
 
-(* val run : 'a t -> string -> 'a *)
 val run : 'a t -> string -> 'a
 val run_file : 'a t -> string -> 'a

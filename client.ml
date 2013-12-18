@@ -20,24 +20,31 @@ let (>|=) = Lwt.(>|=)
 type client_state =
   | WAITING
   | VALIDATING
-  | SHARING
+  | LEECHING
   | SEEDING
-  | ERROR
   | DONE
+  | ERROR
 
 module W160H = Hashtbl.Make (Word160)
 module H = Histo.MakeImp (Histo.Int) (Histo.Int)
+
+(* type t = { *)
+(*   info : Info.t; *)
+(*   announce : Announce.t; *)
+(*   mutable state : client_state; *)
+(*   mutable pending : Unix.sockaddr list; *)
+(*   mutable server : unit Lwt.t; *)
+(*   connected : Peer.t W160H.t *)
+(* } *)
     
 type t = {
   info : Info.t;
   mutable state : client_state;
   info_hash : Word160.t;
   announce : Announce.t;
-  peers : Lwt_unix.sockaddr W160H.t;
   connected : Peer.t W160H.t;
   mutable pending : Lwt_unix.sockaddr list;
   mutable server : unit Lwt.t;
-  mutable seeding : bool;
   stats : Info.stats;
   rarest : H.t;
   (* completed : Bits.t; *)
@@ -287,12 +294,10 @@ let create (handles, have) metainfo =
     { info = metainfo; state = WAITING;
       info_hash = metainfo.info_hash;
       announce = Announce.create metainfo stats;
-      peers = W160H.create 17;
       connected = W160H.create 17;
       server = Lwt.return_unit;
       stats;
       pending = [];
-      seeding = false;
       (* completed = Bits.create (Array.length metainfo.pieces); *)
       requested = Bits.create (Array.length metainfo.pieces);
       rarest = H.create ();
