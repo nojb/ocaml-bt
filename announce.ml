@@ -6,10 +6,6 @@ let (>|=) = Lwt.(>|=)
 let failwith_lwt fmt =
   Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
                 
-type ann_event =
-  | ANN_RESPONSE of int option * int option
-  | ANN_PEERS of (Unix.inet_addr * int) list
-       
 type t = {
   tiers : Uri.t array array;
   info_hash : Word160.t;
@@ -24,7 +20,7 @@ type t = {
   mutable current_tier : int;
   mutable current_client : int;
   mutable thread : unit Lwt.t;
-  handle_resp : ann_event -> unit;
+  handle_resp : Unix.sockaddr -> unit;
 }
 
 type event =
@@ -34,9 +30,7 @@ type event =
   | COMPLETED
 
 type success = {
-  peers : (Unix.inet_addr * int) list;
-  seeders : int option;
-  leechers : int option;
+  peers : Unix.sockaddr list;
   ival : int
 }
 
@@ -67,7 +61,6 @@ let create info up down amount_left port id handle_resp =
   let ann =
     { tiers = Array.of_list (List.map Array.of_list info.Info.announce_list);
       info_hash = info.Info.info_hash;
-      (* stats = stats; *)
       up;
       down;
       amount_left;
@@ -215,7 +208,7 @@ and udp_announce_response fd ev trans_id =
           let addr =
             Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d)
           in
-          return (addr, port)
+          return (Unix.ADDR_INET (addr, port))
         in
         either (end_of_input >|= fun () -> [])
           (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest))
@@ -223,10 +216,7 @@ and udp_announce_response fd ev trans_id =
       loop () >|= fun new_peers ->
       Success
         { peers = new_peers;
-          seeders = Some (Int32.to_int seeders);
-          leechers = Some (Int32.to_int leechers);
           ival = Int32.to_int interval }
-          (* min_interval = None } *)
     end
   in
   try
@@ -255,12 +245,12 @@ let either f g x =
 
 let http_decode_response (d : Bcode.t) =
   let success () =
-    let seeders =
-      try Some (Bcode.find "complete" d |> Bcode.to_int) with Not_found -> None
-    in
-    let leechers =
-      try Some (Bcode.find "incomplete" d |> Bcode.to_int) with Not_found -> None
-    in
+    (* let seeders = *)
+    (*   try Some (Bcode.find "complete" d |> Bcode.to_int) with Not_found -> None *)
+    (* in *)
+    (* let leechers = *)
+    (*   try Some (Bcode.find "incomplete" d |> Bcode.to_int) with Not_found -> None *)
+    (* in *)
     let interval = Bcode.find "interval" d |> Bcode.to_int in
     (* let min_interval = try Some (Bcode.find "min interval" d) with _ -> None in *)
     let compact_peers peers =
@@ -275,7 +265,7 @@ let http_decode_response (d : Bcode.t) =
                  (int_of_char pr.[i+2]) (int_of_char pr.[i+3]))
           in
           let port = int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5] in
-          (addr, port) :: loop (i+6)
+          Unix.ADDR_INET (addr, port) :: loop (i+6)
       in
       loop 0
     in
@@ -285,18 +275,18 @@ let http_decode_response (d : Bcode.t) =
           let ip = Bcode.find "ip" d |> Bcode.to_string in
           let port = Bcode.find "port" d |> Bcode.to_int in
           let addr = Unix.inet_addr_of_string ip in
-          (addr, port))
+          Unix.ADDR_INET (addr, port))
     in
     let peers = Bcode.find "peers" d in
     let peers = either compact_peers usual_peers peers in
-    Success {peers; seeders; leechers; ival = interval}
+    Success {peers; ival = interval}
   in
   let error () =
-    let s = Bcode.find "error" d |> Bcode.to_string in
+    let s = Bcode.find "failure reason" d |> Bcode.to_string in
     Error s
   in
   let warning () =
-    let s = Bcode.find "warning" d |> Bcode.to_string in
+    let s = Bcode.find "warning message" d |> Bcode.to_string in
     Warning s
   in
   either warning (either error success) ()
@@ -396,8 +386,7 @@ let run ann =
         | Success success ->
           promote_tracker ann;
           set_interval ann success.ival;
-          ann.handle_resp (ANN_RESPONSE (success.seeders, success.leechers));
-          ann.handle_resp (ANN_PEERS success.peers);
+          List.iter ann.handle_resp success.peers;
           Lwt.return_unit) ann >>= fun () ->
     Lwt_unix.sleep ann.interval >>= fun () ->
     loop NONE

@@ -176,8 +176,10 @@ let handle_peer_event cl ev =
       
 let peer_connected cl sa ic oc id : unit =
   Trace.infof "New peer connected with id %s" (Word160.to_hex_short id);
-  let pr = Peer.create sa id ic oc cl.info cl.store in
-  Peer.add_handler pr (handle_peer_event cl)
+  let pr = Peer.create sa id ic oc cl.info cl.store (handle_peer_event cl) in
+  ignore pr
+  (* FIXME save the peer *)
+  (* Peer.add_handler pr (handle_peer_event cl) *)
 
 let peer_connect_failed cl sa exn =
   ()
@@ -258,17 +260,16 @@ let create_server handle_incoming : int * unit Lwt.t =
        Trace.infof ~exn "Server error";
        Lwt.fail exn)  
 
-let connect_peer cl addr port =
-  let sa = Unix.ADDR_INET (addr, port) in
+let connect_peer cl sa =
   let connector () =
     Lwt_io.open_connection sa >>= fun (ic, oc) ->
     Lwt_io.write oc (handshake cl.id cl.info_hash) >>= fun () ->
-    Trace.infof "Handshake sent to %s:%d" (Unix.string_of_inet_addr addr) port;
+    Trace.infof "Handshake sent to %s" (string_of_sockaddr sa);
     Lwt.try_bind
       (fun () -> read_and_check_handshake cl sa ic)
       (fun id ->
-         Trace.infof "Handshake success addr:%s port:%d id:%s"
-           (Unix.string_of_inet_addr addr) port (Word160.to_hex id);
+         Trace.infof "Handshake success peer: %s id: %s"
+           (string_of_sockaddr sa) (Word160.to_hex id);
          peer_connected cl sa ic oc id;
          Lwt.return_unit)
       (fun exn ->
@@ -285,19 +286,8 @@ let bytes_left minfo have =
     if has then Int64.add acc (Int64.of_int minfo.pieces.(i).piece_length)
     else acc) 0L have
 
-let handle_tracker_response cl = function
-  | Announce.ANN_RESPONSE (Some seeders, Some leechers) ->
-    Trace.infof "Received response from tracker: seeders: %d leechers: %d" seeders leechers
-  | Announce.ANN_RESPONSE (None, Some leechers) ->
-    Trace.infof "Received from tracker: leechers: %d" leechers
-  | Announce.ANN_RESPONSE (Some seeders, None) ->
-    Trace.infof "Received from tracker: seeders: %d" seeders
-  | Announce.ANN_RESPONSE (None, None) ->
-    ()
-  | Announce.ANN_PEERS peers ->
-    Trace.infof "Received %d peers from tracker" (List.length peers);
-    List.iter (fun (addr, port) ->
-        Lwt.async (fun () -> connect_peer cl addr port)) peers
+let handle_tracker_response cl sa =
+  Lwt.async (fun () -> connect_peer cl sa)
 
 let create (handles, have) info =
   let id = Word160.peer_id bittorrent_id_prefix in
@@ -311,7 +301,7 @@ let create (handles, have) info =
                (fun () -> (Lazy.force cl).downloaded)
                (fun () -> (Lazy.force cl).amount_left)
                (Lazy.force ps |> fst) id
-               (fun ev -> handle_tracker_response (Lazy.force cl) ev);
+               (fun pr -> handle_tracker_response (Lazy.force cl) pr);
            connected = W160H.create 17;
            server = Lazy.force ps |> snd;
            uploaded = 0L;

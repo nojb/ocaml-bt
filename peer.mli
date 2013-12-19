@@ -21,6 +21,7 @@ val create :
   (* Info.piece_info array -> *)
   Info.t ->
   Store.t ->
+  (event -> unit) ->
   (* fs_ch: Fs.msg Lwt_pipe.t -> *)
   t
 
@@ -35,6 +36,6 @@ val available_pieces : t -> Bits.t
 val download_piece : t -> int -> unit
 val piece_completed : t -> int -> unit
 val requested_piece : t -> int option
-val add_handler : t -> (event -> unit) -> unit
+(* val add_handler : t -> (event -> unit) -> unit *)
 val ul : t -> float
 val dl : t -> float

@@ -66,7 +66,8 @@ and t = {
   update_dl : int -> unit;
   update_ul : int -> unit;
   ticker : unit Lwt.t;
-  mutable handlers : (event -> unit) list;
+  handle_event : event -> unit;
+  (* mutable handlers : (event -> unit) list; *)
   extensions : (string, int) Hashtbl.t;
   (* mutable ext_handshake : (string * Bcode.t) list *)
 }
@@ -185,7 +186,8 @@ let handle_peer_msg pr msg =
         ()
       | Some c ->
         (* FIXME cancel pending requests *)
-        List.iter (fun h -> h (CHOKED pr)) pr.handlers;
+        pr.handle_event (CHOKED pr);
+        (* List.iter (fun h -> h (CHOKED pr)) pr.handlers; *)
         (* Lwt_pipe.write self.piece_mgr_ch (PieceMgr.PutbackPiece c.index); *)
         pr.current <- None;
         ()
@@ -194,7 +196,8 @@ let handle_peer_msg pr msg =
   | Wire.Unchoke ->
     Trace.infof "%s unchoked us" (to_string pr);
     pr.peer_choking <- false;
-    List.iter (fun h -> h (READY pr)) pr.handlers
+    pr.handle_event (READY pr)
+    (* List.iter (fun h -> h (READY pr)) pr.handlers *)
   | Wire.Interested ->
     if not pr.peer_interested then begin
       Trace.infof "%s is interested in us" (to_string pr);
@@ -214,13 +217,15 @@ let handle_peer_msg pr msg =
     Trace.infof "%s has obtained #%d and now has %d/%d pieces"
       (to_string pr) index (Bits.count pr.peer_pieces)
       (Array.length pr.pieces);
-    List.iter (fun h -> h (PIECE_AVAILABLE (pr, index))) pr.handlers
+    pr.handle_event (PIECE_AVAILABLE (pr, index))
+    (* List.iter (fun h -> h (PIECE_AVAILABLE (pr, index))) pr.handlers *)
   (* later : track interest, decr missing counter *)
   | Wire.BitField bits ->
     (* if Bits.count t.peer_pieces = 0 then begin *)
     (* FIXME padding, should only come after handshake *)
     Bits.blit bits 0 pr.peer_pieces 0 (Bits.length pr.peer_pieces);
-    List.iter (fun h -> h (GOT_BITFIELD (pr, pr.peer_pieces))) pr.handlers
+    pr.handle_event (GOT_BITFIELD (pr, pr.peer_pieces))
+    (* List.iter (fun h -> h (GOT_BITFIELD (pr, pr.peer_pieces))) pr.handlers *)
   | Wire.Request (index, block) ->
     if pr.we_choking then
       failwith "%s violating protocol, terminating exchange" (to_string pr);
@@ -240,9 +245,11 @@ let handle_peer_msg pr msg =
         String.blit block 0 c.buffer offset (String.length block);
         c.received <- c.received + String.length block;
         if c.received = pr.pieces.(index).Info.piece_length then begin
-          List.iter (fun h -> h (PIECE_COMPLETED (pr, index, c.buffer))) pr.handlers;
+          pr.handle_event (PIECE_COMPLETED (pr, index, c.buffer));
+          (* List.iter (fun h -> h (PIECE_COMPLETED (pr, index, c.buffer))) pr.handlers; *)
           pr.current <- None;
-          List.iter (fun h -> h (READY pr)) pr.handlers;
+          pr.handle_event (READY pr)
+          (* List.iter (fun h -> h (READY pr)) pr.handlers; *)
         end else
           request_more_blocks pr
     end
@@ -330,7 +337,7 @@ let abort pr =
   ignore (Lwt_io.abort pr.oc);
   Trace.infof "Shutting down connection to %s" (to_string pr)
 
-let create sa id ic oc (minfo : Info.t) store =
+let create sa id ic oc (minfo : Info.t) store handle_event =
   let write_stream, write = Lwt_stream.create () in
   let dl, update_dl = Lwt_react.E.create () in
   let ul, update_ul = Lwt_react.E.create () in
@@ -362,7 +369,8 @@ let create sa id ic oc (minfo : Info.t) store =
       update_dl;
       update_ul;
       ticker = ticker ();
-      handlers = [];
+      handle_event;
+      (* handlers = []; *)
       extensions = Hashtbl.create 17 }
   in
   let reader ic =
@@ -430,5 +438,5 @@ let ul pr =
 let dl pr =
   Lwt_react.S.value pr.dl
 
-let add_handler pr h =
-  pr.handlers <- h :: pr.handlers
+(* let add_handler pr h = *)
+(*   pr.handlers <- h :: pr.handlers *)
