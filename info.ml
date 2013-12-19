@@ -20,16 +20,6 @@ type t = {
   files : file_info list;
 }
 
-type stats = {
-  mutable uploaded : int64;
-  mutable downloaded : int64;
-  mutable left : int64;
-  mutable local_port : int;
-  id : Word160.t;
-  completed : Bits.t
-  (* info_hash : Word160.t *)
-}
-
 let comment bc =
   try Some (Bcode.find "comment" bc |> Bcode.to_string)
   with Not_found -> None

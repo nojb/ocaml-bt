@@ -13,7 +13,7 @@ type event =
 (* val string_of_event : event -> string *)
 
 val create :
-  Info.stats ->
+  (* Info.stats -> *)
   Lwt_unix.sockaddr ->
   Word160.t ->
   Lwt_io.input_channel ->

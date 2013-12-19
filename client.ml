@@ -39,15 +39,18 @@ module H = Histo.MakeImp (Histo.Int) (Histo.Int)
     
 type t = {
   info : Info.t;
+  id : Word160.t;
   mutable state : client_state;
   info_hash : Word160.t;
   announce : Announce.t;
   connected : Peer.t W160H.t;
   mutable pending : Lwt_unix.sockaddr list;
   mutable server : unit Lwt.t;
-  stats : Info.stats;
+  mutable uploaded : int64;
+  mutable downloaded : int64;
+  mutable amount_left : int64;
   rarest : H.t;
-  (* completed : Bits.t; *)
+  completed : Bits.t;
   requested : Bits.t;
   store : Store.t;
   mutable handlers : (update -> unit) list
@@ -119,7 +122,7 @@ let handle_peer_event cl ev =
   | Peer.READY pr ->
     let interesting =
       Bits.logand (Peer.available_pieces pr)
-        (Bits.lognot (Bits.logor cl.requested cl.stats.completed))
+        (Bits.lognot (Bits.logor cl.requested cl.completed))
     in
     if Bits.count interesting = 0 then begin
       Trace.infof "Peer %s is ready but does not have any interesting pieces"
@@ -134,7 +137,7 @@ let handle_peer_event cl ev =
     Bits.iteri (fun i b -> if b then H.add cl.rarest i) bits;
     let interesting =
       Bits.logand bits
-        (Bits.lognot (Bits.logor cl.requested cl.stats.completed))
+        (Bits.lognot (Bits.logor cl.requested cl.completed))
     in
     if Bits.count interesting = 0 then
       Peer.not_interesting pr
@@ -143,15 +146,15 @@ let handle_peer_event cl ev =
     Trace.infof "Received bitfield from %s count: %d interesting: %d \
                  completed: %d available: %d total: %d"
       (Peer.to_string pr) (Bits.count bits) (Bits.count interesting)
-      (Bits.count cl.stats.completed) (-1) (Array.length cl.info.pieces)
+      (Bits.count cl.completed) (-1) (Array.length cl.info.pieces)
   | Peer.PIECE_SENT (pr, i) ->
     Trace.infof "#%d uploaded to %s" i (Peer.to_string pr);
-    cl.stats.uploaded <-
-      Int64.add cl.stats.uploaded (Int64.of_int cl.info.pieces.(i).piece_length)
+    cl.uploaded <-
+      Int64.add cl.uploaded (Int64.of_int cl.info.pieces.(i).piece_length)
   | Peer.PIECE_COMPLETED (pr, i, s) ->
-    cl.stats.downloaded <-
-      Int64.add cl.stats.downloaded (Int64.of_int cl.info.pieces.(i).piece_length);
-    if Bits.is_set cl.stats.completed i then begin
+    cl.downloaded <-
+      Int64.add cl.downloaded (Int64.of_int cl.info.pieces.(i).piece_length);
+    if Bits.is_set cl.completed i then begin
       Trace.infof "Received repeated #%d from %s, ignoring"
         i (Peer.to_string pr)
     end else if not (Bits.is_set cl.requested i) then begin
@@ -159,10 +162,10 @@ let handle_peer_event cl ev =
     end else begin
       Bits.unset cl.requested i;
       if Word160.equal (Word160.digest_of_string s) cl.info.pieces.(i).piece_digest then begin
-        Bits.set cl.stats.completed i;
+        Bits.set cl.completed i;
         Store.write_piece cl.store i s;
         Trace.infof "Received OK #%d from %s. Now have %d/%d pieces"
-          i  (Peer.to_string pr) (Bits.count cl.stats.completed) (Array.length cl.info.pieces)
+          i  (Peer.to_string pr) (Bits.count cl.completed) (Array.length cl.info.pieces)
       end else
         Trace.infof "Received BAD #%d from %s, discarding"
           i (Peer.to_string pr)
@@ -173,7 +176,7 @@ let handle_peer_event cl ev =
       
 let peer_connected cl sa ic oc id : unit =
   Trace.infof "New peer connected with id %s" (Word160.to_hex_short id);
-  let pr = Peer.create cl.stats sa id ic oc cl.info cl.store in
+  let pr = Peer.create sa id ic oc cl.info cl.store in
   Peer.add_handler pr (handle_peer_event cl)
 
 let peer_connect_failed cl sa exn =
@@ -213,7 +216,7 @@ let handle_incoming_peer cl (newfd, sa) : unit =
     Lwt.catch
       (fun () ->
          read_and_check_handshake cl sa ic >>= fun id ->
-         Lwt_io.write oc (handshake cl.stats.id cl.info_hash) >|= fun () ->
+         Lwt_io.write oc (handshake cl.id cl.info_hash) >|= fun () ->
          Trace.infof "HANDSHAKE successfull peer:%s id:%s"
            (string_of_sockaddr sa) (Word160.to_hex id);
          peer_connected cl sa ic oc id)
@@ -225,7 +228,7 @@ let handle_incoming_peer cl (newfd, sa) : unit =
   in
   Lwt.async connector
   
-let create_server cl : unit Lwt.t =
+let create_server handle_incoming : int * unit Lwt.t =
   let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_STREAM 0 in
   let rec loop = function
     | port :: rest ->
@@ -236,7 +239,7 @@ let create_server cl : unit Lwt.t =
           Lwt_unix.listen fd max_listen_backlog;
           Trace.infof "Starting peer server at %s:%d"
             (Unix.string_of_inet_addr Unix.inet_addr_any) port;
-          cl.stats.local_port <- port
+          port
         with
         | exn ->
           Trace.infof ~exn "Server error: could not bind to %s, trying next port"
@@ -246,13 +249,11 @@ let create_server cl : unit Lwt.t =
     | [] ->
       failwith "No available port for the BitTorrent client!"
   in
-  loop port_range;
+  let port = loop port_range in
   let rec loop () =
-    Lwt_unix.accept fd >>= fun pr ->
-    handle_incoming_peer cl pr;
-    loop ()
+    Lwt_unix.accept fd >|= handle_incoming >>= loop
   in
-  Lwt.catch loop
+  port, Lwt.catch loop
     (fun exn ->
        Trace.infof ~exn "Server error";
        Lwt.fail exn)  
@@ -261,7 +262,7 @@ let connect_peer cl addr port =
   let sa = Unix.ADDR_INET (addr, port) in
   let connector () =
     Lwt_io.open_connection sa >>= fun (ic, oc) ->
-    Lwt_io.write oc (handshake cl.stats.id cl.info_hash) >>= fun () ->
+    Lwt_io.write oc (handshake cl.id cl.info_hash) >>= fun () ->
     Trace.infof "Handshake sent to %s:%d" (Unix.string_of_inet_addr addr) port;
     Lwt.try_bind
       (fun () -> read_and_check_handshake cl sa ic)
@@ -284,42 +285,48 @@ let bytes_left minfo have =
     if has then Int64.add acc (Int64.of_int minfo.pieces.(i).piece_length)
     else acc) 0L have
 
-let create (handles, have) metainfo =
-  let stats =
-    { downloaded = 0L; uploaded = 0L; left = bytes_left metainfo have; local_port = 0;
-      id = Word160.peer_id bittorrent_id_prefix;
-      completed = have }
+let handle_tracker_response cl = function
+  | Announce.ANN_RESPONSE (Some seeders, Some leechers) ->
+    Trace.infof "Received response from tracker: seeders: %d leechers: %d" seeders leechers
+  | Announce.ANN_RESPONSE (None, Some leechers) ->
+    Trace.infof "Received from tracker: leechers: %d" leechers
+  | Announce.ANN_RESPONSE (Some seeders, None) ->
+    Trace.infof "Received from tracker: seeders: %d" seeders
+  | Announce.ANN_RESPONSE (None, None) ->
+    ()
+  | Announce.ANN_PEERS peers ->
+    Trace.infof "Received %d peers from tracker" (List.length peers);
+    List.iter (fun (addr, port) ->
+        Lwt.async (fun () -> connect_peer cl addr port)) peers
+
+let create (handles, have) info =
+  let id = Word160.peer_id bittorrent_id_prefix in
+  let rec cl =
+    lazy { id;
+           info;
+           state = WAITING;
+           info_hash = info.info_hash;
+           announce = Announce.create info
+               (fun () -> (Lazy.force cl).uploaded)
+               (fun () -> (Lazy.force cl).downloaded)
+               (fun () -> (Lazy.force cl).amount_left)
+               (Lazy.force ps |> fst) id
+               (fun ev -> handle_tracker_response (Lazy.force cl) ev);
+           connected = W160H.create 17;
+           server = Lazy.force ps |> snd;
+           uploaded = 0L;
+           downloaded = 0L;
+           amount_left = bytes_left info have;
+           pending = [];
+           completed = Bits.create (Array.length info.pieces);
+           requested = Bits.create (Array.length info.pieces);
+           rarest = H.create ();
+           store = Store.create handles info;
+           handlers = [] }
+  and ps =
+    lazy (create_server (fun pr -> handle_incoming_peer (Lazy.force cl) pr))
   in
-  let cl =
-    { info = metainfo; state = WAITING;
-      info_hash = metainfo.info_hash;
-      announce = Announce.create metainfo stats;
-      connected = W160H.create 17;
-      server = Lwt.return_unit;
-      stats;
-      pending = [];
-      (* completed = Bits.create (Array.length metainfo.pieces); *)
-      requested = Bits.create (Array.length metainfo.pieces);
-      rarest = H.create ();
-      store = Store.create handles metainfo;
-      handlers = [] }
-  in
-  cl.server <- create_server cl;
-  Announce.add_handler cl.announce
-    (function
-      | Announce.ANN_RESPONSE (Some seeders, Some leechers) ->
-        Trace.infof "Received response from tracker: seeders: %d leechers: %d" seeders leechers
-      | Announce.ANN_RESPONSE (None, Some leechers) ->
-        Trace.infof "Received from tracker: leechers: %d" leechers
-      | Announce.ANN_RESPONSE (Some seeders, None) ->
-        Trace.infof "Received from tracker: seeders: %d" seeders
-      | Announce.ANN_RESPONSE (None, None) ->
-        ()
-      | Announce.ANN_PEERS peers ->
-        Trace.infof "Received %d peers from tracker" (List.length peers);
-        List.iter (fun (addr, port) ->
-            Lwt.async (fun () -> connect_peer cl addr port)) peers);
-  cl
+  Lazy.force cl
 
 let start cl =
   Announce.start cl.announce

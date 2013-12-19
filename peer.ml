@@ -330,7 +330,7 @@ let abort pr =
   ignore (Lwt_io.abort pr.oc);
   Trace.infof "Shutting down connection to %s" (to_string pr)
 
-let create stats sa id ic oc (minfo : Info.t) store =
+let create sa id ic oc (minfo : Info.t) store =
   let write_stream, write = Lwt_stream.create () in
   let dl, update_dl = Lwt_react.E.create () in
   let ul, update_ul = Lwt_react.E.create () in
@@ -403,7 +403,7 @@ let create stats sa id ic oc (minfo : Info.t) store =
   Lwt.on_failure rd (fun _ -> abort pr);
   let wr = writer oc in
   Lwt.on_failure wr (fun _ -> abort pr);
-  if Bits.count stats.completed > 0 then send pr (SendMsg (Wire.BitField stats.completed));
+  (* if Bits.count stats.completed > 0 then send pr (SendMsg (Wire.BitField stats.completed)); *)
   pr
   (* Lwt.catch *)
   (*   (fun () -> *)

@@ -13,14 +13,18 @@ type ann_event =
 type t = {
   tiers : Uri.t array array;
   info_hash : Word160.t;
-  stats : Info.stats;
+  up : unit -> int64;
+  down : unit -> int64;
+  amount_left : unit -> int64;
+  port : int;
+  id : Word160.t;
   mutable running : bool;
   mutable force_stop : bool;
   mutable interval : float;
   mutable current_tier : int;
   mutable current_client : int;
   mutable thread : unit Lwt.t;
-  mutable handlers : (ann_event -> unit) list
+  handle_resp : ann_event -> unit;
 }
 
 type event =
@@ -59,26 +63,28 @@ let shuffle_array a =
     a.(j) <- tmp
   done
 
-let broadcast ann msg =
-  List.iter (fun f -> f msg) ann.handlers
-
-let create torr stats =
+let create info up down amount_left port id handle_resp =
   let ann =
-    { tiers = Array.of_list (List.map Array.of_list torr.Info.announce_list);
-      info_hash = torr.Info.info_hash;
-      stats = stats;
+    { tiers = Array.of_list (List.map Array.of_list info.Info.announce_list);
+      info_hash = info.Info.info_hash;
+      (* stats = stats; *)
+      up;
+      down;
+      amount_left;
+      port;
+      id;
       force_stop = false;
       interval = 5.;
       current_tier = 0;
       current_client = 0;
-      handlers = [];
+      handle_resp;
       running = false;
       thread = Lwt.return_unit }
   in
   let no_trackers =
     Array.fold_left (+) 0 (Array.map Array.length ann.tiers)
   in 
-  Trace.infof "Announce initialised with %d trackers for %S" no_trackers torr.Info.name;
+  Trace.infof "Announce initialised with %d trackers for %S" no_trackers info.Info.name;
   Array.iter shuffle_array ann.tiers;
   ann
 
@@ -89,9 +95,6 @@ let stop_hard ann =
   ann.force_stop <- true;
   stop ann
      
-let add_handler ann hdl =
-  ann.handlers <- hdl :: ann.handlers
-
 let udp_send fd buf =
   Lwt_unix.write fd buf 0 (String.length buf) >>= fun len ->
   if len <> String.length buf then
@@ -111,13 +114,14 @@ let udp_fresh_transaction_id () =
 
 let rec udp_request_connect ann fd ev n =
   let trans_id = udp_fresh_transaction_id () in
-  let write_packet =
+  let put_packet =
     let open Put in
-    BE.int64 0x41727101980L >>=
-    BE.int32 0l >>=
-    BE.int32 trans_id
+    let open Put.BE in
+    int64 0x41727101980L >>
+    int32 0l >>
+    int32 trans_id
   in
-  udp_send fd (Put.run write_packet) >>= fun () ->
+  udp_send fd (Put.run put_packet) >>= fun () ->
   let handle_error = function
     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
       if n >= 8 then
@@ -134,43 +138,45 @@ let rec udp_request_connect ann fd ev n =
 
 and udp_connect_response ann fd ev trans_id =
   udp_recv fd >>= fun buf ->
-  let read_packet : response Lwt.t Get.t =
+  let get_packet : response Lwt.t Get.t =
     let open Get in
-    BE.int32 >>= fun n ->
+    let open Get.BE in
+    int32 >>= fun n ->
     if n = 3l then
       string >|= fun msg -> Lwt.return (Error msg)
     else begin
-      BE.int32 >>= fun trans_id' ->
+      int32 >>= fun trans_id' ->
       assert (Int32.compare trans_id trans_id' = 0);
-      BE.int64 >|= fun conn_id ->
+      int64 >|= fun conn_id ->
       udp_request_announce ann fd ev conn_id 0
     end
   in
-  Get.run read_packet buf
+  Get.run get_packet buf
 
 and udp_request_announce ann fd ev conn_id n =
   let trans_id = udp_fresh_transaction_id () in
   let create_packet =
     let open Put in
-    BE.int64 conn_id >>=
-    BE.int32 1l >>=
-    BE.int32 trans_id >>=
-    string (Word160.to_bin ann.info_hash) >>=
-    string (Word160.to_bin ann.stats.id) >>=
-    BE.int64 ann.stats.downloaded >>=
-    BE.int64 ann.stats.left >>=
-    BE.int64 ann.stats.uploaded >>=
-    BE.int32
+    let open Put.BE in
+    int64 conn_id >>
+    int32 1l >>
+    int32 trans_id >>
+    string (Word160.to_bin ann.info_hash) >>
+    string (Word160.to_bin ann.id) >>
+    int64 (ann.down ()) >>
+    int64 (ann.amount_left ()) >>
+    int64 (ann.up ()) >>
+    int32
       begin match ev with
         | NONE -> 0l
         | COMPLETED -> 1l
         | STARTED -> 2l
         | STOPPED -> 3l
-      end >>=
-    BE.int32 0l >>=
-    BE.int32 0l >>=
-    BE.int32 (-1l) >>=
-    BE.int16 ann.stats.local_port
+      end >>
+    int32 0l >>
+    int32 0l >>
+    int32 (-1l) >>
+    int16 ann.port
   in
   let handle_error = function
     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
@@ -186,25 +192,26 @@ and udp_request_announce ann fd ev conn_id n =
   Lwt.catch (fun () -> udp_announce_response fd ev trans_id) handle_error
 
 and udp_announce_response fd ev trans_id =
-  let read_packet =
+  let get_packet =
     let open Get in
-    BE.int32 >>= fun n ->
+    let open Get.BE in
+    int32 >>= fun n ->
     assert (n = 1l || n = 3l);
     if n = 3l then (* error *)
       string >|= fun msg -> Error msg
     else begin
-      BE.int32 >>= fun trans_id' ->
+      int32 >>= fun trans_id' ->
       assert (Int32.compare trans_id trans_id' = 0);
-      BE.int32 >>= fun interval ->
-      BE.int32 >>= fun leechers ->
-      BE.int32 >>= fun seeders ->
+      int32 >>= fun interval ->
+      int32 >>= fun leechers ->
+      int32 >>= fun seeders ->
       let rec loop () =
         let peer_info =
-          BE.uint8 >>= fun a ->
-          BE.uint8 >>= fun b ->
-          BE.uint8 >>= fun c ->
-          BE.uint8 >>= fun d ->
-          BE.uint16 >>= fun port ->
+          uint8 >>= fun a ->
+          uint8 >>= fun b ->
+          uint8 >>= fun c ->
+          uint8 >>= fun d ->
+          uint16 >>= fun port ->
           let addr =
             Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d)
           in
@@ -223,7 +230,7 @@ and udp_announce_response fd ev trans_id =
     end
   in
   try
-    udp_recv fd >|= Get.run read_packet
+    udp_recv fd >|= Get.run get_packet
   with
   | Get.Get_error -> failwith_lwt "udp_announce_response: packet too short"
   | exn -> Lwt.fail exn
@@ -295,15 +302,14 @@ let http_decode_response (d : Bcode.t) =
   either warning (either error success) ()
 
 let http_announce ann url event =
-  let stats = ann.stats in
   let uri =
     let params =
       ("info_hash",   Word160.to_bin ann.info_hash) ::
-      ("peer_id",     Word160.to_bin stats.id) ::
-      ("uploaded",    Int64.to_string stats.uploaded) ::
-      ("downloaded",  Int64.to_string stats.downloaded) ::
-      ("left",        Int64.to_string stats.left) ::
-      ("port",        string_of_int stats.local_port) ::
+      ("peer_id",     Word160.to_bin ann.id) ::
+      ("uploaded",    Int64.to_string (ann.up ())) ::
+      ("downloaded",  Int64.to_string (ann.down ())) ::
+      ("left",        Int64.to_string (ann.amount_left ())) ::
+      ("port",        string_of_int ann.port) ::
       ("compact",     "1") ::
       match event with
       | NONE -> []
@@ -324,8 +330,8 @@ let http_announce ann url event =
 let announce ann event =
   let url = ann.tiers.(ann.current_tier).(ann.current_client) in
   Trace.infof "ANNOUNCE QUERY event:%s tracker:%s ul:%Ld dl:%Ld left:%Ld"
-    (string_of_event event) (Uri.to_string url) ann.stats.uploaded
-    ann.stats.downloaded ann.stats.left;
+    (string_of_event event) (Uri.to_string url) (ann.up ())
+    (ann.down ()) (ann.amount_left ());
   match Uri.scheme url with
   | Some "http" | Some "https" ->
     (* failwith_lwt "skipping over http trackers for now..." *)
@@ -335,12 +341,12 @@ let announce ann event =
   | other ->
     Lwt.fail (UnknownScheme other)
 
-let silent ann f =
-  let old_hdl = ann.handlers in
-  ann.handlers <- [];
-  f () >>= fun res ->
-  ann.handlers <- old_hdl;
-  Lwt.return res
+(* let silent ann f = *)
+(*   let old_hdl = ann.handlers in *)
+(*   ann.handlers <- []; *)
+(*   f () >>= fun res -> *)
+(*   ann.handlers <- old_hdl; *)
+(*   Lwt.return res *)
 
 let promote_tracker ann =
   Trace.infof "Promoting tracker %s (tier %d, pos %d)"
@@ -390,8 +396,8 @@ let run ann =
         | Success success ->
           promote_tracker ann;
           set_interval ann success.ival;
-          broadcast ann (ANN_RESPONSE (success.seeders, success.leechers));
-          broadcast ann (ANN_PEERS success.peers);
+          ann.handle_resp (ANN_RESPONSE (success.seeders, success.leechers));
+          ann.handle_resp (ANN_PEERS success.peers);
           Lwt.return_unit) ann >>= fun () ->
     Lwt_unix.sleep ann.interval >>= fun () ->
     loop NONE
@@ -399,9 +405,9 @@ let run ann =
   loop STARTED >>= fun () ->
   Trace.infof "Stopping announce.";
   if not ann.force_stop then
-    silent ann (fun () ->
-        Lwt.catch (fun () -> announce ann STOPPED >>= fun _ -> Lwt.return_unit)
-          (fun exn -> Trace.infof ~exn "ignoring (shutting down)"; Lwt.return_unit))
+    (* silent ann (fun () -> *)
+    Lwt.catch (fun () -> announce ann STOPPED >>= fun _ -> Lwt.return_unit)
+      (fun exn -> Trace.infof ~exn "ignoring (shutting down)"; Lwt.return_unit)
   else
     Lwt.return_unit
 
