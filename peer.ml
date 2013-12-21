@@ -5,15 +5,15 @@ let (>|=) = Lwt.(>|=)
 
 type sender_msg =
   | SendMsg of Wire.msg
-  | SendPiece of int * Wire.block
-  | SendCancel of int * Wire.block
+  | SendPiece of Wire.block
+  | SendCancel of Wire.block
 
 let string_of_sender_msg = function
   | SendMsg msg ->
     Printf.sprintf "SendMsg: %s" (Wire.string_of_msg msg)
-  | SendPiece (index, Wire.Block (offset, length)) ->
+  | SendPiece (Wire.Block (index, offset, length)) ->
     Printf.sprintf "SendPiece: index: %d offset: %d length: %d" index offset length
-  | SendCancel (index, Wire.Block (offset, length)) ->
+  | SendCancel (Wire.Block (index, offset, length)) ->
     Printf.sprintf "SendCancel: index: %d offset: %d length: %d"
       index offset length
 
@@ -52,7 +52,7 @@ and t = {
   peer_pieces : Bits.t;
   mutable last_msg : int;
   mutable current : piece_progress option;
-  mutable outstanding : (int * Wire.block) list;
+  mutable outstanding : Wire.block list;
   (* missing_pieces : int; *)
   (* last_msg_tick : int; *)
   (* last_piece_tick : int; *)
@@ -148,10 +148,10 @@ let request_more_blocks pr =
     while List.length pr.outstanding < max_pipelined_requests &&
       c.last_offset < plen do
       let blen = min default_block_size (plen-c.last_offset) in
-      let b = Wire.Block (c.last_offset, blen) in
+      let b = Wire.Block (c.index, c.last_offset, blen) in
       c.last_offset <- c.last_offset + blen;
-      pr.outstanding <- (c.index, b) :: pr.outstanding;
-      send pr (SendMsg (Wire.Request (c.index, b)))
+      pr.outstanding <- b :: pr.outstanding;
+      send pr (SendMsg (Wire.Request b))
     done
     
 let download_piece pr index =
@@ -226,10 +226,10 @@ let handle_peer_msg pr msg =
     Bits.blit bits 0 pr.peer_pieces 0 (Bits.length pr.peer_pieces);
     pr.handle_event (GOT_BITFIELD (pr, pr.peer_pieces))
     (* List.iter (fun h -> h (GOT_BITFIELD (pr, pr.peer_pieces))) pr.handlers *)
-  | Wire.Request (index, block) ->
+  | Wire.Request block ->
     if pr.we_choking then
       failwith "%s violating protocol, terminating exchange" (to_string pr);
-    send pr (SendPiece (index, block))
+    send pr (SendPiece block)
   | Wire.Piece (index, offset, block) ->
     begin match pr.current with
       | None ->
@@ -240,7 +240,7 @@ let handle_peer_msg pr msg =
           failwith "%s sent some blocks for unrequested piece, terminating" (to_string pr);
         (* FIXME check that the length is ok *)
         pr.outstanding <-
-          List.filter (fun (i, Wire.Block (o, _)) ->
+          List.filter (fun (Wire.Block (i, o, _)) ->
               not (i = index && o = offset)) pr.outstanding;
         String.blit block 0 c.buffer offset (String.length block);
         c.received <- c.received + String.length block;
@@ -253,8 +253,8 @@ let handle_peer_msg pr msg =
         end else
           request_more_blocks pr
     end
-  | Wire.Cancel (index, block) ->
-    send pr (SendCancel (index, block))
+  | Wire.Cancel block ->
+    send pr (SendCancel block)
   | Wire.Extended (0, m) ->
     let m = Get.run Bcode.bdecode m |> Bcode.find "m" |> Bcode.to_dict in
     List.iter (fun (name, id) ->
@@ -337,7 +337,7 @@ let abort pr =
   ignore (Lwt_io.abort pr.oc);
   Trace.infof "Shutting down connection to %s" (to_string pr)
 
-let create sa id ic oc (minfo : Info.t) store handle_event =
+let create sa id ic oc (minfo : Info.t) read_block handle_event =
   let write_stream, write = Lwt_stream.create () in
   let dl, update_dl = Lwt_react.E.create () in
   let ul, update_ul = Lwt_react.E.create () in
@@ -391,9 +391,9 @@ let create sa id ic oc (minfo : Info.t) store handle_event =
                (* should notify somene  *)
                Trace.sent (to_string pr) (Wire.string_of_msg msg);
                Lwt.return_unit
-             | SendPiece (i, b) ->
-               let Wire.Block (off, _) = b in
-               Store.read_block store i b >>= fun s ->
+             | SendPiece b ->
+               let Wire.Block (i, off, _) = b in
+               read_block b >>= fun s ->
                Wire.write oc (Wire.Piece (i, off, s)) >>= fun sz ->
                Trace.sent (to_string pr) (Wire.string_of_msg (Wire.Piece (i, off, s)));
                (* pr.stats.uploaded <- *)

@@ -14,6 +14,5 @@ type update = {
 
 type t
 
-val create : ((Lwt_io.input_channel * Lwt_io.output_channel * int64) list * Bits.t) -> Info.t -> t
-val start : t -> unit
-val add_handler : t -> (update -> unit) -> unit
+val create : Info.t -> t Lwt.t
+(* val add_handler : t -> (update -> unit) -> unit *)

@@ -1,7 +1,7 @@
 open Printf
 
 type block =
-  | Block of int * int
+  | Block of int * int * int
 
 type msg =
   | KeepAlive
@@ -11,9 +11,9 @@ type msg =
   | NotInterested
   | Have of int
   | BitField of Bits.t
-  | Request of int * block
+  | Request of block
   | Piece of int * int * string
-  | Cancel of int * block
+  | Cancel of block
   | Port of int
   | Extended of int * string
 
@@ -32,11 +32,11 @@ let string_of_msg = function
     sprintf "HAVE %d" index
   | BitField bits ->
     sprintf "BITFIELD count: %d" (Bits.count bits)
-  | Request (index, Block (offset, length)) ->
+  | Request (Block (index, offset, length)) ->
     sprintf "REQUEST %d offset: %d length: %d" index offset length
   | Piece (index, offset, _) ->
     sprintf "PIECE %d offset: %d" index offset
-  | Cancel (index, Block (offset, length)) ->
+  | Cancel (Block (index, offset, length)) ->
     sprintf "CANCEL %d offset: %d length: %d" index offset length
   | Port port ->
     sprintf "PORT %d" port
@@ -64,11 +64,11 @@ let put' msg : Put.t =
     int8 4 >> int index
   | BitField bits ->
     int8 5 >> string (Bits.pad bits 8 |> Bits.to_bin)
-  | Request (index, Block (offset, length)) ->
+  | Request (Block (index, offset, length)) ->
     int8 6 >> int index >> int offset >> int length
   | Piece (index, offset, block) ->
     int8 7 >> int index >> int offset >> string block
-  | Cancel (index, Block (offset, length)) ->
+  | Cancel (Block (index, offset, length)) ->
     int8 8 >> int index >> int offset >> int length
   | Port port ->
     int8 9 >> int16 port
@@ -111,7 +111,7 @@ let get' len id : msg Get.t =
     int >>= fun index ->
     int >>= fun start ->
     int >>= fun length ->
-    return (Request (index, Block (start, length)))
+    return (Request (Block (index, start, length)))
   | 7 ->
     int >>= fun index ->
     int >>= fun start ->
@@ -121,7 +121,7 @@ let get' len id : msg Get.t =
     int >>= fun index ->
     int >>= fun start ->
     int >>= fun length ->
-    return (Cancel (index, Block (start, length)))
+    return (Cancel (Block (index, start, length)))
   | 9 ->
     uint16 >>= fun port ->
     return (Port port)

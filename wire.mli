@@ -1,5 +1,5 @@
 type block =
-  | Block of int * int
+  | Block of int * int * int
 
 type msg =
   | KeepAlive
@@ -9,9 +9,9 @@ type msg =
   | NotInterested
   | Have of int
   | BitField of Bits.t
-  | Request of int * block
+  | Request of block
   | Piece of int * int * string
-  | Cancel of int * block
+  | Cancel of block
   | Port of int
   | Extended of int * string
 

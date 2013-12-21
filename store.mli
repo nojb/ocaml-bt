@@ -1,7 +1,6 @@
 type t
 
-val create : (Lwt_io.input_channel * Lwt_io.output_channel * int64) list -> Info.t -> t
-val read_block : t -> int -> Wire.block -> string Lwt.t
-val write_piece : t -> int -> string -> unit
-val open_and_check_file : Info.t ->
-  ((Lwt_io.input_channel * Lwt_io.output_channel * int64) list * Bits.t) Lwt.t
+val create : Info.file_info list -> t Lwt.t
+val close : t -> unit
+val read : t -> int64 -> int -> string Lwt.t
+val write : t -> int64 -> string -> unit Lwt.t
