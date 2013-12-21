@@ -85,6 +85,13 @@ let cwd path f =
 
 let file_default_perm = 0o644
 let directory_default_perm = 0o755
+
+let exists path =
+  Lwt.catch
+    (fun () -> Lwt_unix.LargeFile.stat path >>= fun _ -> Lwt.return_true)
+    (function
+      | Unix.Unix_error (Unix.ENOENT, _, _) -> Lwt.return_false
+      | exn -> Lwt.fail exn)
   
 let open_file path size =
   let rec loop path =
@@ -96,22 +103,13 @@ let open_file path size =
       Lwt_unix.LargeFile.ftruncate fd size >>= fun () ->
       Lwt.return fd
     | dir :: path ->
-      Lwt.try_bind
-        (fun () -> Lwt_unix.LargeFile.stat dir)
-        (fun st ->
-           match st.Unix.LargeFile.st_kind with
-           | Unix.S_DIR ->
-             cwd dir (fun () -> loop path)
-           | _ ->
-             failwith_lwt "Store.open_file: %S exists and is not a directory"
-               (Filename.concat (Sys.getcwd ()) dir))
-        (function
-          | Unix.Unix_error (Unix.ENOENT, _, _) ->
-            Trace.infof "Directory %S does not exist; creating..." dir;
-            Lwt_unix.mkdir dir directory_default_perm >>= fun () ->
-            cwd dir (fun () -> loop path)
-          | exn ->
-            Lwt.fail exn)
+      exists dir >>= function
+      | true ->
+        cwd dir (fun () -> loop path)
+      | false ->
+        Trace.infof "Directory %S does not exist; creating..." dir;
+        Lwt_unix.mkdir dir directory_default_perm >>= fun () ->
+        cwd dir (fun () -> loop path)
   in
   loop path
 
