@@ -5,15 +5,10 @@ let failwith fmt = Printf.ksprintf failwith fmt
 let failwith_lwt fmt = Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
     
-type store_state =
-  | INITIALIZING of (unit -> unit)
-  | READY of Lwt_mutex.t * (Lwt_unix.file_descr * int64) list
-  | CLOSED
-  | ERROR of exn
-
 type t = {
   files : Info.file_info list;
-  mutable state : store_state
+  lock : Lwt_mutex.t;
+  handles : (Lwt_unix.file_descr * int64) list
 }
 
 let safe_to_int n =
@@ -46,17 +41,18 @@ let read_exactly fd buf off len =
   if len <> len' then failwith_lwt "Store.read_exactly %d bytes when expecting %d bytes" len' len
   else Lwt.return_unit
 
-let _read lock handles off len =
+let read self off len =
   let buf = String.create len in
   let read_chunk doff (fd, off, len) =
     Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
     read_exactly fd buf doff len >>= fun () ->
     Lwt.return (doff + len)
   in
-  Lwt_mutex.with_lock lock (fun () ->
-      Lwt_list.fold_left_s read_chunk 0 (get_chunks handles off len) >>= fun n ->
+  Lwt_mutex.with_lock self.lock (fun () ->
+      Lwt_list.fold_left_s read_chunk 0
+        (get_chunks self.handles off len) >>= fun n ->
       if n <> len then
-        failwith_lwt "Store._read: incomplete read (%d instead of %d)" n len
+        failwith_lwt "Store.read: incomplete read (%d instead of %d)" n len
       else
         Lwt.return buf)
 
@@ -68,33 +64,20 @@ let rec write_exactly fd buf off len =
   end else
     Lwt.return_unit
 
-let _write lock handles off buf =
+let write self off buf =
   let write_chunk doff (fd, off, len) =
     Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
     write_exactly fd buf doff len >>= fun () ->
     Lwt.return (doff + len)
   in
-  Lwt_mutex.with_lock lock (fun () ->
-      Lwt_list.fold_left_s write_chunk 0 (get_chunks handles off (String.length buf)) >>= fun n ->
+  Lwt_mutex.with_lock self.lock (fun () ->
+      Lwt_list.fold_left_s write_chunk 0
+        (get_chunks self.handles off (String.length buf)) >>= fun n ->
       if n <> (String.length buf) then
-        failwith_lwt "Store._write: incomplete write (%d instead of %d)" n (String.length buf)
+        failwith_lwt "Store.write: incomplete write (%d instead of %d)" n (String.length buf)
       else
         Lwt.return_unit)
 
-let write store off buf =
-  match store.state with
-  | READY (lock, handles) ->
-    _write lock handles off buf
-  | _ ->
-    failwith_lwt "Store.write: store not ready"
-
-let read store off len =
-  match store.state with
-  | READY (lock, handles) ->
-    _read lock handles off len
-  | _ ->
-    failwith_lwt "Store.read: store not ready"
-      
 let cwd path f =
   let old_cwd = Sys.getcwd () in
   Lwt_unix.chdir path >>= fun () ->
@@ -133,33 +116,18 @@ let open_file path size =
   loop path
 
 let create files =
-  let self = { files; state = INITIALIZING (fun () -> ()) } in
   Trace.infof "Initializing Store...";
-  Lwt.try_bind
-    (fun () ->
-       Lwt_list.map_s (fun fi ->
-           open_file fi.Info.file_path fi.Info.file_size >>= fun fd ->
-           Lwt.return (fd, fi.Info.file_size)) self.files)
-    (fun handles ->
-       self.state <- READY (Lwt_mutex.create (), handles); Lwt.return self)
-    (fun exn ->
-       self.state <- ERROR exn; Lwt.return self)
+  Lwt_list.map_s (fun fi ->
+      open_file fi.Info.file_path fi.Info.file_size >>= fun fd ->
+      Lwt.return (fd, fi.Info.file_size)) files >|= fun handles ->
+  { files; lock = Lwt_mutex.create (); handles }
 
 let _close handles =
   Lwt_list.iter_p (fun (fd, _) -> Lwt_unix.close fd) handles
 
-let close store =
-  match store.state with
-  | INITIALIZING abort ->
-    abort ();
-    store.state <- CLOSED
-  | READY (lock, handles) ->
-    Lwt.catch
-      (fun () ->
-         Lwt_mutex.with_lock lock (fun () -> _close handles) >|= fun () ->
-         store.state <- CLOSED)
-      (fun exn ->
-         store.state <- ERROR exn; Lwt.return_unit) |> ignore
-  | CLOSED
-  | ERROR _ ->
-    ()
+let close self =
+  Lwt.catch
+    (fun () ->
+       Lwt_mutex.with_lock self.lock (fun () -> _close self.handles))
+    (fun _ -> (* FIXME report error *)
+       Lwt.return_unit) |> ignore
