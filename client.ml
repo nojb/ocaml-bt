@@ -382,7 +382,8 @@ let create info =
   Announce.start cl.announce;
   Trace.infof "Checking torrent data on-disk...";
   check_data store cl.info.Info.pieces >>= fun completed ->
-  Trace.infof "Torrent initialization complete: have %d pieces" (Bits.count completed);
+  Trace.infof "Torrent initialization complete: have %d/%d pieces"
+    (Bits.count completed) (Bits.length completed);
   cl.state <- LEECHING (store,
     { uploaded = 0L; downloaded = 0L; amount_left = bytes_left cl.info completed;
       completed; requested = Bits.create (Bits.length completed); rarest = H.create () });
