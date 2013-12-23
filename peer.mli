@@ -20,7 +20,7 @@ val create :
   Lwt_io.output_channel ->
   (* Info.piece_info array -> *)
   Info.t ->
-  (Wire.block -> string Lwt.t) ->
+  (int -> int -> int -> string Lwt.t) ->
   (* Store.t -> *)
   (event -> unit) ->
   (* fs_ch: Fs.msg Lwt_pipe.t -> *)

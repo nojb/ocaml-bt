@@ -3,19 +3,18 @@ open Info
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-type sender_msg =
-  | SendMsg of Wire.msg
-  | SendPiece of Wire.block
-  | SendCancel of Wire.block
+(* type sender_msg = *)
+(*   | SendMsg of Wire.msg *)
+(*   | SendPiece of int * int * int *)
+(*   | SendCancel of int * int * int *)
 
-let string_of_sender_msg = function
-  | SendMsg msg ->
-    Printf.sprintf "SendMsg: %s" (Wire.string_of_msg msg)
-  | SendPiece (Wire.Block (index, offset, length)) ->
-    Printf.sprintf "SendPiece: index: %d offset: %d length: %d" index offset length
-  | SendCancel (Wire.Block (index, offset, length)) ->
-    Printf.sprintf "SendCancel: index: %d offset: %d length: %d"
-      index offset length
+(* let string_of_sender_msg = function *)
+(*   | SendMsg msg -> *)
+(*     Printf.sprintf "SendMsg: %s" (Wire.string_of_msg msg) *)
+(*   | SendPiece (i, off, len) -> *)
+(*     Printf.sprintf "SendPiece: index: %d offset: %d length: %d" i off len *)
+(*   | SendCancel (i, off, len) -> *)
+(*     Printf.sprintf "SendCancel: index: %d offset: %d length: %d" i off len *)
 
 let failwith fmt =
   Printf.ksprintf failwith fmt
@@ -24,7 +23,8 @@ let max_pipelined_requests = 5
 let lo_mark = 5
 let hi_mark = 25
 let default_block_size = 16 * 1024
-
+let keepalive_delay = 20 (* FIXME *)
+  
 type piece_progress = {
   mutable index : int;
   mutable received : int;
@@ -52,7 +52,7 @@ and t = {
   peer_pieces : Bits.t;
   mutable last_msg : int;
   mutable current : piece_progress option;
-  mutable outstanding : Wire.block list;
+  mutable outstanding : (int * int * int) list;
   (* missing_pieces : int; *)
   (* last_msg_tick : int; *)
   (* last_piece_tick : int; *)
@@ -60,7 +60,7 @@ and t = {
   pieces : Info.piece_info array;
   ic : Lwt_io.input_channel;
   oc : Lwt_io.output_channel;
-  write : sender_msg option -> unit;
+  write : [`Literal of string | `Block of int * int * int] -> unit;
   ul : float Lwt_react.S.t;
   dl : float Lwt_react.S.t;
   update_dl : int -> unit;
@@ -88,9 +88,12 @@ let to_string pr =
     (if pr.peer_interested then 'I' else 'i')
     (Bits.count pr.peer_pieces) (Array.length pr.pieces)
 
-let send pr msg =
-  pr.last_msg <- 0;
-  pr.write (Some msg)
+let send_message peer message =
+  let s = Wire.put message |> Put.run in
+  `Literal s |> peer.write
+
+let send_block peer i off len =
+  `Block (i, off, len) |> peer.write
     
 let handle_ut_metadata pr m =
   assert false
@@ -128,30 +131,29 @@ let supported_extensions = [
   1, ("ut_metadata", handle_ut_metadata)
 ]
 
-let send_extended_hanshake pr =
+let send_extended_hanshake peer =
   let m =
     List.map (fun (id, (name, _)) ->
         name, Bcode.BInt (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.BDict ["m", Bcode.BDict m] in
   let m = Bcode.bencode m |> Put.run in
-  send pr (SendMsg (Wire.Extended (0, m)))
+  send_message peer (Wire.EXTENDED (0, m))
 
-let request_more_blocks pr =
-  match pr.current with
+let request_more_blocks peer =
+  match peer.current with
   | None ->
     ()
   | Some c ->
     (* debug "requesting more blocks from %s for piece #%d" *)
       (* (to_string pr) c.index; *)
-    let plen = pr.pieces.(c.index).Info.piece_length in
-    while List.length pr.outstanding < max_pipelined_requests &&
+    let plen = peer.pieces.(c.index).Info.piece_length in
+    while List.length peer.outstanding < max_pipelined_requests &&
       c.last_offset < plen do
       let blen = min default_block_size (plen-c.last_offset) in
-      let b = Wire.Block (c.index, c.last_offset, blen) in
       c.last_offset <- c.last_offset + blen;
-      pr.outstanding <- b :: pr.outstanding;
-      send pr (SendMsg (Wire.Request b))
+      peer.outstanding <- (c.index, c.last_offset, blen) :: peer.outstanding;
+      send_message peer (Wire.REQUEST (c.index, c.last_offset, blen))
     done
     
 let download_piece pr index =
@@ -173,150 +175,163 @@ let requested_piece pr =
   | None -> None
   | Some c -> Some c.index
 
-let handle_peer_msg pr msg =
-  Trace.recv (to_string pr) (Wire.string_of_msg msg);
-  (* pr.update_dl (Wire.size_of_msg msg); *)
-  match msg with
-  | Wire.KeepAlive ->
-    ()
-  | Wire.Choke ->
-    pr.peer_choking <- true;
-    begin match pr.current with
-      | None ->
-        ()
-      | Some c ->
-        (* FIXME cancel pending requests *)
-        pr.handle_event (CHOKED pr);
-        (* List.iter (fun h -> h (CHOKED pr)) pr.handlers; *)
-        (* Lwt_pipe.write self.piece_mgr_ch (PieceMgr.PutbackPiece c.index); *)
-        pr.current <- None;
-        ()
-    end;
-    Trace.infof "%s choked us" (to_string pr)
-  | Wire.Unchoke ->
-    Trace.infof "%s unchoked us" (to_string pr);
-    pr.peer_choking <- false;
-    pr.handle_event (READY pr)
-    (* List.iter (fun h -> h (READY pr)) pr.handlers *)
-  | Wire.Interested ->
-    if not pr.peer_interested then begin
-      Trace.infof "%s is interested in us" (to_string pr);
-      pr.peer_interested <- true
-    end
-  | Wire.NotInterested ->
-    if pr.peer_interested then begin
-      Trace.infof "%s is no longer interested in us" (to_string pr);
-      pr.peer_interested <- false;
-    end
+let got_choke peer =
+  peer.peer_choking <- true;
+  begin match peer.current with
+    | None ->
+      ()
+    | Some c ->
+      (* FIXME cancel pending requests *)
+      peer.handle_event (CHOKED peer);
+      (* List.iter (fun h -> h (CHOKED pr)) pr.handlers; *)
+      (* Lwt_pipe.write self.piece_mgr_ch (PieceMgr.PutbackPiece c.index); *)
+      peer.current <- None;
+      ()
+  end;
+  Trace.infof "%s choked us" (to_string peer)
+
+let got_unchoke peer =
+  Trace.infof "%s unchoked us" (to_string peer);
+  peer.peer_choking <- false;
+  peer.handle_event (READY peer)
+(* List.iter (fun h -> h (READY pr)) pr.handlers *)
+
+let got_interested peer =
+  if not peer.peer_interested then begin
+    Trace.infof "%s is interested in us" (to_string peer);
+    peer.peer_interested <- true
+  end
+
+let got_not_interested peer =
+  if peer.peer_interested then begin
+    Trace.infof "%s is no longer interested in us" (to_string peer);
+    peer.peer_interested <- false;
+  end
   (* Lwt_pipe.write self.choke_mgr_ch (ChokeMgr.PeerNotInterested self.id); *)
   (* Lwt.return_unit *)
-  | Wire.Have index ->
-    if index < 0 || index >= Array.length pr.pieces then
-      failwith "%s has invalid #%d" (to_string pr) index;
-    Bits.set pr.peer_pieces index;
-    Trace.infof "%s has obtained #%d and now has %d/%d pieces"
-      (to_string pr) index (Bits.count pr.peer_pieces)
-      (Array.length pr.pieces);
-    pr.handle_event (PIECE_AVAILABLE (pr, index))
+
+let got_have peer i =
+  if i < 0 || i >= Array.length peer.pieces then
+    failwith "%s has invalid #%d" (to_string peer) i;
+  Bits.set peer.peer_pieces i;
+  Trace.infof "%s has obtained #%d and now has %d/%d pieces"
+    (to_string peer) i (Bits.count peer.peer_pieces)
+    (Array.length peer.pieces);
+  peer.handle_event (PIECE_AVAILABLE (peer, i))
     (* List.iter (fun h -> h (PIECE_AVAILABLE (pr, index))) pr.handlers *)
   (* later : track interest, decr missing counter *)
-  | Wire.BitField bits ->
-    (* if Bits.count t.peer_pieces = 0 then begin *)
-    (* FIXME padding, should only come after handshake *)
-    Bits.blit bits 0 pr.peer_pieces 0 (Bits.length pr.peer_pieces);
-    pr.handle_event (GOT_BITFIELD (pr, pr.peer_pieces))
+
+let got_bitfield peer b =
+  (* if Bits.count t.peer_pieces = 0 then begin *)
+  (* FIXME padding, should only come after handshake *)
+  Bits.blit b 0 peer.peer_pieces 0 (Bits.length peer.peer_pieces);
+  peer.handle_event (GOT_BITFIELD (peer, peer.peer_pieces))
     (* List.iter (fun h -> h (GOT_BITFIELD (pr, pr.peer_pieces))) pr.handlers *)
-  | Wire.Request block ->
-    if pr.we_choking then
-      failwith "%s violating protocol, terminating exchange" (to_string pr);
-    send pr (SendPiece block)
-  | Wire.Piece (index, offset, block) ->
-    begin match pr.current with
-      | None ->
-        failwith "%s sent us a piece but we are not not downloading, terminating"
-          (to_string pr)
-      | Some c ->
-        if c.index <> index then
-          failwith "%s sent some blocks for unrequested piece, terminating" (to_string pr);
-        (* FIXME check that the length is ok *)
-        pr.outstanding <-
-          List.filter (fun (Wire.Block (i, o, _)) ->
-              not (i = index && o = offset)) pr.outstanding;
-        String.blit block 0 c.buffer offset (String.length block);
-        c.received <- c.received + String.length block;
-        if c.received = pr.pieces.(index).Info.piece_length then begin
-          pr.handle_event (PIECE_COMPLETED (pr, index, c.buffer));
-          (* List.iter (fun h -> h (PIECE_COMPLETED (pr, index, c.buffer))) pr.handlers; *)
-          pr.current <- None;
-          pr.handle_event (READY pr)
-          (* List.iter (fun h -> h (READY pr)) pr.handlers; *)
-        end else
-          request_more_blocks pr
-    end
-  | Wire.Cancel block ->
-    send pr (SendCancel block)
-  | Wire.Extended (0, m) ->
-    let m = Get.run Bcode.bdecode m |> Bcode.find "m" |> Bcode.to_dict in
-    List.iter (fun (name, id) ->
-        let id = Bcode.to_int id in
-        if id = 0 then Hashtbl.remove pr.extensions name
-        else Hashtbl.replace pr.extensions name id) m;
-    Trace.infof "%s supports EXTENDED: %s" (to_string pr)
-      (String.concat " " (List.map (fun (name, _) -> name) m))
-  | Wire.Extended (id, m) ->
-    if List.mem_assoc id supported_extensions then
-      let _, f = List.assoc id supported_extensions in
-      f pr m
-    else      
-      Trace.infof "%s sent unsupported EXTENDED message %d" (to_string pr) id
-  | msg ->
-    Trace.infof "Unhandled message from %s: %s" (to_string pr) (Wire.string_of_msg msg)
 
-let handle_timer_tick pr =
-  let keep_alive () =
-    if pr.last_msg >= 24 then
-      send pr (SendMsg Wire.KeepAlive)
-    else
-      pr.last_msg <- pr.last_msg + 1
-  in
-  keep_alive ()
-  (* later- tell Status, tell ChokeMgr *)
+let got_request peer i off len =
+  if peer.we_choking then
+    failwith "%s violating protocol, terminating exchange" (to_string peer);
+  (* FIXME *)
+  send_block peer i off len
 
-let piece_completed pr index =
-    send pr (SendMsg (Wire.Have index))
+let got_piece peer i off s =
+  begin match peer.current with
+    | None ->
+      failwith "%s sent us a piece but we are not not downloading, terminating"
+        (to_string peer)
+    | Some c ->
+      if c.index <> i then
+        failwith "%s sent some blocks for unrequested piece, terminating" (to_string peer);
+      (* FIXME check that the length is ok *)
+      peer.outstanding <-
+        List.filter (fun (i1, off1, _) -> not (i1 = i && off1 = off)) peer.outstanding;
+      String.blit s 0 c.buffer off (String.length s);
+      c.received <- c.received + String.length s;
+      if c.received = peer.pieces.(i).Info.piece_length then begin
+        peer.handle_event (PIECE_COMPLETED (peer, i, c.buffer));
+        (* List.iter (fun h -> h (PIECE_COMPLETED (pr, index, c.buffer))) pr.handlers; *)
+        peer.current <- None;
+        peer.handle_event (READY peer)
+        (* List.iter (fun h -> h (READY pr)) pr.handlers; *)
+      end else
+        request_more_blocks peer
+  end
 
-let is_interested pr =
-  pr.peer_interested
+let got_cancel peer i off len =
+  ()
+  (* FIXME *)
+  (* send peer (SendCancel (i, off, len)) *)
 
-let is_choked pr =
-  pr.we_choking
+let got_extended_handshake peer m =
+  let m = Get.run Bcode.bdecode m |> Bcode.find "m" |> Bcode.to_dict in
+  List.iter (fun (name, id) ->
+      let id = Bcode.to_int id in
+      if id = 0 then Hashtbl.remove peer.extensions name
+      else Hashtbl.replace peer.extensions name id) m;
+  Trace.infof "%s supports EXTENDED: %s" (to_string peer)
+    (String.concat " " (List.map (fun (name, _) -> name) m))
 
-let interesting pr =
-  if not pr.we_interested then begin
+let got_extended peer id m =
+  if List.mem_assoc id supported_extensions then
+    let _, f = List.assoc id supported_extensions in
+    f peer m
+  else      
+    Trace.infof "%s sent unsupported EXTENDED message %d" (to_string peer) id
+
+let got_message peer message =
+  Trace.recv (to_string peer) (Wire.string_of_message message);
+  (* pr.update_dl (Wire.size_of_msg msg); *)
+  match message with
+  | Wire.KEEP_ALIVE -> ()
+  | Wire.CHOKE -> got_choke peer
+  | Wire.UNCHOKE -> got_unchoke peer
+  | Wire.INTERESTED -> got_interested peer
+  | Wire.NOT_INTERESTED -> got_not_interested peer
+  | Wire.HAVE i -> got_have peer i
+  | Wire.BITFIELD b -> got_bitfield peer b
+  | Wire.REQUEST (i, off, len) -> got_request peer i off len
+  | Wire.PIECE (i, off, s) -> got_piece peer i off s
+  | Wire.CANCEL (i, off, len) -> got_cancel peer i off len
+  | Wire.EXTENDED (0, m) -> got_extended_handshake peer m
+  | Wire.EXTENDED (id, m) -> got_extended peer id m
+  | _ ->
+    Trace.infof "Unhandled message from %s: %s" (to_string peer) (Wire.string_of_message message)
+
+let piece_completed peer i =
+    send_message peer (Wire.HAVE i)
+
+let is_interested peer =
+  peer.peer_interested
+
+let is_choked peer =
+  peer.we_choking
+
+let interesting peer =
+  if not peer.we_interested then begin
     (* debug "we are interested in %s" (to_string pr); *)
-    pr.we_interested <- true;
-    send pr (SendMsg Wire.Interested)
+    peer.we_interested <- true;
+    send_message peer Wire.INTERESTED
   end
 
-let not_interesting pr =
-  if pr.we_interested then begin
+let not_interesting peer =
+  if peer.we_interested then begin
     (* debug "we are no longer interested in %s" (to_string pr); *)
-    pr.we_interested <- false;
-    send pr (SendMsg Wire.NotInterested)
+    peer.we_interested <- false;
+    send_message peer Wire.NOT_INTERESTED
   end
 
-let choke pr =
-  if not pr.we_choking then begin
+let choke peer =
+  if not peer.we_choking then begin
     (* debug "choking %s" (to_string pr); *)
-    pr.we_choking <- true;
-    send pr (SendMsg Wire.Choke)
+    peer.we_choking <- true;
+    send_message peer Wire.CHOKE
   end
 
-let unchoke pr =
-  if pr.we_choking then begin
+let unchoke peer =
+  if peer.we_choking then begin
     (* debug "unchoking %s" (to_string pr); *)
-    pr.we_choking <- false;
-    send pr (SendMsg Wire.Unchoke)
+    peer.we_choking <- false;
+    send_message peer Wire.UNCHOKE
   end
 
 let make_rate r =
@@ -337,8 +352,26 @@ let abort pr =
   ignore (Lwt_io.abort pr.oc);
   Trace.infof "Shutting down connection to %s" (to_string pr)
 
+let writer_loop oc read_block write_queue =
+  let keepalive_message = Wire.put Wire.KEEP_ALIVE |> Put.run in
+  let rec loop () =
+    Lwt.pick [Lwt_stream.next write_queue >|= (fun x -> `Write x);
+              Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout] >>= function
+    | `Write (`Literal s) ->
+      Lwt_io.write oc s >>= loop
+    | `Write (`Block (i, off, len)) ->
+      read_block i off len >>= fun s ->
+      Wire.PIECE (i, off, s) |> Wire.put |> Put.run |> Lwt_io.write oc >>= loop
+    | `Timeout ->
+      Lwt_io.write oc keepalive_message >>= loop
+  in
+  Lwt.catch loop
+    (fun exn ->
+       Trace.infof ~exn "Peer write error";
+       Lwt.fail exn)
+
 let create sa id ic oc (minfo : Info.t) read_block handle_event =
-  let write_stream, write = Lwt_stream.create () in
+  let write_queue, write = Lwt_stream.create () in
   let dl, update_dl = Lwt_react.E.create () in
   let ul, update_ul = Lwt_react.E.create () in
   let dl, resetdl = make_rate dl in
@@ -349,7 +382,7 @@ let create sa id ic oc (minfo : Info.t) read_block handle_event =
     resetul ();
     ticker ()
   in
-  let pr =
+  let peer =
     { sa;
       id;
       we_interested = false;
@@ -363,7 +396,7 @@ let create sa id ic oc (minfo : Info.t) read_block handle_event =
       pieces = minfo.pieces;
       ic;
       oc;
-      write;
+      write = (fun s -> write (Some s));
       ul;
       dl;
       update_dl;
@@ -376,43 +409,18 @@ let create sa id ic oc (minfo : Info.t) read_block handle_event =
   let reader ic =
     Lwt.catch
       (fun () ->
-         Lwt_stream.iter (handle_peer_msg pr)
+         Lwt_stream.iter (got_message peer)
            (Lwt_stream.from (fun () -> Wire.read ic >|= fun msg -> Some msg)))
       (fun exn ->
          Trace.infof ~exn "Peer read error";
          Lwt.fail exn)
   in
-  let writer oc =
-    Lwt.catch
-      (fun () ->
-         Lwt_stream.iter_s (function
-             | SendMsg msg ->
-               Wire.write oc msg >>= fun sz ->
-               (* should notify somene  *)
-               Trace.sent (to_string pr) (Wire.string_of_msg msg);
-               Lwt.return_unit
-             | SendPiece b ->
-               let Wire.Block (i, off, _) = b in
-               read_block b >>= fun s ->
-               Wire.write oc (Wire.Piece (i, off, s)) >>= fun sz ->
-               Trace.sent (to_string pr) (Wire.string_of_msg (Wire.Piece (i, off, s)));
-               (* pr.stats.uploaded <- *)
-               (*   Int64.add pr.stats.uploaded (Int64.of_int (String.length s)); *)
-               (* should notify someone *)
-               Lwt.return_unit
-             | _ as msg ->
-               Trace.infof "Unhandled peer write command: %s" (string_of_sender_msg msg);
-               Lwt.return_unit) write_stream)
-      (fun exn ->
-         Trace.infof ~exn "Peer write error";
-         Lwt.fail exn)
-  in
   let rd = reader ic in
-  Lwt.on_failure rd (fun _ -> abort pr);
-  let wr = writer oc in
-  Lwt.on_failure wr (fun _ -> abort pr);
+  Lwt.on_failure rd (fun _ -> abort peer);
+  let wr = writer_loop oc read_block write_queue in
+  Lwt.on_failure wr (fun _ -> abort peer);
   (* if Bits.count stats.completed > 0 then send pr (SendMsg (Wire.BitField stats.completed)); *)
-  pr
+  peer
   (* Lwt.catch *)
   (*   (fun () -> *)
   (*   Lwt_pipe.iter_s (handle_message self) ch *)

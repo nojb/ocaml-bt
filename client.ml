@@ -193,12 +193,13 @@ let handle_peer_event cl pr =
   | LEECHING (store, st) -> handle_peer_event_leeching cl.info store st pr
   | _ -> ()
 
-let read_block_for_peer cl (Wire.Block (i, off, len)) =
+let read_block_for_peer cl i off len =
   match cl.state with
   | LEECHING (store, _)
   | SEEDING store ->
-    Store.read store cl.info.Info.pieces.(i).Info.piece_offset
-      cl.info.Info.pieces.(i).Info.piece_length
+    Store.read store
+      (Int64.add cl.info.Info.pieces.(i).Info.piece_offset (Int64.of_int off))
+      len
   | _ ->
     failwith_lwt "peer trying to read a block but client is not leeching/seeding..."
 

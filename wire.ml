@@ -1,46 +1,43 @@
 open Printf
 
-type block =
-  | Block of int * int * int
+type message =
+  | KEEP_ALIVE
+  | CHOKE
+  | UNCHOKE
+  | INTERESTED
+  | NOT_INTERESTED
+  | HAVE of int
+  | BITFIELD of Bits.t
+  | REQUEST of int * int * int
+  | PIECE of int * int * string
+  | CANCEL of int * int * int
+  | PORT of int
+  | EXTENDED of int * string
 
-type msg =
-  | KeepAlive
-  | Choke
-  | Unchoke
-  | Interested
-  | NotInterested
-  | Have of int
-  | BitField of Bits.t
-  | Request of block
-  | Piece of int * int * string
-  | Cancel of block
-  | Port of int
-  | Extended of int * string
-
-let string_of_msg = function
-  | KeepAlive ->
-    "KEEPALIVE"
-  | Choke ->
+let string_of_message = function
+  | KEEP_ALIVE ->
+    "KEEP_ALIVE"
+  | CHOKE ->
     "CHOKE"
-  | Unchoke ->
+  | UNCHOKE ->
     "UNCHOKE"
-  | Interested ->
+  | INTERESTED ->
     "INTERESTED"
-  | NotInterested ->
-    "NOTINTERESTED"
-  | Have index ->
-    sprintf "HAVE %d" index
-  | BitField bits ->
-    sprintf "BITFIELD count: %d" (Bits.count bits)
-  | Request (Block (index, offset, length)) ->
-    sprintf "REQUEST %d offset: %d length: %d" index offset length
-  | Piece (index, offset, _) ->
-    sprintf "PIECE %d offset: %d" index offset
-  | Cancel (Block (index, offset, length)) ->
-    sprintf "CANCEL %d offset: %d length: %d" index offset length
-  | Port port ->
+  | NOT_INTERESTED ->
+    "NOT_INTERESTED"
+  | HAVE i ->
+    sprintf "HAVE %d" i
+  | BITFIELD b ->
+    sprintf "BITFIELD count: %d" (Bits.count b)
+  | REQUEST (i, off, len) ->
+    sprintf "REQUEST %d offset: %d length: %d" i off len
+  | PIECE (i, off, _) ->
+    sprintf "PIECE %d offset: %d" i off
+  | CANCEL (i, off, len) ->
+    sprintf "CANCEL %d offset: %d length: %d" i off len
+  | PORT port ->
     sprintf "PORT %d" port
-  | Extended (id, _) ->
+  | EXTENDED (id, _) ->
     sprintf "EXTENDED %d" id
 
 let (>>=) = Lwt.(>>=)
@@ -50,37 +47,37 @@ let put' msg : Put.t =
   let open Put in
   let open Put.BE in
   match msg with
-  | KeepAlive ->
+  | KEEP_ALIVE ->
     string ""
-  | Choke ->
+  | CHOKE ->
     int8 0
-  | Unchoke ->
+  | UNCHOKE ->
     int8 1
-  | Interested ->
+  | INTERESTED ->
     int8 2
-  | NotInterested ->
+  | NOT_INTERESTED ->
     int8 3
-  | Have index ->
-    int8 4 >> int index
-  | BitField bits ->
-    int8 5 >> string (Bits.pad bits 8 |> Bits.to_bin)
-  | Request (Block (index, offset, length)) ->
-    int8 6 >> int index >> int offset >> int length
-  | Piece (index, offset, block) ->
-    int8 7 >> int index >> int offset >> string block
-  | Cancel (Block (index, offset, length)) ->
-    int8 8 >> int index >> int offset >> int length
-  | Port port ->
-    int8 9 >> int16 port
-  | Extended (id, s) ->
+  | HAVE i ->
+    int8 4 >> int i
+  | BITFIELD b ->
+    int8 5 >> string (Bits.pad b 8 |> Bits.to_bin)
+  | REQUEST (i, off, len) ->
+    int8 6 >> int i >> int off >> int len
+  | PIECE (i, off, s) ->
+    int8 7 >> int i >> int off >> string s
+  | CANCEL (i, off, len) ->
+    int8 8 >> int i >> int off >> int len
+  | PORT i ->
+    int8 9 >> int16 i
+  | EXTENDED (id, s) ->
     int8 20 >> int8 id >> string s
 
 let put msg =
   let p = put' msg in
   Put.(BE.int (length p) >> p)
 
-let write oc msg =
-  put msg |> Put.run |> Lwt_io.write oc
+(* let write oc msg = *)
+(*   put msg |> Put.run |> Lwt_io.write oc *)
     
 let read_exactly ic len =
   let buf = String.create len in
@@ -89,52 +86,52 @@ let read_exactly ic len =
 
 exception BadMsg of int * int
 
-let get' len id : msg Get.t =
+let get' len id : message Get.t =
   let open Get in
   let open Get.BE in
   match id with
   | 0 ->
-    return Choke
+    return CHOKE
   | 1 ->
-    return Unchoke
+    return UNCHOKE
   | 2 ->
-    return Interested
+    return INTERESTED
   | 3 ->
-    return NotInterested
+    return NOT_INTERESTED
   | 4 ->
-    int >>= fun index ->
-    return (Have index)
+    int >>= fun i ->
+    return (HAVE i)
   | 5 ->
-    string_of_length (len-1) >>= fun buf ->
-    return (BitField (Bits.of_bin buf))
+    string_of_length (len-1) >>= fun s ->
+    return (BITFIELD (Bits.of_bin s))
   | 6 ->
-    int >>= fun index ->
-    int >>= fun start ->
-    int >>= fun length ->
-    return (Request (Block (index, start, length)))
+    int >>= fun i ->
+    int >>= fun off ->
+    int >>= fun len ->
+    return (REQUEST (i, off, len))
   | 7 ->
-    int >>= fun index ->
-    int >>= fun start ->
-    string_of_length (len-9) >>= fun block ->
-    return (Piece (index, start, block))
+    int >>= fun i ->
+    int >>= fun off ->
+    string_of_length (len-9) >>= fun s ->
+    return (PIECE (i, off, s))
   | 8 ->
-    int >>= fun index ->
-    int >>= fun start ->
-    int >>= fun length ->
-    return (Cancel (Block (index, start, length)))
+    int >>= fun i ->
+    int >>= fun off ->
+    int >>= fun len ->
+    return (CANCEL (i, off, len))
   | 9 ->
     uint16 >>= fun port ->
-    return (Port port)
+    return (PORT port)
   | 20 ->
     uint8 >>= fun id ->
     string_of_length (len-2) >>= fun s ->
-    return (Extended (id, s))
+    return (EXTENDED (id, s))
   | _ ->
     fail (* fail (BadMsg (len, id)) *)
 
-let get len : msg Get.t =
+let get len : message Get.t =
   if len = 0 then
-    Get.return KeepAlive
+    Get.return KEEP_ALIVE
   else
     Get.(BE.uint8 >>= get' len)
 
