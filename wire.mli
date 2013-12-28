@@ -10,6 +10,11 @@ type message =
   | PIECE of int * int * string
   | CANCEL of int * int * int
   | PORT of int
+  | HAVE_ALL
+  | HAVE_NONE
+  | SUGGEST of int
+  | REJECT of int * int * int
+  | ALLOWED of int list
   | EXTENDED of int * string
 
 exception BadMsg of int * int

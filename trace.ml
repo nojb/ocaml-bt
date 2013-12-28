@@ -17,13 +17,14 @@ let print_time oc =
 
 let infof ?exn fmt =
   Printf.ksprintf (fun msg ->
-      print_time stderr;
-      if !verbose then
+      if !verbose then begin
+        print_time stderr;
         match exn with
         | None ->
           Printf.eprintf "* %s.\n%!" msg
         | Some exn ->
-          Printf.eprintf "* %s exn: %s.\n%!" msg (Printexc.to_string exn)) fmt
+          Printf.eprintf "* %s exn: %s.\n%!" msg (Printexc.to_string exn)
+      end) fmt
 
 (* let recvf src fmt = *)
 (*   Printf.ksprintf (fun msg -> *)

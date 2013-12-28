@@ -33,24 +33,3 @@ end
 module Make (O : ORD) (P : PRIO) : S with type key = O.t and type prio = P.t
 
 module Int : PRIO with type t = int
-
-module type I = sig
-  type key
-  type prio
-  type t
-  val create : unit -> t
-  val is_empty : t -> bool
-  val mem : t -> key -> bool
-  val singleton : key -> t
-  val add : t -> key -> unit
-  val find : t -> key -> prio
-  val min_elt : t -> key
-  val remove_min : t -> unit
-  val remove : t -> key -> unit
-  val remove_all : t -> key -> unit
-  val of_list : key list -> t
-  val to_list : t -> (key * prio) list
-  val pick : t -> (key -> bool) -> key list
-end
-
-module MakeImp (O : ORD) (P : PRIO) : I with type key = O.t and type prio = P.t

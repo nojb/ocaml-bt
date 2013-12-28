@@ -23,3 +23,9 @@ let _ =
     Lwt.async (fun () -> download Sys.argv.(1));
     Lwt.wait () |> fst |> Lwt_main.run
   end
+
+(* let main path = *)
+(*   let bc = Get.run_file Bcode.bdecode path in *)
+(*   let server = Server.create info in *)
+(*   Torrent.create info >>= fun torrent -> *)
+(*   Announce.create info (Server.start_connection server) *)

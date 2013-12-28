@@ -12,6 +12,11 @@ type message =
   | PIECE of int * int * string
   | CANCEL of int * int * int
   | PORT of int
+  | HAVE_ALL
+  | HAVE_NONE
+  | SUGGEST of int
+  | REJECT of int * int * int
+  | ALLOWED of int list
   | EXTENDED of int * string
 
 let string_of_message = function
@@ -37,6 +42,16 @@ let string_of_message = function
     sprintf "CANCEL %d offset: %d length: %d" i off len
   | PORT port ->
     sprintf "PORT %d" port
+  | HAVE_ALL ->
+    "HAVE_ALL"
+  | HAVE_NONE ->
+    "HAVE_NONE"
+  | SUGGEST i ->
+    sprintf "SUGGEST_PIECE %d" i
+  | REJECT (i, off, len) ->
+    sprintf "REJECT_PIECE %d off: %d len: %d" i off len
+  | ALLOWED pieces ->
+    sprintf "ALLOWED_FAST %s" (String.concat " " (List.map string_of_int pieces))
   | EXTENDED (id, _) ->
     sprintf "EXTENDED %d" id
 
@@ -69,6 +84,16 @@ let put' msg : Put.t =
     int8 8 >> int i >> int off >> int len
   | PORT i ->
     int8 9 >> int16 i
+  | HAVE_ALL ->
+    int8 14
+  | HAVE_NONE ->
+    int8 15
+  | SUGGEST i ->
+    int8 13 >> int i
+  | REJECT (i, off, len) ->
+    int8 16 >> int i >> int off >> int len
+  | ALLOWED pieces ->
+    List.fold_left (fun acc i -> acc >> int i) (int8 17) pieces
   | EXTENDED (id, s) ->
     int8 20 >> int8 id >> string s
 
@@ -122,6 +147,21 @@ let get' len id : message Get.t =
   | 9 ->
     uint16 >>= fun port ->
     return (PORT port)
+  | 14 ->
+    return HAVE_ALL
+  | 15 ->
+    return HAVE_NONE
+  | 13 ->
+    int >>= fun i ->
+    return (SUGGEST i)
+  | 16 ->
+    int >>= fun i ->
+    int >>= fun off ->
+    int >>= fun len ->
+    return (REJECT (i, off, len))
+  | 17 ->
+    many int >>= fun pieces ->
+    return (ALLOWED pieces)
   | 20 ->
     uint8 >>= fun id ->
     string_of_length (len-2) >>= fun s ->

@@ -22,8 +22,8 @@ let to_hex s =
 
 let to_hex_short s =
   let s = to_hex s in
-  String.sub s 0 6
-  (* Printf.sprintf "%s..%s" (String.sub s 0 6) (String.sub s 15 4) *)
+  (* String.sub s 0 6 *)
+  Printf.sprintf "%s...%s" (String.sub s 0 5) (String.sub s 15 5)
     
 let pp fmt s =
   Format.fprintf fmt "%s" (to_hex s)
