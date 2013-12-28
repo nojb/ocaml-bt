@@ -1,8 +1,5 @@
 open Info
 
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
-
 let failwith fmt =
   Printf.ksprintf failwith fmt
 
@@ -361,12 +358,16 @@ let make_rate r =
   let rt = Lwt_react.S.switch (average ()) (Lwt_react.E.map average reset) in
   rt, updatereset
 
+let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
+
 let writer_loop oc get_block write_queue stop_thread stop =
   let keepalive_message = Wire.put Wire.KEEP_ALIVE |> Put.run in
   let rec loop () =
-    Lwt.pick [Lwt_stream.next write_queue >|= (fun x -> `Write x);
-              stop_thread >|= (fun () -> `Stop);
-              Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout] >>= function
+    Lwt.pick
+      [ Lwt_stream.next write_queue >|= (fun x -> `Write x);
+        stop_thread >|= (fun () -> `Stop);
+        Lwt_unix.sleep (float keepalive_delay) >|= (fun () -> `Timeout) ] >>= function
     | `Write (`Literal s) ->
       Lwt_io.write oc s >>= loop
     | `Write (`Block (i, off, len)) ->
@@ -389,9 +390,10 @@ let writer_loop oc get_block write_queue stop_thread stop =
 let reader_loop ic got_first_message got_message stop_thread stop =
   let input = Lwt_stream.from (fun () -> Wire.read ic >|= fun msg -> Some msg) in
   let rec loop gotmsg =
-    Lwt.pick [Lwt_stream.next input >|= (fun x -> `Ok x);
-              stop_thread >|= (fun () -> `Stop);
-              Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout] >>= function
+    Lwt.pick
+      [ Lwt_stream.next input >|= (fun x -> `Ok x);
+        stop_thread >|= (fun () -> `Stop);
+        Lwt_unix.sleep (float keepalive_delay) >|= (fun () -> `Timeout) ] >>= function
     | `Ok x ->
       gotmsg x;
       loop got_message
@@ -439,7 +441,6 @@ let create sa id ic oc (minfo : Info.t) exts =
       have = Bits.create (Array.length minfo.pieces);
       active_requests = [];
       status = IDLE;
-      (* got_anything = false; *)
       torrent = Torrent.create minfo;
       stop;
       write = (fun s -> write (Some s));

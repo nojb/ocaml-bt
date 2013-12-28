@@ -49,7 +49,7 @@ let got_piece self piece s =
   self.downloaded <- Int64.(add self.downloaded (of_int self.piecelen.(piece)));
   Bits.unset self.started piece;
   if Word160.digest_of_string s |> Word160.equal self.hashes.(piece) then begin
-    Lwt.async (fun () -> Store.write self.store self.pieceoff.(piece) s);
+    Store.write self.store self.pieceoff.(piece) s;
     Bits.set self.completed piece;
     self.amount_left <- Int64.(sub self.amount_left (of_int self.piecelen.(piece)));
     (* FIXME check if done *)
