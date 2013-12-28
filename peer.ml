@@ -226,9 +226,6 @@ let got_have self i =
   Torrent.got_have self.torrent i
 
 let got_have_bitfield self b =
-  (* if self.got_anything then failwith "bitfield must come first"; *)
-  (* if Bits.count t.peer_pieces = 0 then begin *)
-  (* FIXME padding, should only come after handshake *)
   Bits.blit b 0 self.have 0 (Bits.length self.have);
   Bits.iteri (fun i b -> if b then Torrent.got_have self.torrent i) b
 

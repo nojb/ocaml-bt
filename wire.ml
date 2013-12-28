@@ -55,9 +55,6 @@ let string_of_message = function
   | EXTENDED (id, _) ->
     sprintf "EXTENDED %d" id
 
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
-
 let put' msg : Put.t =
   let open Put in
   let open Put.BE in
@@ -74,8 +71,8 @@ let put' msg : Put.t =
     int8 3
   | HAVE i ->
     int8 4 >> int i
-  | BITFIELD b ->
-    int8 5 >> string (Bits.pad b 8 |> Bits.to_bin)
+  | BITFIELD bits ->
+    int8 5 >> string (Bits.to_bin bits)
   | REQUEST (i, off, len) ->
     int8 6 >> int i >> int off >> int len
   | PIECE (i, off, s) ->
@@ -103,7 +100,10 @@ let put msg =
 
 (* let write oc msg = *)
 (*   put msg |> Put.run |> Lwt_io.write oc *)
-    
+
+let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
+
 let read_exactly ic len =
   let buf = String.create len in
   Lwt_io.read_into_exactly ic buf 0 len >>= fun () ->

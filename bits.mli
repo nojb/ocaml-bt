@@ -19,6 +19,8 @@ val fold_left_i : ('a -> int -> bool -> 'a) -> 'a -> t -> 'a
 val to_string : t -> string
 val of_bin : string -> t
 val to_bin : t -> string
-val pad : t -> int -> t
 val blit : t -> int -> t -> int -> int -> unit
+val to_array : t -> bool array
+val of_array : bool array -> t
 val to_list : t -> int list
+val of_list : int list -> t
