@@ -23,7 +23,7 @@ let infof ?exn fmt =
         | None ->
           Printf.eprintf "* %s.\n%!" msg
         | Some exn ->
-          Printf.eprintf "* %s exn: %s.\n%!" msg (Printexc.to_string exn)
+          Printf.eprintf "* %s (exn: %s).\n%!" msg (Printexc.to_string exn)
       end) fmt
 
 (* let recvf src fmt = *)

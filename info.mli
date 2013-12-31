@@ -22,15 +22,5 @@ type t = {
 }
 
 val create : Bcode.t -> t
-
 val get_piece : t -> int -> string
 val length : t -> int
-
-(* type partial *)
-
-(* val of_info_hash : Word160.t -> (t -> unit) -> partial *)
-  
-(* val got_info_length : partial -> int -> bool *)
-(* val request_lost : partial -> int -> unit *)
-(* val next_piece : partial -> int option *)
-(* val got_piece : partial -> int -> string -> unit *)

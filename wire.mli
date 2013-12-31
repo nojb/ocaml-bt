@@ -20,6 +20,7 @@ type message =
 exception BadMsg of int * int
 
 val string_of_message : message -> string
+val sprint : message -> unit -> string
 val get : int -> message Get.t
 val put : message -> Put.t
 val read : Lwt_io.input_channel -> message Lwt.t

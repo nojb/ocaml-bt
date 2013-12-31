@@ -55,6 +55,9 @@ let string_of_message = function
   | EXTENDED (id, _) ->
     sprintf "EXTENDED %d" id
 
+let sprint m () =
+  string_of_message m
+
 let put' msg : Put.t =
   let open Put in
   let open Put.BE in

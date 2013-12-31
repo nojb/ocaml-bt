@@ -34,10 +34,6 @@ type info_status = {
   info_hash : Word160.t;
   mutable length : [`NOSIZE | `GOTSIZE of int * string array];
   on_completion : Info.t -> unit;
-  (* numpieces : int; *)
-  (* pieces : string array; *)
-  (* partial : Info.partial; *)
-  (* active_info_requests : int Hashset.t; *)
   info_write : string -> unit
 }
 
@@ -104,27 +100,14 @@ let send_block self i off len =
     `BLOCK (i, off, len) |> dl.dl_write
 
 let request_info_piece self i =
-  (* Trace.infof "%s: requesting more info pieces" (to_string self); *)
   let id = Hashtbl.find self.extensions "ut_metadata" in
-  (* let rec loop () = *)
-  (* Trace.infof "%s: request_more: loop: card: %d" (to_string self) *)
-  (*   (Hashset.cardinal nfo.active_info_requests); *)
-  (* if Hashset.cardinal nfo.active_info_requests < request_backlog then *)
-  (* match Info.next_piece nfo.partial with *)
-  (* | None -> *)
-  (* () *)
-  (* | Some i -> *)
   let d =
     [ "msg_type", Bcode.BInt 0L;
       "piece", Bcode.BInt (Int64.of_int i) ]
   in
   let s = Bcode.bencode (Bcode.BDict d) |> Put.run in
   Wire.EXTENDED (id, s) |> send_message self;
-  (* Hashset.add nfo.active_info_requests i; *)
   Trace.infof "%s: requested piece %d" (to_string self) i
-        (* loop () *)
-  (* in *)
-  (* loop () *)
 
 let request_more self =
   (* assert (not self.peer_choking); *)
@@ -144,29 +127,6 @@ let request_more self =
     end
   | INFO nfo ->
     assert false
-    (* Trace.infof "%s: requesting more info pieces" (to_string self); *)
-    (* let id = Hashtbl.find self.extensions "ut_metadata" in *)
-    (* let rec loop () = *)
-    (*   (\* Trace.infof "%s: request_more: loop: card: %d" (to_string self) *\) *)
-    (*   (\*   (Hashset.cardinal nfo.active_info_requests); *\) *)
-    (*   if Hashset.cardinal nfo.active_info_requests < request_backlog then *)
-    (*     match Info.next_piece nfo.partial with *)
-    (*     | None -> *)
-    (*       () *)
-    (*     | Some i -> *)
-    (*       let d = *)
-    (*         [ "msg_type", Bcode.BInt 0L; *)
-    (*           "piece", Bcode.BInt (Int64.of_int i) ] *)
-    (*       in *)
-    (*       let s = Bcode.bencode (Bcode.BDict d) |> Put.run in *)
-    (*       Wire.EXTENDED (id, s) |> send_message self; *)
-    (*       Hashset.add nfo.active_info_requests i; *)
-    (*       Trace.infof "requested piece %d" i; *)
-    (*       loop () *)
-    (* in *)
-    (* loop () *)
-    (* while Hashset.cardinal nfo.active_info_requests < request_backlog  *)
-    (* assert false *)
 
 let got_ut_metadata self s =
   let m, data_start = Get.run_partial Bcode.bdecode s in
@@ -214,15 +174,12 @@ let got_ut_metadata self s =
       | `NOSIZE ->
         assert false
     end
-  (* Info.got_piece nfo.partial piece; *)
-  (* request_more self *)
   | 1, DOWNLOAD _ ->
     assert false (* FIXME - stop ? *)
   | 2, INFO nfo (* reject *) ->
     Trace.infof "%s: rejected request for info piece %d, stopping"
       (to_string self) piece;
     stop self
-  (* Info.request_lost nfo.partial piece *)
   | 2, DOWNLOAD _ ->
     assert false (* FIXME - stop ? *)
   | _ ->
@@ -498,7 +455,6 @@ let disconnected self =
   match self.status with
   | INFO _ ->
     ()
-    (* Hashset.iter (Info.request_lost nfo.partial) nfo.active_info_requests *)
   | DOWNLOAD dl ->
     Bits.iteri (fun i b -> if b then Torrent.lost_have dl.torrent i) dl.have;
     match dl.activity with
@@ -630,7 +586,7 @@ let create_with_partial sa id ic oc info_hash on_completion exts =
       (* write = (fun s -> write (Some s)); *)
       ul; dl;
       update_dl; update_ul;
-      fastext = false; (* Bits.is_set exts fastextbit; *)
+      fastext = Bits.is_set exts fastextbit;
       ltext = Bits.is_set exts ltextbit;
       extensions = Hashtbl.create 17 }
   in
