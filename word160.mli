@@ -16,3 +16,5 @@ val to_z : t -> Z.t
 val dist : t -> t -> Z.t
 val random : unit -> t
 val peer_id : string -> t
+val of_hex : string -> t
+val of_base32 : string -> t

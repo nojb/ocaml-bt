@@ -74,3 +74,54 @@ let peer_id prefix =
     loop 0
   in
   prefix ^ random_string (20 - String.length prefix)
+
+let unhex_char = function
+  | '0' -> 0
+  | '1' -> 1
+  | '2' -> 2
+  | '3' -> 3
+  | '4' -> 4
+  | '5' -> 5
+  | '6' -> 6
+  | '7' -> 7
+  | '8' -> 8
+  | '9' -> 9
+  | 'a' | 'A' -> 10
+  | 'b' | 'B' -> 11
+  | 'c' | 'C' -> 12
+  | 'd' | 'D' -> 13
+  | 'e' | 'E' -> 14
+  | 'f' | 'F' -> 15
+  | _ -> invalid_arg "Word160.unhex_char"
+
+let of_hex s =
+  let l = String.length s in
+  if l <> 40 then invalid_arg "Word160.of_hex";
+  let s' = String.create 20 in
+  for i = 19 downto 0 do
+    let c1 = unhex_char s.[2*i+1] in
+    let c2 = unhex_char s.[2*i] in
+    s'.[i] <- Char.chr (c1 + (c2 lsl 4))
+  done;
+  s'
+
+let unbase32_char c =
+  match c with
+  | 'A' .. 'Z' -> Char.code c - Char.code 'A'
+  | '2' .. '7' -> Char.code c - Char.code '2' + 26
+  | _ -> invalid_arg "Word160.unbase32_char"
+
+let of_base32 s =
+  let l = String.length s in
+  if l <> 32 then invalid_arg "Word160.of_base32";
+  let rec loop acc i =
+    if i >= 32 then acc
+    else loop (Z.add acc (Z.shift_left (Z.of_int (unbase32_char s.[31-i])) (5*i))) (i+1)
+  in
+  let z = loop Z.zero 0 in
+  let bits = Z.to_bits z in
+  let s' = String.make 20 '\000' in
+  for i = 0 to 19 do
+    s'.[i] <- bits.[19-i]
+  done;
+  s'

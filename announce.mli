@@ -1,7 +1,8 @@
 type t
 
 val create :
-  Info.t ->
+  Word160.t ->
+  Uri.t list list ->
   (unit -> int64) ->
   (unit -> int64) ->
   (unit -> int64) ->

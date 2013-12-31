@@ -1,13 +1,17 @@
 type t
 
-val create :
+val create_with_partial :
   Lwt_unix.sockaddr ->
   Word160.t ->
   Lwt_io.input_channel ->
   Lwt_io.output_channel ->
-  Info.t ->
+  (* Info.partial -> *)
+  Word160.t ->
+  (Info.t -> unit) ->
   Bits.t ->
   t
+
+val partial_exts : Bits.t
   
 val stop : t -> unit
 val is_choked : t -> bool

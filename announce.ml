@@ -1,26 +1,14 @@
-open Info
-  
+let default_tracker_interval = 5
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
               
 let failwith_lwt fmt =
   Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
-                
-type t = {
-  tiers : Uri.t array array;
-  info_hash : Word160.t;
-  up : unit -> int64;
-  down : unit -> int64;
-  amount_left : unit -> int64;
-  port : int;
-  id : Word160.t;
-  mutable running : bool;
-  mutable force_stop : bool;
-  mutable interval : float;
-  mutable current_tier : int;
-  mutable current_client : int;
-  mutable thread : unit Lwt.t;
-  handle_resp : Unix.sockaddr -> unit;
+
+type tier = {
+  trackers : Uri.t array;
+  mutable interval : int
 }
 
 type event =
@@ -29,15 +17,26 @@ type event =
   | NONE
   | COMPLETED
 
-type success = {
-  peers : Unix.sockaddr list;
-  ival : int
+type t = {
+  info_hash : Word160.t;
+  up : unit -> int64;
+  down : unit -> int64;
+  amount_left : unit -> int64;
+  port : int;
+  id : Word160.t;
+  announce : event -> unit;
+  stop : unit -> unit;
+  new_tier : Uri.t list -> unit;
+  (* connect : Unix.sockaddr -> unit; *)
+  strm : [`Announce of event | `Stop] Lwt_stream.t;
+  (* mutable tiers : tier list; *)
+  udp_sock : Lwt_unix.file_descr
 }
 
 type response =
   | Error of string
   | Warning of string
-  | Success of success
+  | Success of Unix.sockaddr list * int
 
 let string_of_event = function
   | STARTED -> "STARTED"
@@ -45,48 +44,23 @@ let string_of_event = function
   | NONE -> "NONE"
   | COMPLETED -> "COMPLETED"
 
-exception UnknownScheme of string option
-exception HTTPError of string
-exception AnnounceError of string
-
 let shuffle_array a =
-  for i = (Array.length a)-1 downto 1 do
+  let l = Array.length a in
+  for i = l-1 downto 1 do
     let j = Random.int (i+1) in
-    let tmp = a.(i) in
+    let t = a.(i) in
     a.(i) <- a.(j);
-    a.(j) <- tmp
+    a.(j) <- t
   done
 
-let create info up down amount_left port id handle_resp =
-  let ann =
-    { tiers = Array.of_list (List.map Array.of_list info.Info.announce_list);
-      info_hash = info.Info.info_hash;
-      up;
-      down;
-      amount_left;
-      port;
-      id;
-      force_stop = false;
-      interval = 5.;
-      current_tier = 0;
-      current_client = 0;
-      handle_resp;
-      running = false;
-      thread = Lwt.return_unit }
-  in
-  let no_trackers =
-    Array.fold_left (+) 0 (Array.map Array.length ann.tiers)
-  in 
-  Trace.infof "Announce initialised with %d trackers for %S" no_trackers info.Info.name;
-  Array.iter shuffle_array ann.tiers;
-  ann
+(* let shuffle_list l = *)
+(*   List.map (fun x -> Random.bits (), x) l |> *)
+(*   List.sort (fun (x, _) (y, _) -> compare x y) |> *)
+(*   List.map snd *)
 
-let stop ann =
-  Lwt.cancel ann.thread
-
-let stop_hard ann =
-  ann.force_stop <- true;
-  stop ann
+let stop self =
+  self.announce STOPPED;
+  self.stop ()
      
 let udp_send fd buf =
   Lwt_unix.write fd buf 0 (String.length buf) >>= fun len ->
@@ -214,9 +188,7 @@ and udp_announce_response fd ev trans_id =
           (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest))
       in
       loop () >|= fun new_peers ->
-      Success
-        { peers = new_peers;
-          ival = Int32.to_int interval }
+      Success (new_peers, Int32.to_int interval)
     end
   in
   try
@@ -279,7 +251,7 @@ let http_decode_response (d : Bcode.t) =
     in
     let peers = Bcode.find "peers" d in
     let peers = either compact_peers usual_peers peers in
-    Success {peers; ival = interval}
+    Success (peers, interval)
   in
   let error () =
     let s = Bcode.find "failure reason" d |> Bcode.to_string in
@@ -291,123 +263,119 @@ let http_decode_response (d : Bcode.t) =
   in
   either warning (either error success) ()
 
-let http_announce ann url event =
+let http_announce self tr ev =
   let uri =
     let params =
-      ("info_hash",   Word160.to_bin ann.info_hash) ::
-      ("peer_id",     Word160.to_bin ann.id) ::
-      ("uploaded",    Int64.to_string (ann.up ())) ::
-      ("downloaded",  Int64.to_string (ann.down ())) ::
-      ("left",        Int64.to_string (ann.amount_left ())) ::
-      ("port",        string_of_int ann.port) ::
+      ("info_hash",   Word160.to_bin self.info_hash) ::
+      ("peer_id",     Word160.to_bin self.id) ::
+      ("uploaded",    Int64.to_string (self.up ())) ::
+      ("downloaded",  Int64.to_string (self.down ())) ::
+      ("left",        Int64.to_string (self.amount_left ())) ::
+      ("port",        string_of_int self.port) ::
       ("compact",     "1") ::
-      match event with
+      match ev with
       | NONE -> []
-      | _ -> ("event", String.lowercase (string_of_event event)) :: []
+      | _ -> ("event", String.lowercase (string_of_event ev)) :: []
     in
-    Uri.add_query_params' url params
+    Uri.add_query_params' tr params
   in
   Cohttp_lwt_unix.Client.get uri >>= function
-  | None -> Lwt.fail (HTTPError "no response")
-  | Some (resp, body) ->
+  | None -> Lwt.fail (Failure "http error: no reponse")
+  | Some (_, body) ->
     Cohttp_lwt_body.string_of_body body >>= fun body ->
     Trace.infof "Received response from HTTP tracker body: %S" body;
     try
       Get.run Bcode.bdecode body |> http_decode_response |> Lwt.return
     with exn ->
-      Lwt.fail (HTTPError ("decode error: " ^ Printexc.to_string exn))
+      Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn))
 
-let announce ann event =
-  let url = ann.tiers.(ann.current_tier).(ann.current_client) in
-  Trace.infof "ANNOUNCE QUERY event:%s tracker:%s ul:%Ld dl:%Ld left:%Ld"
-    (string_of_event event) (Uri.to_string url) (ann.up ())
-    (ann.down ()) (ann.amount_left ());
-  match Uri.scheme url with
+let announce self tr ev =
+  Trace.infof "Announcing on %S" (Uri.to_string tr);
+  match Uri.scheme tr with
   | Some "http" | Some "https" ->
-    (* failwith_lwt "skipping over http trackers for now..." *)
-    http_announce ann url event
+    http_announce self tr ev
   | Some "udp" ->
-    udp_announce ann url event
-  | other ->
-    Lwt.fail (UnknownScheme other)
+    udp_announce self tr ev
+  | Some sch ->
+    failwith_lwt "unknown tracker url scheme: %S" sch
+  | None ->
+    failwith_lwt "missing tracker url scheme"
 
-(* let silent ann f = *)
-(*   let old_hdl = ann.handlers in *)
-(*   ann.handlers <- []; *)
-(*   f () >>= fun res -> *)
-(*   ann.handlers <- old_hdl; *)
-(*   Lwt.return res *)
+let swap a i j =
+  let l = Array.length a in
+  if i < 0 || i >= l || j < 0 || j >= l then invalid_arg "Announce.swap";
+  let t = a.(i) in
+  a.(i) <- a.(j);
+  a.(j) <- t
 
-let promote_tracker ann =
-  Trace.infof "Promoting tracker %s (tier %d, pos %d)"
-    (Uri.to_string ann.tiers.(ann.current_tier).(ann.current_client))
-    ann.current_tier ann.current_client;
-  let tier = ann.tiers.(ann.current_tier) in
-  let tmp = tier.(0) in
-  tier.(0) <- tier.(ann.current_client);
-  tier.(ann.current_client) <- tmp;
-  ann.current_client <- 0
-
-let try_trackers f ann =
-  let rec loop tier client =
-    if tier >= Array.length ann.tiers then
-      loop 0 0
-    else if client >= Array.length ann.tiers.(tier) then
-      loop (tier+1) 0
-    else begin
-      ann.current_tier <- tier;
-      ann.current_client <- client;
-      Trace.infof "Switching trackers to %s (tier %d, pos %d)"
-        (Uri.to_string ann.tiers.(tier).(client)) tier client;
-      Lwt.catch f
+let announce_tier self tier ev =
+  let trs = tier.trackers in
+  let rec loop i =
+    if i >= Array.length trs then begin
+      Trace.infof "announce_tier: no working tracker";
+      Lwt.return [] (* FIXME FIXME*)
+    end else
+      let tr = trs.(i) in
+      Lwt.catch
+        (fun () ->
+           announce self tr ev >>= function
+           | Success (peers, interval) ->
+             Trace.infof "Tracker %S returned %d peers"
+               (Uri.to_string tr) (List.length peers);
+             swap trs 0 i;
+             tier.interval <- interval;
+             Lwt.return peers
+           | _ ->
+             failwith_lwt "tracker returned error/warning")
+           (* swap tier 0 i; *)
+           (* Lwt.return resp) *)
+        (* handle Tracker Error / Waring message *)
         (fun exn ->
-           Trace.infof ~exn "Announce error";
-           loop tier (client+1))
-    end
+           Trace.infof ~exn "error while announcing on %S" (Uri.to_string tr);
+           loop (i+1))
   in
-  loop 0 0
+  loop 0
 
-let set_interval ann iv =
-  if iv <= 0 then stop ann
-  else
-    if float iv <> ann.interval then begin
-      Trace.infof "Announce interval set to %ds." iv;
-      ann.interval <- float iv
-    end
-
-let run ann =
-  Trace.infof "Starting announce.";
-  ann.interval <- 5.;
-  let rec loop ev =
-    try_trackers (fun () ->
-        announce ann ev >>= function
-        | Warning err | Error err ->
-          Lwt.fail (AnnounceError err)
-        | Success success ->
-          promote_tracker ann;
-          set_interval ann success.ival;
-          List.iter ann.handle_resp success.peers;
-          Lwt.return_unit) ann >>= fun () ->
-    Lwt_unix.sleep ann.interval >>= fun () ->
-    loop NONE
+(* FIXME stop is not restartable *)
+    
+let new_tier self connect uris =
+  let tier = { trackers = Array.of_list uris; interval = default_tracker_interval } in
+  shuffle_array tier.trackers;
+  let rec loop t ev =
+    Lwt.pick
+      [ Lwt_unix.sleep t >|= (fun () -> `Announce ev);
+        Lwt_stream.next (self ()).strm ] >>= function
+    | `Announce ev ->
+      announce_tier (self ()) tier ev >|=
+      List.iter connect >>= fun () ->
+      loop (float tier.interval) NONE
+    | `Stop ->
+      Lwt.return_unit
   in
-  loop STARTED >>= fun () ->
-  Trace.infof "Stopping announce.";
-  if not ann.force_stop then
-    (* silent ann (fun () -> *)
-    Lwt.catch (fun () -> announce ann STOPPED >>= fun _ -> Lwt.return_unit)
-      (fun exn -> Trace.infof ~exn "ignoring (shutting down)"; Lwt.return_unit)
-  else
-    Lwt.return_unit
+  Lwt.async (fun () -> loop 0. STARTED)
 
-let start ann =
-  ann.force_stop <- false;
-  if ann.running then
-    Trace.infof "already running; what is going on?"
-  else begin
-    ann.thread <-
-      Lwt.catch (fun () -> run ann) (fun exn ->
-          Trace.infof ~exn "Unexpected error while announcing";
-          Lwt.return_unit);
-    Lwt.on_termination ann.thread (fun () -> ann.running <- false)
-  end
+let start self =
+  self.announce STARTED
+
+let create info_hash tiers up down amount_left port id connect =
+  let strm, write = Lwt_stream.create () in
+  let stop () = write (Some `Stop) in
+  let announce ev = write (Some (`Announce ev)) in
+  let rec self =
+    lazy {
+      info_hash;
+      up;
+      down;
+      amount_left;
+      port;
+      id;
+      stop;
+      announce;
+      strm;
+      new_tier = new_tier (fun () -> Lazy.force self) connect;
+      udp_sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0;
+    }
+  in
+  let self = Lazy.force self in
+  List.iter self.new_tier tiers;
+  self

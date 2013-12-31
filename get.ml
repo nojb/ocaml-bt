@@ -190,6 +190,13 @@ let run p s =
   | Failure ->
     raise Get_error
 
+let run_partial p s =
+  match p s 0 with
+  | Success (x, j) ->
+    x, j
+  | Failure ->
+    raise Get_error
+
 let run_file p path =
   let ic = open_in_bin path in
   let len = in_channel_length ic in

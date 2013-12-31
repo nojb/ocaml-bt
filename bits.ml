@@ -56,7 +56,7 @@ let is_set v i =
 let lognot v =
   let v' = String.copy v in
   for i = 0 to (String.length v)-1 do
-    set_byte v' i (lnot (get_byte v' i))
+    set_byte v' i (if get_byte v' i <> 0 then 0 else 1)
   done;
   v'
 

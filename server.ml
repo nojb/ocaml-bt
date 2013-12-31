@@ -5,7 +5,8 @@ module W160H = Hashtbl.Make (Word160)
 
 type t = {
   id : Word160.t;
-  info : Info.t;
+  info_hash : Word160.t;
+  (* info : Info.partial; *)
   handshake : string;
   mutable spare : Unix.sockaddr list;
   stop : unit -> unit;
@@ -132,9 +133,9 @@ let unchoke_peers cl optimistic =
 (*   | _ -> *)
 (*     () *)
 
-let connection_made self sa ic oc (id, fastext) : unit =
+let connection_made self sa ic oc (id, exts) : unit =
   Trace.infof "New peer connected with id %s" (Word160.to_hex_short id);
-  let peer = Peer.create sa id ic oc self.info fastext in
+  let _ = Peer.create_with_partial sa id ic oc self.info_hash (fun _ -> ()) exts in
   ()
   (* FIXME save the peer *)
 
@@ -142,7 +143,7 @@ let connection_lost self sa exn =
   ()
 
 let handshake_message id ih =
-  "\019BitTorrent protocol" ^ String.make 8 '\000' ^ Word160.to_bin ih ^ Word160.to_bin id
+  "\019BitTorrent protocol" ^ Bits.to_bin Peer.partial_exts ^ Word160.to_bin ih ^ Word160.to_bin id
 
 let read_handshake self sa ic =
   let read_exactly n ic =
@@ -155,7 +156,7 @@ let read_handshake self sa ic =
   if proto = "BitTorrent protocol" then
     read_exactly 8 ic >|= Bits.of_bin >>= fun exts ->
     read_exactly 20 ic >|= Word160.from_bin >>= fun ih ->
-    if Word160.equal ih self.info.Info.info_hash then
+    if Word160.equal ih self.info_hash then
       read_exactly 20 ic >|= fun id -> Word160.from_bin id, exts
     else
       failwith_lwt "%s: bad info hash %s" (string_of_sockaddr sa) (Word160.to_hex ih)
@@ -242,14 +243,15 @@ let start_server connectfunc stop_thread : int option =
   in
   loop port_range
 
-let create info =
+let create info_hash =
   let id = Word160.peer_id bittorrent_id_prefix in
   let stop_server, wake_stop = Lwt.wait () in
   let stop () = Lwt.wakeup wake_stop () in
   let self =
     { id;
-      info;
-      handshake = handshake_message id info.Info.info_hash;
+      info_hash;
+      (* info = Info.of_info_hash info_hash (fun _ -> exit 0); *)
+      handshake = handshake_message id info_hash;
       spare = [];
       stop;
       connections = W160H.create 17;
@@ -257,3 +259,11 @@ let create info =
   in
   self.port <- start_server (start_external_connection self) stop_server;
   self
+
+let port self =
+  match self.port with
+  | None -> raise Not_found
+  | Some port -> port
+
+let id self =
+  self.id

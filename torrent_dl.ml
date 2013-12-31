@@ -13,10 +13,19 @@ ubuntu-13.10-desktop-amd64.iso      23 56 652 13242/12342     45KiB/s 3.0MiB/s 9
 let handle_client_update upd =
   assert false
 
-let download path =
-  let bc = Get.run_file Bcode.bdecode path in
-  let info = Info.create bc in
-  Client.create info
+let download magnet =
+  let open Magnet in
+  let m = Magnet.of_string magnet in
+  (* let bc = Get.run_file Bcode.bdecode path in *)
+  let server = Server.create m.xt in
+  let _ =
+    Announce.create m.xt (List.map (fun x -> [x]) m.tr)
+      (fun _ -> 0L) (fun _ -> 0L) (fun _ -> 0L)
+      (Server.port server) (Server.id server) (Server.start_connection server)
+  in
+  Lwt.return_unit
+  (* let info = Info.create bc in *)
+  (* Client.create info *)
   
 let _ =
   if Array.length Sys.argv > 1 then begin
