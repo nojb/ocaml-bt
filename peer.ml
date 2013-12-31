@@ -386,7 +386,7 @@ let got_extended self id m =
     let _, f = List.assoc id supported_extensions in
     f self m
   else      
-    Trace.infof "%s sent unsupported EXTENDED message %d" (to_string self) id
+    Trace.infof "%s: unsupported EXTENDED message %d" (to_string self) id
 
 let got_message self message =
   Trace.recv (to_string self) (Wire.string_of_message message);
@@ -397,7 +397,8 @@ let got_message self message =
   | Wire.INTERESTED -> got_interested self
   | Wire.NOT_INTERESTED -> got_not_interested self
   | Wire.HAVE i -> got_have self i
-  | Wire.BITFIELD _ -> stop self (* got_bitfield self b *)
+  | Wire.BITFIELD bits ->
+    if self.ltext then got_have_bitfield self bits else stop self
   | Wire.REQUEST (i, off, len) -> got_request self i off len
   | Wire.PIECE (i, off, s) -> got_piece self i off s
   | Wire.CANCEL (i, off, len) -> ()
