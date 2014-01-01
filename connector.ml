@@ -103,6 +103,7 @@ let accept self (fd, sa) =
     if List.length self.spare < max_initiate &&
        not (List.mem sa self.spare) then begin
       self.spare <- sa :: self.spare;
+      Lwt_unix.close fd |> ignore;
       Trace.infof "accept: saving %s in the spare set; now have [%d/%d]."
         (string_of_sockaddr sa) (List.length self.spare) max_initiate
     end
