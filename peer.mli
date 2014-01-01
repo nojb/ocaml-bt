@@ -18,6 +18,7 @@ val is_choked : t -> bool
 val is_interested : t -> bool
 (* val interesting : t -> unit *)
 (* val not_interesting : t -> unit *)
+val sprint : t -> unit -> string
 val to_string : t -> string
 val choke : t -> unit
 val unchoke : t -> unit

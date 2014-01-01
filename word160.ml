@@ -20,6 +20,9 @@ let to_hex s =
   done;
   Buffer.contents buf
 
+let sprint () s =
+  to_hex s
+
 let to_hex_short s =
   let s = to_hex s in
   (* String.sub s 0 6 *)

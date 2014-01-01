@@ -5,6 +5,7 @@ val compare : t -> t -> int
 val equal : t -> t -> bool
 val hash : t -> int
 val to_hex : t -> string
+val sprint : unit -> t -> string
 val to_hex_short : t -> string
 val pp : Format.formatter -> t -> unit
 val print : out_channel -> t -> unit

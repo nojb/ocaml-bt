@@ -67,7 +67,7 @@ let string_of_sockaddr = function
   | Lwt_unix.ADDR_INET (addr, port) ->
     Unix.string_of_inet_addr addr ^ ":" ^ string_of_int port
 
-let to_string self =
+let sprint self () =
   Printf.sprintf "%s [%c%c|%c%c%s]"
     (Word160.to_hex_short self.id)
     (* (string_of_sockaddr self.sa) *)
@@ -78,6 +78,9 @@ let to_string self =
     (match self.status with
      | DOWNLOAD dl -> Printf.sprintf "|%d/%d" (Bits.count dl.have) (Bits.length dl.have)
      | INFO _ -> "")
+
+let to_string self =
+  sprint self ()
 
 let stop self =
   Trace.infof "STOPPING %s" (to_string self);
@@ -162,7 +165,7 @@ let got_ut_metadata self s =
           Trace.infof "%s: all info pieces received!" (to_string self);
           let s = Array.to_list pieces |> String.concat "" in
           if Word160.equal (Word160.digest_of_string s) nfo.info_hash then begin
-            Trace.infof "%s: info data validated: %S" (to_string self) s;
+            (* Trace.infof "%s: info data validated: %S" (to_string self) s; *)
             let bc = Get.run Bcode.bdecode s in
             nfo.on_completion (create bc)
           end else begin
@@ -353,30 +356,32 @@ let roundup n r =
 
 let got_extended_handshake self m =
   let bc = Get.run Bcode.bdecode m in
-  let m = Bcode.find "m" bc |> Bcode.to_dict in
+  let m =
+    Bcode.find "m" bc |> Bcode.to_dict |>
+    List.map (fun (name, id) -> (name, Bcode.to_int id))
+  in
   List.iter (fun (name, id) ->
-      let id = Bcode.to_int id in
+      (* let id = Bcode.to_int id in *)
       if id = 0 then Hashtbl.remove self.extensions name
       else Hashtbl.replace self.extensions name id) m;
-  Trace.infof "%s supports EXTENDED: %s" (to_string self)
-    (String.concat " " (List.map (fun (name, id) ->
-         Printf.sprintf "%s (%d)" name (Bcode.to_int id)) m));
+  Trace.infof "%s: EXTENDED handshake: %s" (to_string self)
+    (List.map (fun (name, id) ->
+         Printf.sprintf "%s (%d)" name id) m |> String.concat ", ");
   match self.status with
   | INFO nfo ->
     if List.exists (fun (name, _) -> name = "ut_metadata") m then begin
       let l = Bcode.find "metadata_size" bc |> Bcode.to_int in
       let numpieces = roundup l info_piece_size / info_piece_size in
       let last_piece_size = l mod info_piece_size in
-      Trace.infof "%s: got metadata size: %d, %d pieces, last piece: %d"
-        (to_string self) l numpieces last_piece_size;
+      Trace.infof "%t: got metadata size: %d, %d pieces, last piece: %d"
+        (sprint self) l numpieces last_piece_size;
       let pieces = Array.init numpieces (fun i ->
           if i < numpieces - 1 then String.make info_piece_size '\000'
           else String.make last_piece_size '\000') in
       nfo.length <- `GOTSIZE (l, pieces);
-      (* let _ = Info.got_info_length nfo.partial sz in *)
       request_info_piece self 0
     end else
-      let _ = Trace.infof "%s does not support ut_metadata, stopping" (to_string self) in
+      let _ = Trace.infof "%t does not support ut_metadata, stopping" (sprint self) in
       stop self
   | DOWNLOAD _ ->
     ()
@@ -386,7 +391,7 @@ let got_extended self id m =
     let _, f = List.assoc id supported_extensions in
     f self m
   else      
-    Trace.infof "%s: unsupported EXTENDED message %d" (to_string self) id
+    Trace.infof "%t: unsupported EXTENDED message %d" (sprint self) id
 
 let got_message self message =
   Trace.recv (to_string self) (Wire.string_of_message message);
@@ -407,7 +412,7 @@ let got_message self message =
   | Wire.EXTENDED (0, m) -> got_extended_handshake self m
   | Wire.EXTENDED (id, m) -> got_extended self id m
   | _ ->
-    Trace.infof "Unhandled message from %s: %s" (to_string self) (Wire.string_of_message message);
+    Trace.infof "Unhandled message from %t: %t" (sprint self) (Wire.sprint message);
     stop self
 
 let got_first_message self message =
