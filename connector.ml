@@ -32,23 +32,28 @@ let connection_made self sa ic oc (id, exts) : unit =
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
+let bittorrent_proto = "BitTorrent protocol"
+
 let read_handshake self sa ic =
   let read_exactly n ic =
     let buf = String.create n in
     Lwt_io.read_into_exactly ic buf 0 n >|= fun () ->
     buf
   in
-  Lwt_io.read_char ic >|= int_of_char >>= fun pstrlen -> (* FIXME check pstrlen = 19 *)
-  read_exactly pstrlen ic >>= fun proto ->
-  if proto = "BitTorrent protocol" then
-    read_exactly 8 ic >|= Bits.of_bin >>= fun exts ->
-    read_exactly 20 ic >|= Word160.from_bin >>= fun ih ->
-    if Word160.equal ih self.info_hash then
-      read_exactly 20 ic >|= fun id -> Word160.from_bin id, exts
-    else
-      failwith_lwt "%s: bad info hash %s" (string_of_sockaddr sa) (Word160.to_hex ih)
+  Lwt_io.read_char ic >|= int_of_char >>= fun pstrlen ->
+  if pstrlen <> String.length bittorrent_proto then
+    failwith_lwt "%s: bad proto lenght: %d" (string_of_sockaddr sa) pstrlen
   else
-    failwith_lwt "%s: unknown protocol %S" (string_of_sockaddr sa) proto
+    read_exactly pstrlen ic >>= fun proto ->
+    if proto = bittorrent_proto then
+      read_exactly 8 ic >|= Bits.of_bin >>= fun exts ->
+      read_exactly 20 ic >|= Word160.from_bin >>= fun ih ->
+      if Word160.equal ih self.info_hash then
+        read_exactly 20 ic >|= fun id -> Word160.from_bin id, exts
+      else
+        failwith_lwt "%s: bad info hash %s" (string_of_sockaddr sa) (Word160.to_hex ih)
+    else
+      failwith_lwt "%s: unknown protocol %S" (string_of_sockaddr sa) proto
       
 let rec fill_peers self =
   if H.length self.connections < max_initiate then
