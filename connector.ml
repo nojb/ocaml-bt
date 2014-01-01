@@ -49,7 +49,11 @@ let read_handshake self sa ic =
       read_exactly 8 ic >|= Bits.of_bin >>= fun exts ->
       read_exactly 20 ic >|= Word160.from_bin >>= fun ih ->
       if Word160.equal ih self.info_hash then
-        read_exactly 20 ic >|= fun id -> Word160.from_bin id, exts
+        read_exactly 20 ic >|= Word160.from_bin >>= fun id ->
+        if Word160.equal id self.id then
+          failwith_lwt "handshake: trying to connect to self"
+        else
+          Lwt.return (id, exts)
       else
         failwith_lwt "%s: bad info hash %s" (string_of_sockaddr sa) (Word160.to_hex ih)
     else
@@ -71,6 +75,9 @@ and connection_lost self id exn =
   Trace.infof ~exn "connection_lost: %a" Word160.sprint id;
   H.remove self.connections id;
   fill_peers self
+
+(* FIXME define actual exceptions instead of using Failure everywhere;
+   that way, we can get the names printed using Printexc.to_string *)
   
 and do_handshake self sa ic oc is_local =
   let start () =
