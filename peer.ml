@@ -8,7 +8,6 @@ let kilobytes n = n * 1024
 let max_pipelined_requests = 5
 let lo_mark = 5
 let hi_mark = 25
-(* let default_block_size = kilobytes 16 *)
 let keepalive_delay = 20 (* FIXME *)
 let request_backlog = 5
 let rate_update_frequency = 3
@@ -53,37 +52,43 @@ let write_completely fd s =
   in
   loop 0 (String.length s)
 
-let writer_loop_partial fd p strm stop_thread =
+let writer_loop get_block error fd control q stop_thread =
   let (>>=) = Lwt.(>>=) in
   let (>|=) = Lwt.(>|=) in
   let keepalive_message = Wire.put Wire.KEEP_ALIVE |> Put.run in
   let rec loop () =
     Lwt.pick
-      [ Lwt_stream.next strm >|= (fun x -> `Write x);
+      [ Lwt_unix.sleep (float keepalive_delay) >|= (fun () -> `Timeout);
         stop_thread >|= (fun () -> `Stop);
-        Lwt_unix.sleep (float keepalive_delay) >|= (fun () -> `Timeout) ] >>= function
-    | `Write x ->
-      write_completely fd x >>= loop
-    | `Stop ->
-      Lwt.return_unit
+        Lwt_condition.wait control >|= (fun () -> `Ready) ] >>= function
     | `Timeout ->
       write_completely fd keepalive_message >>= loop
+    | `Stop ->
+      Lwt.return_unit
+    | `Ready ->
+      let rec loop' () =
+        match Lwt_sequence.take_opt_l q with
+        | None ->
+          loop ()
+        | Some (`RAW s) ->
+          write_completely fd s >>= loop'
+        | Some (`BLOCK (i, o, l)) ->
+          get_block i o l >>= write_completely fd >>= loop'
+      in
+      loop' ()
   in
   Lwt.catch loop
     (fun exn ->
-       Trace.infof ~exn "%t: error in writer loop" p#sprint;
-       p#stop;
+       error exn;
        Lwt.return_unit)
 
 let fastextbit = 63 - (6*8+3)
 let ltextbit = 63 - 20
 
 class virtual peer fd (id, exts) =
-  let strm, write = Lwt_stream.create () in
   let stop_thread, wake_stop = Lwt.wait () in
+  let control = Lwt_condition.create () in
   object (self)
-    val write = write
-    (* val id = id *)
     val mutable am_choking = true
     val mutable am_interested = false
     val mutable peer_choking = true
@@ -91,6 +96,8 @@ class virtual peer fd (id, exts) =
     val extensions : (string, int) Hashtbl.t = Hashtbl.create 17
     val fastext = Bits.is_set exts fastextbit
     val ltext = Bits.is_set exts ltextbit
+    val write_queue : [`RAW of string | `BLOCK of int * int * int] Lwt_sequence.t =
+      Lwt_sequence.create ()
 
     method sprint () =
       Printf.sprintf "%s [%c%c|%c%c]"
@@ -101,47 +108,58 @@ class virtual peer fd (id, exts) =
         (if peer_choking then 'C' else 'c')
         (if peer_interested then 'I' else 'i')
 
-    method virtual send_raw : string -> unit
+    method virtual get_block : int -> int -> int -> string Lwt.t
+    
+    method flush =
+      Lwt_condition.broadcast control ()
 
-    method private send_message m =
+    method send_block i o l =
+      Lwt_sequence.add_r (`BLOCK (i, o, l)) write_queue |> ignore;
+      self#flush
+    
+    method private send_raw s =
+      Lwt_sequence.add_r (`RAW s) write_queue |> ignore;
+      self#flush
+
+    method send_message m =
       Trace.sent self#sprint (Wire.sprint m);
       Wire.put m |> Put.run |> self#send_raw
 
-    method private got_choke =
+    method got_choke =
       if not peer_choking then begin
         Trace.infof "%t choked us" self#sprint;
         peer_choking <- true
       end
 
-    method private got_unchoke =
+    method got_unchoke =
       if peer_choking then begin
         Trace.infof "%t unchoked us" self#sprint;
         peer_choking <- false
       end
 
-    method private got_interested =
+    method got_interested =
       if not peer_interested then begin
         Trace.infof "%t is interested in us" self#sprint;
         peer_interested <- true
       end
 
-    method private got_not_interested =
+    method got_not_interested =
       if peer_interested then begin
         Trace.infof "%t is no longer interested in us" self#sprint;
         peer_interested <- false
       end
 
-    method private virtual got_have : int -> unit
+    method virtual got_have : int -> unit
 
-    method private virtual got_have_bitfield : Bits.t -> unit
+    method virtual got_have_bitfield : Bits.t -> unit
 
-    method private virtual got_have_all : unit
+    method virtual got_have_all : unit
 
-    method private virtual got_request : int -> int -> int -> unit
+    method virtual got_request : int -> int -> int -> unit
 
-    method private virtual got_piece : int -> int -> string -> unit
+    method virtual got_piece : int -> int -> string -> unit
 
-    method private got_extended_handshake bc =
+    method got_extended_handshake bc =
       let m =
         Bcode.find "m" bc |> Bcode.to_dict |>
         List.map (fun (name, id) -> (name, Bcode.to_int id))
@@ -156,7 +174,7 @@ class virtual peer fd (id, exts) =
 
     method virtual got_ut_metadata : int -> int -> string -> unit
 
-    method private got_extended id s =
+    method got_extended id s =
       if List.mem_assoc id supported_extensions then
         match List.assoc id supported_extensions with
         | "ut_metadata" ->
@@ -173,7 +191,13 @@ class virtual peer fd (id, exts) =
         self#stop
     (* Trace.infof "%t: unsupported EXTENDED message %d" self#sprint id *)
 
-    method private virtual got_cancel : int -> int -> int -> unit
+    method got_cancel i o l =
+      Lwt_sequence.iter_node_l (fun n ->
+          match Lwt_sequence.get n with
+          | `BLOCK (i1, o1, l1) ->
+            if i = i1 && o = o1 && l = l1 then
+              Lwt_sequence.remove n
+          | `RAW _ -> ()) write_queue
 
     method stop =
       match Lwt.state stop_thread with
@@ -183,7 +207,7 @@ class virtual peer fd (id, exts) =
         Trace.infof "%t: stopping..." self#sprint;
         Lwt.wakeup wake_stop ()
 
-    method private send_extended_handshake =
+    method send_extended_handshake =
       let m =
         List.map (fun (id, name) ->
             name, Bcode.BInt (Int64.of_int id)) supported_extensions
@@ -192,7 +216,7 @@ class virtual peer fd (id, exts) =
       let s = Bcode.bencode m |> Put.run in
       Wire.EXTENDED (0, s) |> self#send_message
 
-    method private send_extended id s =
+    method send_extended id s =
       Wire.EXTENDED (id, s) |> self#send_message
 
     method got_message m =
@@ -234,13 +258,19 @@ class virtual peer fd (id, exts) =
         self#send_message Wire.UNCHOKE
       end
 
+    method write_error exn =
+      Trace.infof ~exn "%t: write error" self#sprint;
+      self#stop
+
     initializer
-      Lwt.async (fun () ->
-          Lwt.bind
-            (Lwt.join [reader_loop fd self stop_thread;
-                       writer_loop_partial fd self strm stop_thread])
-            (fun () ->
-               Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)));
+      let event_loop () =
+        Lwt.finalize (fun () ->
+            Lwt.join
+              [ reader_loop fd self stop_thread;
+                writer_loop self#get_block self#write_error fd control write_queue stop_thread])
+          (fun () -> Lwt_unix.close fd)
+      in
+      Lwt.async event_loop;
       self#send_extended_handshake
   end
 
@@ -259,9 +289,6 @@ class info_peer fd info_hash on_completion (id, exts) =
 
     inherit peer fd (id, exts) as super
 
-    method send_raw s =
-      write (Some s)
-    
     method private request_info_piece i =
       let id = Hashtbl.find extensions "ut_metadata" in
       let d =
@@ -271,7 +298,7 @@ class info_peer fd info_hash on_completion (id, exts) =
       Bcode.bencode (Bcode.BDict d) |> Put.run |> self#send_extended id;
       Trace.infof "%t: requested piece %d" self#sprint i
   
-    method private got_ut_metadata msg_type piece s =
+    method got_ut_metadata msg_type piece s =
       let id = Hashtbl.find extensions "ut_metadata" in
       match msg_type, length with
       | 0, _ -> (* request *)
@@ -308,7 +335,7 @@ class info_peer fd info_hash on_completion (id, exts) =
         Trace.infof "%t: unknown ut_metadata msg_type %d, ignoring"
           self#sprint msg_type
 
-    method private got_extended_handshake bc =
+    method got_extended_handshake bc =
       super#got_extended_handshake bc;
       if Hashtbl.mem extensions "ut_metadata" then begin
         let l = Bcode.find "metadata_size" bc |> Bcode.to_int in
@@ -326,22 +353,30 @@ class info_peer fd info_hash on_completion (id, exts) =
         self#stop
       end
 
-    method private got_have _ = ()
-    method private got_have_bitfield _ = ()
-    method private got_have_all = ()
-    method private got_request _ _ _ = ()
-    method private got_piece _ _ _ = ()
-    method private got_cancel _ _ _ = ()
+    method get_block _ _ _ =
+      assert false
+        
+    method got_have _ = ()
+    method got_have_bitfield _ = ()
+    method got_have_all = ()
+    method got_request _ _ _ = ()
+    method got_piece _ _ _ = ()
   end
 
-module S3 = Set.Make (struct type t = int * int * int let compare = compare end)
-
+module S3 = Set.Make (struct type t = (int * int * int) let compare = compare end)
+    
 class sharing fd info_hash info picker torrent (id, exts) =
   object (self)
     val have = Bits.create (Array.length info.Info.pieces)
     val mutable active_requests : S3.t = S3.empty
 
     inherit peer fd (id, exts) as super
+
+    method get_block i o l =
+      let (>|=) = Lwt.(>|=) in
+      Torrent.get_block torrent i o l >|= function
+      | None -> failwith "get_block: invalid block: i=%d o=%d l=%d" i o l
+      | Some s -> s
 
     method sprint () =
       Printf.sprintf "%t [%d/%d]" super#sprint (Bits.count have) (Bits.length have)
@@ -362,7 +397,7 @@ class sharing fd info_hash info picker torrent (id, exts) =
         Wire.EXTENDED (id, s) |> self#send_message
       | 1
       | 2 ->
-        self#stop
+        failwith "%t: got_ut_metadata: bad msg_type: %d" self#sprint msg_type
       | _ ->
         ()
 
@@ -413,9 +448,6 @@ class sharing fd info_hash info picker torrent (id, exts) =
         if Bits.is_set have i then Picker.got_have picker i
       done
 
-    method got_cancel _ _ _ =
-      ()
-
     method got_piece i o s =
       let l = String.length s in
       if S3.mem (i, o, l) active_requests then begin
@@ -427,32 +459,12 @@ class sharing fd info_hash info picker torrent (id, exts) =
         failwith "%t sent unrequested block, terminating" self#sprint
 
     method got_request i o l =
-      if not am_choking || peer_interested then begin
-        assert false
-      end
+      if not am_choking || peer_interested then
+        self#send_block i o l
       else if fastext then
         self#send_message (Wire.REJECT (i, o, l))
-
-    method send_raw s =
-      assert false
   end
   
-(* type download_status = { *)
-(*   torrent : Torrent.t; *)
-(*   active_requests : (int * int * int) Hashset.t; *)
-(*   info : Info.t; *)
-(*   have : Bits.t; *)
-(*   picker : Picker.t; *)
-(*   dl_write : [`LIT of string | `BLOCK of int * int * int] -> unit *)
-(* } *)
-
-(* type info_status = { *)
-(*   info_hash : Word160.t; *)
-(*   mutable length : [`NOSIZE | `GOTSIZE of int * string array]; *)
-(*   on_completion : Info.t -> unit; *)
-(*   info_write : string -> unit *)
-(* } *)
-
 (* type t = { *)
 (*   sa : Lwt_unix.sockaddr; *)
 (*   id : Word160.t; *)
