@@ -103,7 +103,7 @@ and udp_connect_response ann fd ev trans_id =
     let open Get.BE in
     int32 >>= fun n ->
     if n = 3l then
-      string >|= fun msg -> Lwt.return (Error msg)
+      any_string >|= fun msg -> Lwt.return (Error msg)
     else begin
       int32 >>= fun trans_id' ->
       assert (Int32.compare trans_id trans_id' = 0);
@@ -158,7 +158,7 @@ and udp_announce_response fd ev trans_id =
     int32 >>= fun n ->
     assert (n = 1l || n = 3l);
     if n = 3l then (* error *)
-      string >|= fun msg -> Error msg
+      any_string >|= fun msg -> Error msg
     else begin
       int32 >>= fun trans_id' ->
       assert (Int32.compare trans_id trans_id' = 0);

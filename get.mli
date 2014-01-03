@@ -13,7 +13,8 @@ end
 module BE : S
 module LE : S
 
-val string : string t
+val string : string -> unit t
+val any_string : string t
 val end_of_input : unit t
 val either : 'a t -> 'a t -> 'a t
     

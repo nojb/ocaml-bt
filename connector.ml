@@ -31,44 +31,34 @@ let (>|=) = Lwt.(>|=)
 
 let bittorrent_proto = "BitTorrent protocol"
 
-let read_handshake self sa fd =
-  let read_exactly fd n =
-    let buf = String.create n in
-    let rec loop o l =
-      if l <= 0 then Lwt.return buf
-      else
-        Lwt_unix.read fd buf o l >>= fun l' ->
-        loop (o+l') (l-l')
-    in
-    loop 0 n
-  in
-  let read_char fd =
-    read_exactly fd 1 >|= fun s -> s.[0]
-  in
-  read_char fd >|= int_of_char >>= fun pstrlen ->
-  if pstrlen <> String.length bittorrent_proto then
-    failwith_lwt "%s: bad proto lenght: %d" (string_of_sockaddr sa) pstrlen
-  else
-    read_exactly fd pstrlen >>= fun proto ->
-    if proto = bittorrent_proto then
-      read_exactly fd 8 >|= Bits.of_bin >>= fun exts ->
-      read_exactly fd 20 >|= Word160.from_bin >>= fun ih ->
-      if Word160.equal ih self.info_hash then
-        read_exactly fd 20 >|= Word160.from_bin >>= fun id ->
-        if Word160.equal id self.id then
-          failwith_lwt "handshake: trying to connect to self"
-        else if H.mem self.connections id then
-          failwith_lwt "handshake: id already connected"
-        else
-          Lwt.return (id, exts)
-      else
-        failwith_lwt "%s: bad info hash %s" (string_of_sockaddr sa) (Word160.to_hex ih)
+let get_handshake ih : (Word160.t * Bits.t) Get.t =
+  let open Get in
+  char (String.length bittorrent_proto |> Char.chr) >>
+  string bittorrent_proto >>
+  string_of_length 8 >|= Bits.of_bin >>= fun exts ->
+  string (Word160.to_bin ih) >>
+  string_of_length 20 >|= Word160.from_bin >>= fun id ->
+  return (id, exts)
+
+let read_exactly fd n =
+  let buf = String.create n in
+  let rec loop o l =
+    if l <= 0 then
+      Lwt.return buf
     else
-      failwith_lwt "%s: unknown protocol %S" (string_of_sockaddr sa) proto
+      Lwt_unix.read fd buf o l >>= fun l' ->
+      loop (o+l') (l-l')
+  in
+  loop 0 n
+
+let read_handshake self sa fd =
+  read_exactly fd (49 + String.length bittorrent_proto) >|=
+  Get.run (get_handshake self.info_hash)    
 
 let write_completely fd s =
   let rec loop o l =
-    if l <= 0 then Lwt.return_unit
+    if l <= 0 then
+      Lwt.return_unit
     else
       Lwt_unix.write fd s o l >>= fun l' ->
       loop (o+l') (l-l')

@@ -167,7 +167,20 @@ module LE = struct
     else Success (unsafe_get_64 s i, i+8)
 end
 
-let string s i =
+let string s' =
+  let l = String.length s' in
+  fun s i ->
+    if i+l > String.length s then
+      Failure
+    else
+      let rec loop j =
+        if j >= l then Success ((), i+l)
+        else if s'.[j] = s.[i+j] then loop (j+1)
+        else Failure
+      in
+      loop 0
+
+let any_string s i =
   let len = String.length s in
   Success (String.sub s i (len-i), len)
 
