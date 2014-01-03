@@ -24,11 +24,9 @@ type t = {
   amount_left : unit -> int64;
   port : int;
   id : Word160.t;
-  announce : event -> unit;
-  stop : unit -> unit;
-  new_tier : Uri.t list -> unit;
+  control : [`Announce of event | `Stop] Lwt_condition.t;
+  (* new_tier : Uri.t list -> unit; *)
   (* connect : Unix.sockaddr -> unit; *)
-  strm : [`Announce of event | `Stop] Lwt_stream.t;
   (* mutable tiers : tier list; *)
   udp_sock : Lwt_unix.file_descr
 }
@@ -53,15 +51,10 @@ let shuffle_array a =
     a.(j) <- t
   done
 
-(* let shuffle_list l = *)
-(*   List.map (fun x -> Random.bits (), x) l |> *)
-(*   List.sort (fun (x, _) (y, _) -> compare x y) |> *)
-(*   List.map snd *)
-
 let stop self =
-  self.announce STOPPED;
-  self.stop ()
-     
+  Lwt_condition.broadcast self.control (`Announce STOPPED);
+  Lwt_condition.broadcast self.control `Stop
+    
 let udp_send fd buf =
   Lwt_unix.write fd buf 0 (String.length buf) >>= fun len ->
   if len <> String.length buf then
@@ -208,9 +201,9 @@ let udp_announce ann url ev =
   in
   Lwt_unix.gethostbyname host >>= fun he ->
   let addr = he.Lwt_unix.h_addr_list.(0) in
-  let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
-  Lwt_unix.connect fd (Lwt_unix.ADDR_INET (addr, port)) >>= fun () ->
-  udp_request_connect ann fd ev 0
+  (* let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in *)
+  Lwt_unix.connect ann.udp_sock (Lwt_unix.ADDR_INET (addr, port)) >>= fun () ->
+  udp_request_connect ann ann.udp_sock ev 0
 
 let either f g x =
   try f x with _ -> g x
@@ -336,46 +329,42 @@ let announce_tier self tier ev =
   in
   loop 0
 
-(* FIXME stop is not restartable *)
-    
-let new_tier self connect uris =
+let new_tier announce_tier control connect uris =
   let tier = { trackers = Array.of_list uris; interval = default_tracker_interval } in
   shuffle_array tier.trackers;
   let rec loop t ev =
     Lwt.pick
       [ Lwt_unix.sleep t >|= (fun () -> `Announce ev);
-        Lwt_stream.next (self ()).strm ] >>= function
+        Lwt_condition.wait control ] >>= function
     | `Announce ev ->
-      announce_tier (self ()) tier ev >|=
+      announce_tier tier ev >|=
       List.iter connect >>= fun () ->
       loop (float tier.interval) NONE
     | `Stop ->
       Lwt.return_unit
   in
+  (* FIXME error handling *)
   Lwt.async (fun () -> loop 0. STARTED)
 
 let start self =
-  self.announce STARTED
+  Lwt_condition.broadcast self.control (`Announce STARTED)
 
 let create info_hash tiers up down amount_left port id connect =
-  let strm, write = Lwt_stream.create () in
-  let stop () = write (Some `Stop) in
-  let announce ev = write (Some (`Announce ev)) in
-  let rec self =
-    lazy {
+  let control = Lwt_condition.create () in
+  let rec self = {
+    (* lazy { *)
       info_hash;
       up;
       down;
       amount_left;
       port;
       id;
-      stop;
-      announce;
-      strm;
-      new_tier = new_tier (fun () -> Lazy.force self) connect;
-      udp_sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0;
+      control;
+      (* new_tier = new_tier (fun tier ev -> announce_tier (Lazy.force self) tier ev) *)
+          (* control connect; *)
+      udp_sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0
     }
   in
-  let self = Lazy.force self in
-  List.iter self.new_tier tiers;
+  (* let self = Lazy.force self in *)
+  List.iter (new_tier (announce_tier self) control connect) tiers;
   self

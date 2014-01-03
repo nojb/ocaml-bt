@@ -26,8 +26,9 @@ let start_server accept stop_thread : int option =
               Lwt_unix.accept fd >|= (fun x -> `Accept x)] >>= function
     | `Stop ->
       Lwt.return_unit
-    | `Accept x ->
-      accept x;
+    | `Accept (fd, sa) ->
+      Trace.infof "incoming connection from %s" (string_of_sockaddr sa);
+      accept (fd, sa);
       accept_loop ()
   in
   let rec loop = function

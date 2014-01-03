@@ -1,13 +1,9 @@
 type t
 
-val create : Info.t -> t
-val got_have : t -> int -> unit
-val lost_have : t -> int -> unit
-val request_lost : t -> int -> unit
-val request_sent : t -> int -> unit
-val got_piece : t -> int -> string -> bool
-val completed : t -> Bits.t
-val next_piece : t -> (int -> bool) -> (int * int) option
+val create : Info.t -> t Lwt.t
+val request_lost : t -> int -> int -> int -> unit
+val got_block : t -> int -> int -> string -> bool
+val new_request : t -> int -> (int * int) option
+val available_requests : t -> int -> bool
 val is_complete : t -> bool
-val completion : t -> float
 val get_block : t -> int -> int -> int -> string option Lwt.t

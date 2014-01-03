@@ -33,11 +33,13 @@ let infof ?exn fmt =
 
 let recv src data =
   print_time stderr;
-  if !verbose then Printf.eprintf "< %s < %s\n%!" data src
+  if !verbose then
+    Printf.ksprintf prerr_endline "< %t < %t" data src
 
 let sent dst data =
   print_time stderr;
-  if !verbose then Printf.eprintf "> %s > %s\n%!" data dst  
+  if !verbose then
+    Printf.ksprintf prerr_endline "> %t > %t" data dst  
 
 (* let sentf dst fmt = *)
 (*   Printf.ksprintf (fun msg -> *)
