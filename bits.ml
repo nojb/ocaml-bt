@@ -50,7 +50,7 @@ let toggle v i =
   set_byte v i (lnot (get_byte v i))
 
 let is_set v i =
-  check_args "Bits.is_set" i (String.length v);
+  check_args (Printf.sprintf "Bits.is_set: i=%d len=%d" i (String.length v)) i (String.length v);
   get_byte v i <> 0
 
 let lognot v =

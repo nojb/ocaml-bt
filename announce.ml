@@ -25,10 +25,11 @@ type t = {
   port : int;
   id : Word160.t;
   control : [`Announce of event | `Stop] Lwt_condition.t;
+  got_peer : (Unix.sockaddr -> unit) Lwt_sequence.t
   (* new_tier : Uri.t list -> unit; *)
   (* connect : Unix.sockaddr -> unit; *)
   (* mutable tiers : tier list; *)
-  udp_sock : Lwt_unix.file_descr
+  (* udp_sock : Lwt_unix.file_descr *)
 }
 
 type response =
@@ -97,7 +98,6 @@ let rec udp_request_connect ann fd ev n =
   Lwt.catch (fun () -> udp_connect_response ann fd ev trans_id) handle_error
 
 and udp_connect_response ann fd ev trans_id =
-  udp_recv fd >>= fun buf ->
   let get_packet : response Lwt.t Get.t =
     let open Get in
     let open Get.BE in
@@ -111,7 +111,7 @@ and udp_connect_response ann fd ev trans_id =
       udp_request_announce ann fd ev conn_id 0
     end
   in
-  Get.run get_packet buf
+  udp_recv fd >>= Get.run get_packet
 
 and udp_request_announce ann fd ev conn_id n =
   let trans_id = udp_fresh_transaction_id () in
@@ -160,27 +160,29 @@ and udp_announce_response fd ev trans_id =
     if n = 3l then (* error *)
       any_string >|= fun msg -> Error msg
     else begin
+      let peer_info =
+        uint8 >>= fun a ->
+        uint8 >>= fun b ->
+        uint8 >>= fun c ->
+        uint8 >>= fun d ->
+        uint16 >>= fun port ->
+        let addr =
+          Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d)
+        in
+        return (Unix.ADDR_INET (addr, port))
+      in
       int32 >>= fun trans_id' ->
       assert (Int32.compare trans_id trans_id' = 0);
       int32 >>= fun interval ->
       int32 >>= fun leechers ->
       int32 >>= fun seeders ->
-      let rec loop () =
-        let peer_info =
-          uint8 >>= fun a ->
-          uint8 >>= fun b ->
-          uint8 >>= fun c ->
-          uint8 >>= fun d ->
-          uint16 >>= fun port ->
-          let addr =
-            Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d)
-          in
-          return (Unix.ADDR_INET (addr, port))
-        in
-        either (end_of_input >|= fun () -> [])
-          (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest))
-      in
-      loop () >|= fun new_peers ->
+      many peer_info >|= fun new_peers ->
+      (* let rec loop () = *)
+      (*   in *)
+      (*   either (end_of_input >|= fun () -> []) *)
+      (*     (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest)) *)
+      (* in *)
+      (* loop () >|= fun new_peers -> *)
       Success (new_peers, Int32.to_int interval)
     end
   in
@@ -201,9 +203,9 @@ let udp_announce ann url ev =
   in
   Lwt_unix.gethostbyname host >>= fun he ->
   let addr = he.Lwt_unix.h_addr_list.(0) in
-  (* let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in *)
-  Lwt_unix.connect ann.udp_sock (Lwt_unix.ADDR_INET (addr, port)) >>= fun () ->
-  udp_request_connect ann ann.udp_sock ev 0
+  let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
+  Lwt_unix.connect fd (Lwt_unix.ADDR_INET (addr, port)) >>= fun () ->
+  udp_request_connect ann fd ev 0
 
 let either f g x =
   try f x with _ -> g x
@@ -315,21 +317,21 @@ let announce_tier self tier ev =
            | Success (peers, interval) ->
              Trace.infof "Tracker %S returned %d peers"
                (Uri.to_string tr) (List.length peers);
+             (* List.iter (function *)
+             (*     | Unix.ADDR_INET (i, p) -> *)
+             (*       Trace.infof "%s:%d" (Unix.string_of_inet_addr i) p) peers; *)
              swap trs 0 i;
              tier.interval <- interval;
              Lwt.return peers
            | _ ->
              failwith_lwt "tracker returned error/warning")
-           (* swap tier 0 i; *)
-           (* Lwt.return resp) *)
-        (* handle Tracker Error / Waring message *)
         (fun exn ->
            Trace.infof ~exn "error while announcing on %S" (Uri.to_string tr);
            loop (i+1))
   in
   loop 0
 
-let new_tier announce_tier control connect uris =
+let new_tier got_peer announce_tier control uris =
   let tier = { trackers = Array.of_list uris; interval = default_tracker_interval } in
   shuffle_array tier.trackers;
   let rec loop t ev =
@@ -338,7 +340,7 @@ let new_tier announce_tier control connect uris =
         Lwt_condition.wait control ] >>= function
     | `Announce ev ->
       announce_tier tier ev >|=
-      List.iter connect >>= fun () ->
+      List.iter got_peer >>= fun () ->
       loop (float tier.interval) NONE
     | `Stop ->
       Lwt.return_unit
@@ -349,7 +351,10 @@ let new_tier announce_tier control connect uris =
 let start self =
   Lwt_condition.broadcast self.control (`Announce STARTED)
 
-let create info_hash tiers up down amount_left port id connect =
+let got_peer self sa =
+  Lwt_sequence.iter_l (fun f -> f sa) self.got_peer
+
+let create info_hash tiers up down amount_left port id on_got_peer =
   let control = Lwt_condition.create () in
   let rec self = {
     (* lazy { *)
@@ -360,11 +365,17 @@ let create info_hash tiers up down amount_left port id connect =
       port;
       id;
       control;
+      got_peer = Lwt_sequence.create ()
       (* new_tier = new_tier (fun tier ev -> announce_tier (Lazy.force self) tier ev) *)
           (* control connect; *)
-      udp_sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0
+      (* udp_sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 *)
     }
   in
+  Lwt_sequence.add_r on_got_peer self.got_peer;
   (* let self = Lazy.force self in *)
-  List.iter (new_tier (announce_tier self) control connect) tiers;
+  List.iter (new_tier (got_peer self) (announce_tier self) control) tiers;
   self
+
+let on_got_peer self f =
+  Lwt_sequence.add_r f self.got_peer |> ignore
+

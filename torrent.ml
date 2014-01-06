@@ -72,7 +72,11 @@ let create info =
   let rec loop acc i =
     if i >= numpieces then acc
     else
-      loop (Int64.(sub acc (of_int (plen i)))) (i+1)
+      match pieces.(i) with
+      | DONE ->
+        loop (Int64.(sub acc (of_int (plen i)))) (i+1)
+      | _ ->
+        loop acc (i+1)
   in
   let amount_left = loop info.Info.total_length 0 in
   Trace.infof "Torrent initialisation complete. Have %d/%d pieces (%Ld bytes remaining)"
@@ -153,10 +157,10 @@ let got_block self i o s =
     Trace.infof "got_block: piece is PENDING: %d %d %d" i o (String.length s);
     false
   | PROGRESS p ->
-    String.blit s 0 p.buffer 0 (String.length s);
+    String.blit s 0 p.buffer o (String.length s);
     p.pchave <- S2.add (o, String.length s) p.pchave;
     if p.pcblocks = S2.cardinal p.pchave then
-      if Word160.digest_of_string s |> Word160.equal self.hashes.(i) then begin
+      if Word160.digest_of_string p.buffer |> Word160.equal self.hashes.(i) then begin
         let o = Int64.(mul (of_int self.piece_size) (of_int i)) in
         Store.write self.store o p.buffer;
         self.pieces.(i) <- DONE;
@@ -165,12 +169,13 @@ let got_block self i o s =
         true
       end
       else begin
+        Trace.infof "Piece #%d failed hashcheck - downloading again" i;
         p.pchave <- S2.empty;
         p.pcpend <- blocks_of_piece self i;
         false
       end
     else
-      true
+      false
 
 let available_requests self i =
   match self.pieces.(i) with
@@ -200,3 +205,36 @@ let get_block self i o l =
       Store.read self.store o l >|= fun s -> Some s
     | _ ->
       Lwt.return_none
+
+let down self =
+  self.down
+
+let up self =
+  self.up
+
+let amount_left self =
+  self.amount_left
+
+let numgot self =
+  let rec loop acc i =
+    if i >= Array.length self.pieces then acc
+    else
+      match self.pieces.(i) with
+      | DONE -> loop (acc+1) (i+1)
+      | _ -> loop acc (i+1)
+  in
+  loop 0 0
+
+let have self =
+  let b = Bits.create self.numpieces in
+  for i = 0 to self.numpieces - 1 do
+    match self.pieces.(i) with
+    | DONE -> Bits.set b i
+    | _ -> ()
+  done;
+  b
+
+let has_piece self i =
+  match self.pieces.(i) with
+  | DONE -> true
+  | _ -> false

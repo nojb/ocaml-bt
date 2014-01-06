@@ -17,3 +17,28 @@ let string_of_sockaddr = function
     Unix.string_of_inet_addr addr ^ ":" ^ string_of_int port
   | Unix.ADDR_UNIX name ->
     name
+
+let read_exactly fd n =
+  let (>>=) = Lwt.(>>=) in
+  let s = String.create n in
+  let rec loop o l =
+    if l <= 0 then
+      Lwt.return s
+    else
+      Lwt_unix.read fd s o l >>= fun l' ->
+      if l' = 0 then Lwt.fail End_of_file
+      else loop (o+l') (l-l')
+  in
+  loop 0 (String.length s)
+
+let write_fully fd s =
+  let (>>=) = Lwt.(>>=) in
+  let rec loop o l =
+    if l <= 0 then
+      Lwt.return_unit
+    else
+      Lwt_unix.write fd s o l >>= fun l' ->
+      assert (l' > 0);
+      loop (o+l') (l-l')
+  in
+  loop 0 (String.length s)

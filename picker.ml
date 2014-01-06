@@ -45,23 +45,35 @@ let got_piece self piece =
   Bits.set self.completed piece
 
 let next self have =
-  let r = H.pick (fun i -> Bits.is_set self.requested i && have i) self.rarity in
-  if List.length r > 0 then
-    Some (Random.int (List.length r) |> List.nth r)
-  else
-  if self.numgot < rarest_first_cutoff then
-    let rec loop i =
-      if i >= self.numpieces then None
-      else if have self.scrambled.(i) then Some i
-      else loop (i+1)
-    in
-    loop 0
-  else
-    let r = H.pick have self.rarity in
-    if List.length r > 0 then
-      Some (Random.int (List.length r) |> List.nth r)
+  let rec loop i =
+    if i >= Bits.length self.requested then None
     else
-      None
+    if Bits.is_set self.requested i && have i then Some i
+    else loop (i+1)
+  in
+  match loop 0 with
+  | Some i ->
+    Trace.infof "Picker: next: found %d" i;
+    Some i
+  | None ->
+    Trace.infof "Picker: did not find in the requested set";
+    (* let r = H.pick (fun i -> Bits.is_set self.requested i && have i) self.rarity in *)
+    (* if List.length r > 0 then *)
+    (*   Some (Random.int (List.length r) |> List.nth r) *)
+    (* else *)
+    if self.numgot < rarest_first_cutoff then
+      let rec loop i =
+        if i >= self.numpieces then None
+        else if have self.scrambled.(i) then Some i
+        else loop (i+1)
+      in
+      loop 0
+    else
+      let r = H.pick have self.rarity in
+      if List.length r > 0 then
+        Some (Random.int (List.length r) |> List.nth r)
+      else
+        None
 
 let is_complete self =
   self.numgot = self.numpieces

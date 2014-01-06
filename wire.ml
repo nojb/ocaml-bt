@@ -107,10 +107,10 @@ let put msg =
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let read_exactly ic len =
-  let buf = String.create len in
-  Lwt_io.read_into_exactly ic buf 0 len >>= fun () ->
-  Lwt.return buf
+(* let read_exactly ic len = *)
+(*   let buf = String.create len in *)
+(*   Lwt_io.read_into_exactly ic buf 0 len >>= fun () -> *)
+(*   Lwt.return buf *)
 
 exception BadMsg of int * int
 
@@ -182,21 +182,23 @@ let get len : message Get.t =
 (*   Lwt_io.BE.read_int ic >>= fun len -> *)
 (*   read_exactly ic len >|= Get.run (get len) *)
 
-let read_exactly fd len =
-  if len < 0 then invalid_arg "Wire.read_exactly";
-  let s = String.create len in
-  let rec loop o l =
-    if l <= 0 then
-      Lwt.return s
-    else
-      Lwt_unix.read fd s o l >>= fun l' ->
-      loop (o+l') (l-l')
-  in
-  loop 0 len
+(* let read_exactly fd len = *)
+(*   if len < 0 then invalid_arg "Wire.read_exactly"; *)
+(*   let s = String.create len in *)
+(*   let rec loop o l = *)
+(*     if l <= 0 then *)
+(*       Lwt.return s *)
+(*     else *)
+(*       Lwt_unix.read fd s o l >>= fun l' -> *)
+(*       loop (o+l') (l-l') *)
+(*   in *)
+(*   loop 0 len *)
 
 (* let read_be_int32 fd = *)
 (*   read_exactly fd 4 >>= fun s -> *)
 (*   Get.run Get.BE.int32 s *)
+
+let read_exactly = Util.read_exactly
 
 let read fd =
   read_exactly fd 4 >|= Get.run Get.BE.int >>= fun len ->

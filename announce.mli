@@ -13,3 +13,4 @@ val create :
 
 val start : t -> unit
 val stop : t -> unit
+val on_got_peer : t -> (Unix.sockaddr -> unit) -> unit

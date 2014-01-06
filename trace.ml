@@ -16,14 +16,15 @@ let print_time oc =
     Printf.eprintf "%.3f " t
 
 let infof ?exn fmt =
+  (* Printf.eprintf "**\n%!"; *)
   Printf.ksprintf (fun msg ->
       if !verbose then begin
         print_time stderr;
         match exn with
         | None ->
-          Printf.eprintf "* %s.\n%!" msg
+          Printf.eprintf "* %s\n%!" msg
         | Some exn ->
-          Printf.eprintf "* %s (exn: %s).\n%!" msg (Printexc.to_string exn)
+          Printf.eprintf "* %s (exn: %s)\n%!" msg (Printexc.to_string exn)
       end) fmt
 
 (* let recvf src fmt = *)
@@ -34,12 +35,12 @@ let infof ?exn fmt =
 let recv src data =
   print_time stderr;
   if !verbose then
-    Printf.ksprintf prerr_endline "< %t < %t" data src
+    Printf.ksprintf (Printf.eprintf "%s\n%!") "<<< %t <<< %t" data src
 
 let sent dst data =
   print_time stderr;
   if !verbose then
-    Printf.ksprintf prerr_endline "> %t > %t" data dst  
+    Printf.ksprintf (Printf.eprintf "%s\n%!") ">>> %t >>> %t" data dst  
 
 (* let sentf dst fmt = *)
 (*   Printf.ksprintf (fun msg -> *)
