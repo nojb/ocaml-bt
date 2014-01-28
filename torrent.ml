@@ -162,7 +162,7 @@ let got_block self i o s =
     if p.pcblocks = S2.cardinal p.pchave then
       if Word160.digest_of_string p.buffer |> Word160.equal self.hashes.(i) then begin
         let o = Int64.(mul (of_int self.piece_size) (of_int i)) in
-        Store.write self.store o p.buffer;
+        Store.write self.store o p.buffer |> ignore; (* FIXME *)
         self.pieces.(i) <- DONE;
         self.amount_left <- Int64.(sub self.amount_left (of_int (_piecelen self i)));
         Trace.infof "Piece #%d verified and written to disk" i;

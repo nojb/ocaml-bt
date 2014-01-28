@@ -2,8 +2,8 @@ let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
 type command =
-  | READ of int64 * int * string Lwt_mvar.t
-  | WRITE of int64 * string
+  | READ of int64 * int * string Lwt.u
+  | WRITE of int64 * string * unit Lwt.u
   | CLOSE
 
 let failwith fmt = Printf.ksprintf failwith fmt
@@ -61,9 +61,9 @@ let _read self off len =
     Lwt.return buf
 
 let read self off len =
-  let mv = Lwt_mvar.create_empty () in
-  self.perform (READ (off, len, mv));
-  Lwt_mvar.take mv
+  let t, w = Lwt.wait () in
+  self.perform (READ (off, len, w));
+  t
 
 let rec write_exactly fd buf off len =
   Lwt_unix.write fd buf off len >>= fun len' ->
@@ -87,7 +87,9 @@ let _write self off s =
     Lwt.return_unit
 
 let write self off s =
-  self.perform (WRITE (off, s))
+  let t, w = Lwt.wait () in
+  self.perform (WRITE (off, s, w));
+  t
 
 let cwd path f =
   let old_cwd = Sys.getcwd () in
@@ -136,10 +138,10 @@ let create files =
   let self = { files; perform = (fun x -> Some x |> perform); handles } in
   let rec loop () =
     Lwt_stream.next strm >>= function
-    | READ (off, len, mv) ->
-      _read self off len >>= Lwt_mvar.put mv >>= loop
-    | WRITE (off, s) ->
-      _write self off s >>= loop
+    | READ (off, len, w) ->
+      _read self off len >|= Lwt.wakeup w >>= loop
+    | WRITE (off, s, w) ->
+      _write self off s >|= Lwt.wakeup w >>= loop
     | CLOSE ->
       _close self.handles
   in
