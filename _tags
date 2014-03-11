@@ -1,8 +1,42 @@
-true: debug
-true: bit_annot
-true: package(lwt), package(lwt.react)
-true: package(uri)
-true: package(cohttp.lwt)
-true: package(sha)
-true: package(qcheck)
-true: package(zarith)
+# OASIS_START
+# DO NOT EDIT (digest: c8d581b881d39698e60a84ca200ad587)
+# Ignore VCS directories, you can use the same kind of rule outside
+# OASIS_START/STOP if you want to exclude directories that contains
+# useless stuff for the build process
+<**/.svn>: -traverse
+<**/.svn>: not_hygienic
+".bzr": -traverse
+".bzr": not_hygienic
+".hg": -traverse
+".hg": not_hygienic
+".git": -traverse
+".git": not_hygienic
+"_darcs": -traverse
+"_darcs": not_hygienic
+# Library torrent
+"lib/torrent.cmxs": use_torrent
+"lib/bcode.cmx": for-pack(Torrent)
+"lib/get.cmx": for-pack(Torrent)
+"lib/put.cmx": for-pack(Torrent)
+"lib/bits.cmx": for-pack(Torrent)
+"lib/histo.cmx": for-pack(Torrent)
+"lib/info.cmx": for-pack(Torrent)
+"lib/magnet.cmx": for-pack(Torrent)
+"lib/peer.cmx": for-pack(Torrent)
+"lib/store.cmx": for-pack(Torrent)
+"lib/tracker.cmx": for-pack(Torrent)
+"lib/util.cmx": for-pack(Torrent)
+"lib/wire.cmx": for-pack(Torrent)
+"lib/word160.cmx": for-pack(Torrent)
+"lib/download.cmx": for-pack(Torrent)
+"lib/client.cmx": for-pack(Torrent)
+"lib/rate.cmx": for-pack(Torrent)
+<lib/*.ml{,i}>: pkg_cohttp
+<lib/*.ml{,i}>: pkg_cohttp.lwt
+<lib/*.ml{,i}>: pkg_lwt
+<lib/*.ml{,i}>: pkg_qcheck
+<lib/*.ml{,i}>: pkg_sha
+<lib/*.ml{,i}>: pkg_uri
+<lib/*.ml{,i}>: pkg_zarith
+# OASIS_STOP
+true: bin_annot

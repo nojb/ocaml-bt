@@ -1,0 +1,12 @@
+# OASIS_START
+# DO NOT EDIT (digest: 7a0c027a79b6cf11bb614c3f8b43b4eb)
+version = "0.9.0"
+description = "BitTorrent client library"
+requires = "lwt uri cohttp cohttp.lwt sha qcheck zarith"
+archive(byte) = "torrent.cma"
+archive(byte, plugin) = "torrent.cma"
+archive(native) = "torrent.cmxa"
+archive(native, plugin) = "torrent.cmxs"
+exists_if = "torrent.cma"
+# OASIS_STOP
+

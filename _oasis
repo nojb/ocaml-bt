@@ -1,0 +1,20 @@
+OASISFormat: 0.4
+Name: torrent
+Version: 0.9.0
+Synopsis: BitTorrent client library
+Authors: Nicolas Ojeda Bar
+License: MIT
+Plugins: META (0.4), DevFiles (0.4)
+BuildTools: ocamlbuild
+
+Library torrent
+  Path: lib
+  Pack: true
+  Install: true
+  FindlibName: torrent
+  Modules: Bcode, Get, Put, Bits, Histo, Info,
+           Magnet, Peer, Store, Tracker, Util,
+           Wire, Word160, Download, Client, Rate
+  BuildDepends: lwt, uri, cohttp, cohttp.lwt, sha,
+                qcheck, zarith
+  

@@ -1,5 +1,7 @@
-.DS_Store
-old
-*.byte
-_build
 *.torrent
+_build/
+setup.data
+setup.log
+*.docdir
+*.native
+*.byte
