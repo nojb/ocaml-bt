@@ -1,20 +1,47 @@
 OASISFormat: 0.4
-Name: torrent
-Version: 0.9.0
+Name: bt
+Version: 0.1
 Synopsis: BitTorrent client library
 Authors: Nicolas Ojeda Bar
 License: MIT
 Plugins: META (0.4), DevFiles (0.4)
 BuildTools: ocamlbuild
 
-Library torrent
-  Path: lib
+Flag examples
+  Description: Build the examples
+  Default$: true
+
+Library bt_common
+  Path: common
+  Install: true
+  FindlibName: common
+  FindlibParent: bt
+  Modules: Bcode, Get, Put, Word160
+  BuildDepends: sha, zarith, qcheck
+
+Library bt_dht
+  # Build$: false
+  Path: dht
+  Install: true
+  FindlibName: dht
+  FindlibParent: bt
+  Modules: Krpc, Routing
+  BuildDepends: bt.common
+
+Library bt
+  Path: bt
   Pack: true
   Install: true
-  FindlibName: torrent
-  Modules: Bcode, Get, Put, Bits, Histo, Info,
-           Magnet, Peer, Store, Tracker, Util,
-           Wire, Word160, Download, Client, Rate
-  BuildDepends: lwt, uri, cohttp, cohttp.lwt, sha,
-                qcheck, zarith
+  FindlibName: bt
+  Modules: Bits, Histo, Info, Magnet, Peer, Store,
+           Tracker, Util, Wire, Download, Client, Rate
+  BuildDepends: bt.common, lwt, uri, cohttp, cohttp.lwt
   
+Executable find_ih
+  Path: examples
+  MainIs: find_ih.ml
+  Build$: flag(examples)
+  Custom: true
+  CompiledObject: best
+  Install: false
+  BuildDepends: bt.dht
