@@ -24,8 +24,9 @@ type t
 val create : Info.t -> t
 val update : t -> unit Lwt.t
 (* val got_piece : t -> int -> string -> bool *)
+val peer_ready : t -> Peer.t -> unit
 val did_request : t -> int -> unit
-val request_lost : t -> int -> unit
+(* val request_lost : t -> int -> unit *)
 val is_complete : t -> bool
 (* val get_block : t -> int -> int -> int -> string Lwt.t *)
 val down : t -> int64
@@ -36,4 +37,6 @@ val have : t -> Bits.t
 val has_piece : t -> int -> bool
 val next : t -> Bits.t -> int option
 val got_have : t -> int -> unit
+val got_bitfield : t -> Bits.t -> unit
 val lost_have : t -> int -> unit
+val lost_bitfield : t -> Bits.t -> unit

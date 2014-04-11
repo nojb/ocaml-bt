@@ -33,7 +33,7 @@ type event =
   | `BitField of Bits.t
   | `Port of int
   | `Finished
-  | `GotMetadata of int ]
+  | `AvailableMetadata of int ]
 
 val create : Tcp.socket -> Word160.t -> t
 
@@ -62,6 +62,8 @@ val request_piece : t -> ?block_size:int -> int -> int -> string Lwt.t
 
 val request_meta_piece : t -> int -> string Lwt.t
 (* val request_info : t -> string Lwt.t *)
+
+val set_metadata : t -> Info.t -> unit
     
 val wait_ready : t -> unit Lwt.t
 

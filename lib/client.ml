@@ -42,6 +42,7 @@ type event =
   | IncomingPeer of Tcp.socket * Addr.t
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
+  | GotMetadata of Info.t
 
 type metadata_state =
   | Nothing
@@ -56,7 +57,8 @@ type t = {
   connecting : (Addr.t, unit) Hashtbl.t;
   chan : event Lwt_stream.t;
   push : event -> unit;
-  mutable metadata : metadata_state
+  mutable metadata : metadata_state;
+  mutable download : Download.t option
 }
 
 let create mg =
@@ -70,7 +72,8 @@ let create mg =
     connecting = Hashtbl.create 17;
     chan;
     push;
-    metadata = Nothing }
+    metadata = Nothing;
+    download = None }
 
 exception Cant_listen
 
@@ -96,6 +99,9 @@ let push_peers_received bt xs =
 
 let push_peer_event bt p ev =
   bt.push (PeerEvent (p, ev))
+
+let push_metadata bt info =
+  bt.push (GotMetadata info)
 
 let proto = "BitTorrent protocol"
 
@@ -185,55 +191,77 @@ let has_partial_metadata bt =
   | Partial _
   | Complete _ -> true
 
+let handle_available_metadata bt p len =
+  if not (has_partial_metadata bt) then begin
+    let buf = String.create len in
+    let npieces = roundup len info_piece_size / info_piece_size in
+    let have = Array.create npieces false in
+    bt.metadata <- Partial (buf, have);
+    success "received metadata info (len=%d)" len
+  end;
+  begin match bt.metadata with
+    | Nothing -> assert false
+    | Partial (buf, have) ->
+      let rec loop i =
+        if i >= Array.length have || has_metadata bt then
+          Lwt.return ()
+        else if not have.(i) then begin
+          Peer.request_meta_piece p i >>= fun s ->
+          if not have.(i) then begin
+            have.(i) <- true;
+            String.blit s 0 buf (i * info_piece_size) (String.length s)
+          end;
+          loop (i+1)
+        end else
+          loop (i+1)
+      in
+      Lwt.catch
+        (fun () ->
+           loop 0 >|= fun () ->
+           if not (has_metadata bt) then
+             let sha = Word160.digest_of_string buf in
+             if sha = bt.ih then begin
+               let info = Info.create (Get.run Bcode.bdecode buf) in
+               bt.metadata <- Complete info;
+               success "got complete metadata";
+               push_metadata bt info
+             end else begin
+               error "bad metadata data; retrying";
+               bt.metadata <- Nothing
+             end)
+        (fun e -> Lwt.return ()) |> ignore
+    | Complete _ ->
+      ()
+  end
+
 let handle_peer_event bt p ev =
   match ev with
   | `Finished ->
-    Hashtbl.remove bt.peers (Peer.addr p)
-  | `GotMetadata len ->
-    if not (has_partial_metadata bt) then begin
-      let buf = String.create len in
-      let npieces = roundup len info_piece_size / info_piece_size in
-      let have = Array.create npieces false in
-      bt.metadata <- Partial (buf, have);
-      success "received metadata info (len=%d)" len
-    end;
-    begin match bt.metadata with
-      | Nothing -> assert false
-      | Partial (buf, have) ->
-        let rec loop i =
-          if i >= Array.length have || has_metadata bt then
-            Lwt.return ()
-          else if not have.(i) then begin
-            Peer.request_meta_piece p i >>= fun s ->
-            if not have.(i) then begin
-              have.(i) <- true;
-              String.blit s 0 buf (i * info_piece_size) (String.length s)
-            end;
-            loop (i+1)
-          end else
-            loop (i+1)
-        in
-        Lwt.catch
-          (fun () ->
-             loop 0 >|= fun () ->
-             if not (has_metadata bt) then
-               let sha = Word160.digest_of_string buf in
-               if sha = bt.ih then begin
-                 bt.metadata <- Complete (Info.create (Get.run Bcode.bdecode buf));
-                 success "got complete metadata"
-               end else begin
-                 error "bad metadata data; retrying";
-                 bt.metadata <- Nothing
-               end)
-          (fun e -> Lwt.return ()) |> ignore
-      | Complete _ ->
-        ()
+    Hashtbl.remove bt.peers (Peer.addr p);
+    begin match bt.download with
+      | Some dl -> Download.lost_bitfield dl (Peer.have p)
+      | None -> ()
+    end
+  | `AvailableMetadata len ->
+    handle_available_metadata bt p len
+  | `Unchoked ->
+    begin match bt.download with
+      | Some dl -> Download.peer_ready dl p
+      | None -> ()
+    end
+  | `Have i ->
+    begin match bt.download with
+      | Some dl -> Download.got_have dl i
+      | None -> ()
+    end
+  | `BitField b ->
+    begin match bt.download with
+      | Some dl -> Download.got_bitfield dl b
+      | None -> ()
     end
   | _ ->
     ()
 
-(* let max_concurrent_connections_try = 5 *)
-    
 let event_loop bt =
   let rec loop () =
     Lwt_stream.next bt.chan >|= begin function
@@ -248,29 +276,18 @@ let event_loop bt =
                error ~exn:e "error while connecting (addr=%s)" (Addr.to_string addr);
                Lwt.return ())) addrs in
       ()
-      (* let addrs = ref addrs in *)
-      (* let rec loop () = *)
-      (*   if List.length !addrs = 0 then *)
-      (*     Lwt.return () *)
-      (*   else *)
-      (*     let addr = List.hd !addrs in *)
-      (*     addrs := List.tl !addrs; *)
-      (*     Lwt.catch *)
-      (*       (fun () -> handle_received_peer bt addr) *)
-      (*       (fun e -> *)
-      (*          error ~exn:e "error while connecting (addr=%s)" (Addr.to_string addr); *)
-      (*          Lwt.return ()) *)
-      (*     >>= loop *)
-      (* in *)
-      (* let rec enum i = *)
-      (*   if i >= max_concurrent_connections_try then [] *)
-      (*   else loop () :: enum (i+1) *)
-      (* in *)
-      (* success "received %d peers; trying to contact (max=%d)" *)
-      (*   (List.length !addrs) max_concurrent_connections_try; *)
-      (* Lwt.join (enum 0) |> ignore *)
     | PeerEvent (p, ev) ->
       handle_peer_event bt p ev
+    | GotMetadata info ->
+      let dl = Download.create info in
+      let _ =
+        Download.update dl >|= fun () ->
+        bt.download <- Some dl;
+        Hashtbl.iter (fun _ p -> Download.got_bitfield dl (Peer.have p)) bt.peers;
+        Hashtbl.iter (fun _ p ->
+            if not (Peer.peer_choking p) then Download.peer_ready dl p) bt.peers
+      in
+      ()
     end
     >>= loop
   in
@@ -283,37 +300,3 @@ let start bt =
       Tracker.query tr bt.ih port bt.id >|= fun resp ->
       push_peers_received bt resp.Tracker.peers) (List.flatten bt.trackers) |> ignore;
   event_loop bt
-    
-(* let max_num_peers = 70 *)
-(* let bittorrent_id_prefix = "-OC0001-" *)
-
-(* (\* val add_peer : header:string -> ih:H.t -> id:H.t -> Tcp.socket -> unit Lwt.t *\) *)
-(* let add_peer bt ~header ~ih ~id sock = *)
-(*   if List.exists (fun p -> Peer.id p = id) bt.peers then *)
-(*     Lwt.return () *)
-(*   else begin *)
-(*     let p = Peer.create ih id sock in *)
-(*     if Peer.has_dht p then Dht.add_node bt.dht (Peer.addr p); *)
-(*     Peer.writer_loop p push_msg p; *)
-(*     Peer.reader_loop p push_msg p; *)
-(*     if Peer.has_extensions p then Peer.send_extensions bt.port *)
-(*     else Peer.send_bitfield p pieces *)
-(*   end *)
-
-(* let download cl = *)
-(*   Lwt_list.iter_p *)
-(*     (fun tr -> *)
-(*       Tracker.query tr cl.ih 44443 cl.id >>= fun resp -> *)
-(*       let peers = resp.Tracker.peers in *)
-(*       let peers = List.map (fun (addr, port) -> Peer.of_sockaddr addr port) peers in *)
-(*       Lwt_list.iter_p (fun p -> *)
-(*           Peer.connect p >>= fun () -> *)
-(*           Peer.handshake p ~id:cl.id ~ih:cl.ih >>= fun id' -> *)
-(*           Peer.request_info p >>= fun s -> *)
-(*           let info = Info.create (Get.run Bcode.bdecode s) in *)
-(*           Info.pp Format.std_formatter info; *)
-(*           Lwt.return ()) peers) cl.trackers *)
-
-(* let of_magnet mg = *)
-(*   let id = Word160.peer_id bittorrent_id_prefix in *)
-(*   { id; ih = mg.Magnet.xt; trackers = List.map Tracker.create mg.Magnet.tr } *)

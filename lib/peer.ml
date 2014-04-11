@@ -44,7 +44,7 @@ type event =
   | `BitField of Bits.t
   | `Port of int
   | `Finished
-  | `GotMetadata of int ]
+  | `AvailableMetadata of int ]
 
 let kilobyte n = n * 1024
 (* let lo_mark = 5 *)
@@ -90,8 +90,6 @@ type t = {
   mutable info : Info.t option;
   mutable have : Bits.t
 }
-
-let lt_ext_bit = 63 - 20
 
 (* let flush p = *)
 (*   Lwt_condition.broadcast p.can_send () *)
@@ -143,11 +141,6 @@ let got_ut_metadata p data =
 
 let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata) ]
-
-let extended_bits =
-  let bits = Bits.create (8 * 8) in
-  Bits.set bits lt_ext_bit;
-  bits
 
 let got_choke p =
   if not p.peer_choking then begin
@@ -223,7 +216,7 @@ let got_extended_handshake p bc =
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
   if Hashtbl.mem p.extensions "ut_metadata" then
-    p.handle (`GotMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int))
+    p.handle (`AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int))
 
 let got_extended p id data =
   let (_, f) = List.assoc id supported_extensions in
@@ -297,6 +290,7 @@ let writer_loop p =
           loop ()
         | Some (`Msg m) ->
           Wire.put m |> Put.run |> Tcp.write p.sock >>= fun () ->
+          info "sent message to %s: %s" (Addr.to_string p.addr) (Wire.string_of_message m);
           loop' ()
         | Some (`Block (idx, off, len)) ->
           get_block p idx off len >>= fun s ->
@@ -347,31 +341,6 @@ let id p =
 let addr p =
   p.addr
 
-(* let start_loop p = *)
-(*   Lwt.async (fun () -> Lwt.join [reader_loop p; writer_loop p]) *)
-
-(* let proto = "BitTorrent protocol" *)
-
-(* let read_handshake fd ih = *)
-(*   let get_handshake ih = *)
-(*     let open Get in *)
-(*     char (String.length proto |> Char.chr) >> *)
-(*     string proto >> *)
-(*     string_of_length 8 >|= Bits.of_bin >>= fun extbits -> *)
-(*     string (Word160.to_bin ih) >> *)
-(*     string_of_length 20 >|= Word160.from_bin >>= fun id -> *)
-(*     return (id, extbits) *)
-(*   in *)
-(*   read_exactly fd (49 + String.length proto) >>= fun s -> *)
-(*   Lwt.return (Get.run (get_handshake ih) s) *)
-
-(* let handshake_message id ih = *)
-(*   Printf.sprintf "%c%s%s%s%s" *)
-(*     (String.length proto |> Char.chr) proto *)
-(*     (Bits.to_bin extended_bits) *)
-(*     (Word160.to_bin ih) *)
-(*     (Word160.to_bin id) *)
-
 let send_extended_handshake p =
   let m =
     List.map (fun (id, (name, _)) ->
@@ -380,27 +349,6 @@ let send_extended_handshake p =
   let m = Bcode.BDict ["m", Bcode.BDict m] in
   let s = Put.run (Bcode.bencode m) in
   send_extended p 0 s
-
-(* let handshake p ~id ~ih = *)
-(*   assert (p.id = None); *)
-(*   let hs = handshake_message id ih in *)
-(*   begin match p.direction with *)
-(*   | `Incoming -> *)
-(*     read_handshake p.fd ih >>= fun id_extbits -> *)
-(*     write_fully p.fd hs >>= fun () -> *)
-(*     Lwt.return id_extbits *)
-(*   | `Outgoing -> *)
-(*     write_fully p.fd hs >>= fun () -> *)
-(*     read_handshake p.fd ih *)
-(*   end *)
-(*   >>= fun (id, extbits) -> *)
-(*   p.id <- Some id; *)
-(*   assert (Bits.length extbits = Bits.length p.extbits); *)
-(*   Bits.blit extbits 0 p.extbits 0 (Bits.length extbits); *)
-(*   start_loop p; *)
-(*   if Bits.is_set p.extbits lt_ext_bit then *)
-(*     send_extended_handshake p; *)
-(*   Lwt.return id *)
 
 let peer_choking p =
   p.peer_choking
@@ -805,6 +753,9 @@ let request_meta_piece p idx =
 
 (* let dl pr = *)
 (*   Lwt_react.S.value pr.dl  *)
+
+let set_metadata p info =
+  p.info <- Some info
 
 let wait_ready p =
   (* Lwt_condition.wait p.ready *)

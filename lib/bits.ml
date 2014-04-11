@@ -99,6 +99,9 @@ let logor v1 v2 =
   done;
   s
 
+let logandnot v1 v2 =
+  logand v1 (lognot v2)
+
 let iter f v =
   let n = String.length v in
   for i = 0 to n-1 do

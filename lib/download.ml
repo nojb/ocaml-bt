@@ -20,6 +20,12 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
+              
+let info ?exn fmt = Log.info ~sec:"download" ?exn fmt
+let error ?exn fmt = Log.error ~sec:"download" ?exn fmt
+let warning ?exn fmt = Log.warning ~sec:"download" ?exn fmt
+let success ?exn fmt = Log.success ~sec:"download" ?exn fmt
 
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
@@ -74,20 +80,31 @@ let update dl =
         end else
           loop acc (i+1)
   in
-  loop dl.info.Info.total_length 0 >>= fun amount_left ->
-  Lwt_log.info_f
-    "Torrent initialisation complete. Have %d/%d pieces (%Ld bytes remaining)"
-    (Bits.count dl.completed) numpieces amount_left >>= fun () ->
-  dl.amount_left <- amount_left;
-  Lwt.return ()
+  let start_time = Unix.gettimeofday () in
+  loop dl.info.Info.total_length 0 >|= fun amount_left ->
+  let end_time = Unix.gettimeofday () in
+  success
+    "torrent initialisation complete (good=%d,bad=%d,left=%Ld,secs=%.0f)"
+    (Bits.count dl.completed) numpieces amount_left (end_time -. start_time);
+  dl.amount_left <- amount_left
   
 let got_have self piece =
   if not (Bits.is_set self.completed piece) then
     self.rarity <- Histo.add piece self.rarity
+
+let got_bitfield self b =
+  for i = 0 to Bits.length b - 1 do
+    if Bits.is_set b i then got_have self i
+  done
  
 let lost_have self piece =
   if not (Bits.is_set self.completed piece) then
     self.rarity <- Histo.remove piece self.rarity
+
+let lost_bitfield self b =
+  for i = 0 to Bits.length b - 1 do
+    if Bits.is_set b i then lost_have self i
+  done
 
 let request_lost self i =
   if not (Bits.is_set self.completed i) then
@@ -123,10 +140,12 @@ let next self have =
   else
     None
 
-let peer_ready dl p =
+let rec peer_ready dl p =
+  info "looking a piece for peer to download (addr=%s,id=%s)"
+    (Addr.to_string (Peer.addr p)) (Word160.to_hex_short (Peer.id p));
   let idx = next dl (Peer.have p) in
   let aux idx =
-    Peer.request_piece p idx (Info.piece_length dl.info idx) >>= fun s ->
+    Peer.request_piece p idx (Info.piece_length dl.info idx) >|= fun s ->
     if Word160.digest_of_string s |> Word160.equal dl.info.Info.hashes.(idx) then begin
       let o = Info.piece_offset dl.info idx in
       Store.write dl.store o s |> ignore; (* FIXME *)
@@ -134,12 +153,13 @@ let peer_ready dl p =
       dl.rarity <- Histo.remove_all idx dl.rarity;
       Bits.unset dl.requested idx;
       Bits.set dl.completed idx;
-      Lwt_log.info_f "Piece #%d verified and written to disk" idx
+      success "piece verified and written to disk (idx=%d)" idx
     end
     else begin
       Bits.unset dl.requested idx;
-      Lwt_log.info_f "Piece #%d failed hashcheck" idx
-    end
+      error "piece failed hashcheck (idx=%d)" idx
+    end;
+    peer_ready dl p
   in
   match idx with
   | Some idx -> Lwt.async (fun () -> aux idx)
