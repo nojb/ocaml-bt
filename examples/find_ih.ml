@@ -5,7 +5,7 @@ let main _ =
     Printf.printf "Usage: %s <info-hash>\n%!" Sys.argv.(0);
     exit 2
   end;
-  let ih = Word160.of_string Sys.argv.(1) in
+  let ih = Word160.of_hex Sys.argv.(1) in
   let strm, push = Lwt_stream.create () in
   let dht = Dht.create push in
   Dht.run dht;

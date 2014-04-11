@@ -21,40 +21,8 @@
 
 type t
 
-type event =
-  | Choked
-  | Unchoked
-  | Interested
-  | Not_interested
-  | Have of int
+val create : Magnet.t -> t
+val start : t -> unit Lwt.t
 
-val of_sockaddr : Unix.inet_addr -> int -> t
-val of_file_descr : Lwt_unix.file_descr -> t
-val connect : t -> unit Lwt.t
-  
-val handshake : t -> id:Word160.t -> ih:Word160.t -> Word160.t Lwt.t
-
-val peer_choking : t -> bool
-val peer_interested : t -> bool
-val has_piece : t -> idx:int -> bool
-val have : t -> Bits.t
-                  
-val send_choke : t -> unit
-val send_unchoke : t -> unit
-val send_interested : t -> unit
-val send_not_interested : t -> unit
-val send_have : t -> idx:int -> unit
-  
-val request_block : t -> int -> int -> int -> string Lwt.t
-(** [request_block p idx off len] requests the block with index [idx], at offset
-    [off] of length [len] from peer [p]. *)
-    
-val request_piece : t -> ?block_size:int -> int -> int -> string Lwt.t
-val request_info : t -> string Lwt.t
-    
-val add_handler : t -> (event -> unit) -> unit
-
-val wait_ready : t -> unit Lwt.t
-
-(* val has_fast_ext : t -> bool *)
-(* val has_lt_ext : t -> bool *)
+(* val download : t -> unit Lwt.t *)
+(* val of_magnet : Magnet.t -> t *)

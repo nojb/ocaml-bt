@@ -21,6 +21,9 @@
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+let log fmt =
+  Printf.ksprintf (fun msg -> Lwt_log.ign_debug_f "[tracker] %s\n%!" msg) fmt
               
 let failwith_lwt fmt =
   Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
@@ -42,7 +45,7 @@ type t = {
 type tracker = t
 
 type response = {
-  peers : (Unix.inet_addr * int) list;
+  peers : Addr.t list;
   leechers : int option;
   seeders : int option;
   interval : int
@@ -69,14 +72,15 @@ module Udp = struct
   let fresh_transaction_id () =
     Random.int32 Int32.max_int
 
-  let get_inet_addr =
+  let get_ip_addr =
     let open Get in
     let open Get.BE in
     uint8 >>= fun a ->
     uint8 >>= fun b ->
     uint8 >>= fun c ->
     uint8 >|= fun d ->
-    Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d)
+    Addr.Ip.of_ints a b c d
+    (* Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d) *)
 
   let map_maybe f x if_none =
     match x with
@@ -133,7 +137,7 @@ module Udp = struct
       any_string >|= fun msg -> `Error msg
     else begin
       let peer_info =
-        get_inet_addr >>= fun addr ->
+        get_ip_addr >>= fun addr ->
         uint16 >>= fun port ->
         return (addr, port)
       in
@@ -187,8 +191,8 @@ module Udp = struct
           (fun () -> loop (`Announce_response trans_id))
           (function
             | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-              Lwt_log.info_f "ANNOUNCE UDP announce request timeout after %d s; retrying..."
-                (truncate (15.0 *. 2.0 ** float n)) >>= fun () ->
+              log "ANNOUNCE UDP announce request timeout after %d s; retrying..."
+                (truncate (15.0 *. 2.0 ** float n));
               if n >= 2 then
                 loop (`Connect_request (n+1))
               else
@@ -243,10 +247,9 @@ module Http = struct
           if i >= String.length pr then []
           else
             let addr =
-              Unix.inet_addr_of_string
-                (Printf.sprintf "%03d.%03d.%03d.%03d"
-                   (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
-                   (int_of_char pr.[i+2]) (int_of_char pr.[i+3]))
+              Addr.Ip.of_ints
+                (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
+                (int_of_char pr.[i+2]) (int_of_char pr.[i+3])
             in
             let port = int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5] in
             (addr, port) :: loop (i+6)
@@ -258,7 +261,7 @@ module Http = struct
         List.map (fun d ->
             let ip = Bcode.find "ip" d |> Bcode.to_string in
             let port = Bcode.find "port" d |> Bcode.to_int in
-            let addr = Unix.inet_addr_of_string ip in
+            let addr = Addr.Ip.of_string ip in
             (addr, port))
       in
       let peers = Bcode.find "peers" d in
@@ -299,7 +302,7 @@ module Http = struct
 end
 
 let query tr ih ?up ?down ?left ?event port id =
-  Lwt_log.info_f "Announcing on %S" (Uri.to_string tr.uri) >>= fun () ->
+  log "announcing on %S" (Uri.to_string tr.uri);
   match Uri.scheme tr.uri with
   | Some "http" | Some "https" ->
     Http.announce tr ih ?up ?down ?left ?event port id

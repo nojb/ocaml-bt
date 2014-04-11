@@ -221,6 +221,11 @@ let get len : message Get.t =
 
 let read_exactly = Util.read_exactly
 
-let read fd =
-  read_exactly fd 4 >|= Get.run Get.BE.int >>= fun len ->
-  read_exactly fd len >|= Get.run (get len)
+let read sock =
+  Tcp.read sock 4 >|= Get.run Get.BE.int >>= fun len ->
+  Tcp.read sock len >|= Get.run (get len)
+
+(* type extension = *)
+(*   | UT_metadata *)
+
+let lt_extension_bit = 43 (* 20-th bit from the right *)

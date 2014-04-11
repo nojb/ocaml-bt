@@ -31,7 +31,7 @@ exception Error of string
 exception Warning of string
 
 type response = {
-  peers : (Unix.inet_addr * int) list;
+  peers : Addr.t list;
   leechers : int option;
   seeders : int option;
   interval : int

@@ -24,9 +24,28 @@
 
 let (>>=) = Lwt.(>>=)
 
-let read_exactly = Util.read_exactly
-let write_fully = Util.write_fully
-                    
+(* let log ?exn fmt = *)
+(*   Printf.ksprintf (fun msg -> Lwt_log.ign_debug_f ?exn "[peer] %s" msg) fmt *)
+
+let error ?exn fmt = Log.error ~sec:"peer" ?exn fmt
+let warning ?exn fmt = Log.warning ~sec:"peer" ?exn fmt
+let info ?exn fmt = Log.info ~sec:"peer" ?exn fmt
+let success ?exn fmt = Log.success ~sec:"peer" ?exn fmt
+
+type event =
+  [ `Choked of (int * int * int) list
+  | `Unchoked
+  | `Interested
+  | `NotInterested
+  | `Have of int
+  | `Request of int * int * int
+  | `Piece of int * int * string
+  | `MetaPiece of int * string
+  | `BitField of Bits.t
+  | `Port of int
+  | `Finished
+  | `GotMetadata of int ]
+
 let kilobyte n = n * 1024
 (* let lo_mark = 5 *)
 (* let hi_mark = 25 *)
@@ -37,35 +56,11 @@ let info_piece_size = kilobyte 16
 let default_block_size = kilobyte 16
 
 let extract_assoc key seq =
-  if Lwt_sequence.is_empty seq then
-    raise Not_found
-  else
-    let x = Lwt_sequence.take_l seq in
-    let _ = Lwt_sequence.add_l x seq in
-    let aux = ref (snd x) in
-    (* could replace the last three lines by:
-       let aux : 'a Lwt_sequence.node = Obj.magic 0 in *)
-    try
-      Lwt_sequence.iter_node_l (fun n ->
-          let (key', v) = Lwt_sequence.get n in
-          if key = key' then begin
-            Lwt_sequence.remove n;
-            aux := v;
-            raise Exit
-          end) seq;
-      raise Not_found
-    with
-    | Exit ->
-      !aux
+  let n = Lwt_sequence.find_node_r (fun (key', _) -> key = key') seq in
+  Lwt_sequence.remove n;
+  snd (Lwt_sequence.get n)
 
 exception Timeout
-
-type event =
-  | Choked
-  | Unchoked
-  | Interested
-  | Not_interested
-  | Have of int
 
 type send_item =
   [ `Msg of Wire.message
@@ -76,10 +71,9 @@ type request_item =
   | `Info of int ]
 
 type t = {
-  sa : Unix.sockaddr;
-  fd : Lwt_unix.file_descr;
-  mutable id : Word160.t option;
-  direction : [`Incoming | `Outgoing];
+  addr : Addr.t;
+  sock : Tcp.socket;
+  mutable id : Word160.t;
   mutable am_choking : bool;
   mutable am_interested : bool;
   mutable peer_choking : bool;
@@ -92,10 +86,9 @@ type t = {
   requests : (request_item * string Lwt.u) Lwt_sequence.t;
   send_queue : send_item Lwt_sequence.t;
   can_send : unit Lwt_condition.t;
+  mutable handle : event -> unit;
   mutable info : Info.t option;
-  handlers : (event -> unit) Lwt_sequence.t;
-  mutable have : Bits.t;
-  mutable metadata_size : int option
+  mutable have : Bits.t
 }
 
 let lt_ext_bit = 63 - 20
@@ -156,53 +149,16 @@ let extended_bits =
   Bits.set bits lt_ext_bit;
   bits
 
-let create sa fd direction =
-  let w, wake = Lwt.wait () in
-  { sa; fd; id = None; direction;
-    am_choking = true; am_interested = false;
-    peer_choking = true; peer_interested = false;
-    should_stop = w; extbits = Bits.create (8 * 8);
-    extensions = Hashtbl.create 17;
-    can_request = Lwt_condition.create ();
-    requests = Lwt_sequence.create ();
-    send_queue = Lwt_sequence.create ();
-    can_send = Lwt_condition.create ();
-    info = None;
-    handlers = Lwt_sequence.create ();
-    have = Bits.create 0;
-    metadata_size = None }
-
-let broadcast p ev =
-  Lwt_sequence.iter_l (fun h -> h ev) p.handlers
-
-let of_sockaddr addr port =
-  create
-    (Unix.ADDR_INET (addr, port))
-    (Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0)
-    `Outgoing
- 
-let of_file_descr fd =
-  create
-    (Lwt_unix.getpeername fd)
-    fd
-    `Incoming
-
-let connect p =
-  match p.direction with
-  | `Incoming ->
-    Lwt.return ()
-  | `Outgoing ->
-    Lwt_unix.connect p.fd p.sa
-
 let got_choke p =
   if not p.peer_choking then begin
-    p.peer_choking <- true
+    p.peer_choking <- true;
+    p.handle (`Choked []) (* XXX *)
   end
 
 let got_unchoke p =
   if p.peer_choking then begin
     p.peer_choking <- false;
-    broadcast p Unchoked
+    p.handle `Unchoked
   end
 
 let got_interested p =
@@ -223,7 +179,7 @@ let got_have_bitfield p b =
     Bits.blit b 0 p.have 0 (Array.length info.Info.hashes)
   end;
   for i = 0 to Bits.length b - 1 do
-    if Bits.is_set b i then broadcast p (Have i)
+    if Bits.is_set b i then p.handle (`Have i)
   done
 
 let got_have p idx =
@@ -238,7 +194,7 @@ let got_have p idx =
   | Some _ ->
     Bits.set p.have idx
   end;
-  broadcast p (Have idx)
+  p.handle (`Have idx)
 
 let got_cancel p idx off len =
   Lwt_sequence.iter_node_l
@@ -267,7 +223,7 @@ let got_extended_handshake p bc =
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
   if Hashtbl.mem p.extensions "ut_metadata" then
-    p.metadata_size <- Some (Bcode.find "metadata_size" bc |> Bcode.to_int)
+    p.handle (`GotMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int))
 
 let got_extended p id data =
   let (_, f) = List.assoc id supported_extensions in
@@ -277,6 +233,7 @@ let got_request p idx off len =
   ()
 
 let got_message p m =
+  info "received message from %s: %s" (Addr.to_string p.addr) (Wire.string_of_message m);
   (* Trace.recv self#sprint (Wire.sprint m); *)
   match m with
   | Wire.KEEP_ALIVE -> ()
@@ -297,7 +254,7 @@ let got_message p m =
 
 let reader_loop p =
   let input = Lwt_stream.from
-      (fun () -> Wire.read p.fd >>= fun msg -> Lwt.return (Some msg))
+      (fun () -> Wire.read p.sock >>= fun msg -> Lwt.return (Some msg))
   in
   let rec loop f =
     Lwt.pick [
@@ -330,7 +287,7 @@ let writer_loop p =
     ]
     >>= function
     | `Timeout ->
-      write_fully p.fd keepalive_msg >>= loop
+      Tcp.write p.sock keepalive_msg >>= loop
     | `Stop ->
       Lwt.return_unit
     | `Ready ->
@@ -339,42 +296,81 @@ let writer_loop p =
         | None ->
           loop ()
         | Some (`Msg m) ->
-          Wire.put m |> Put.run |> write_fully p.fd >>= fun () ->
+          Wire.put m |> Put.run |> Tcp.write p.sock >>= fun () ->
           loop' ()
         | Some (`Block (idx, off, len)) ->
           get_block p idx off len >>= fun s ->
           let m = Wire.PIECE (idx, off, s) in
-          Wire.put m |> Put.run |> write_fully p.fd >>= fun () ->
+          Wire.put m |> Put.run |> Tcp.write p.sock >>= fun () ->
           loop' ()
       in
       loop' ()
   in
   loop ()
 
-let start_loop p =
-  Lwt.async (fun () -> Lwt.join [reader_loop p; writer_loop p])
-
-let proto = "BitTorrent protocol"
-
-let read_handshake fd ih =
-  let get_handshake ih =
-    let open Get in
-    char (String.length proto |> Char.chr) >>
-    string proto >>
-    string_of_length 8 >|= Bits.of_bin >>= fun extbits ->
-    string (Word160.to_bin ih) >>
-    string_of_length 20 >|= Word160.from_bin >>= fun id ->
-    return (id, extbits)
+let create sock id =
+  let w, wake = Lwt.wait () in
+  let p =
+    { addr = Tcp.getpeeraddr sock; sock; id;
+      am_choking = true; am_interested = false;
+      peer_choking = true; peer_interested = false;
+      should_stop = w; extbits = Bits.create (8 * 8);
+      extensions = Hashtbl.create 17;
+      can_request = Lwt_condition.create ();
+      requests = Lwt_sequence.create ();
+      send_queue = Lwt_sequence.create ();
+      can_send = Lwt_condition.create ();
+      info = None;
+      handle = (fun _ -> ());
+      have = Bits.create 0 }
   in
-  read_exactly fd (49 + String.length proto) >>= fun s ->
-  Lwt.return (Get.run (get_handshake ih) s)
+  p
 
-let handshake_message id ih =
-  Printf.sprintf "%c%s%s%s%s"
-    (String.length proto |> Char.chr) proto
-    (Bits.to_bin extended_bits)
-    (Word160.to_bin ih)
-    (Word160.to_bin id)
+let start p handle =
+  p.handle <- handle;
+  let run_loop () =
+    Lwt.catch
+      (fun () -> Lwt.join [reader_loop p; writer_loop p])
+      (fun e ->
+         error ~exn:e "peer input/output error (addr=%s,id=%s)"
+           (Addr.to_string p.addr) (Word160.to_hex_short p.id);
+         Lwt.return ())
+    >>= fun () ->
+    handle `Finished;
+    Lwt.return ()
+  in
+  run_loop () |> ignore
+
+let id p =
+  p.id
+
+let addr p =
+  p.addr
+
+(* let start_loop p = *)
+(*   Lwt.async (fun () -> Lwt.join [reader_loop p; writer_loop p]) *)
+
+(* let proto = "BitTorrent protocol" *)
+
+(* let read_handshake fd ih = *)
+(*   let get_handshake ih = *)
+(*     let open Get in *)
+(*     char (String.length proto |> Char.chr) >> *)
+(*     string proto >> *)
+(*     string_of_length 8 >|= Bits.of_bin >>= fun extbits -> *)
+(*     string (Word160.to_bin ih) >> *)
+(*     string_of_length 20 >|= Word160.from_bin >>= fun id -> *)
+(*     return (id, extbits) *)
+(*   in *)
+(*   read_exactly fd (49 + String.length proto) >>= fun s -> *)
+(*   Lwt.return (Get.run (get_handshake ih) s) *)
+
+(* let handshake_message id ih = *)
+(*   Printf.sprintf "%c%s%s%s%s" *)
+(*     (String.length proto |> Char.chr) proto *)
+(*     (Bits.to_bin extended_bits) *)
+(*     (Word160.to_bin ih) *)
+(*     (Word160.to_bin id) *)
 
 let send_extended_handshake p =
   let m =
@@ -385,26 +381,26 @@ let send_extended_handshake p =
   let s = Put.run (Bcode.bencode m) in
   send_extended p 0 s
 
-let handshake p ~id ~ih =
-  assert (p.id = None);
-  let hs = handshake_message id ih in
-  begin match p.direction with
-  | `Incoming ->
-    read_handshake p.fd ih >>= fun id_extbits ->
-    write_fully p.fd hs >>= fun () ->
-    Lwt.return id_extbits
-  | `Outgoing ->
-    write_fully p.fd hs >>= fun () ->
-    read_handshake p.fd ih
-  end
-  >>= fun (id, extbits) ->
-  p.id <- Some id;
-  assert (Bits.length extbits = Bits.length p.extbits);
-  Bits.blit extbits 0 p.extbits 0 (Bits.length extbits);
-  start_loop p;
-  if Bits.is_set p.extbits lt_ext_bit then
-    send_extended_handshake p;
-  Lwt.return id
+(* let handshake p ~id ~ih = *)
+(*   assert (p.id = None); *)
+(*   let hs = handshake_message id ih in *)
+(*   begin match p.direction with *)
+(*   | `Incoming -> *)
+(*     read_handshake p.fd ih >>= fun id_extbits -> *)
+(*     write_fully p.fd hs >>= fun () -> *)
+(*     Lwt.return id_extbits *)
+(*   | `Outgoing -> *)
+(*     write_fully p.fd hs >>= fun () -> *)
+(*     read_handshake p.fd ih *)
+(*   end *)
+(*   >>= fun (id, extbits) -> *)
+(*   p.id <- Some id; *)
+(*   assert (Bits.length extbits = Bits.length p.extbits); *)
+(*   Bits.blit extbits 0 p.extbits 0 (Bits.length extbits); *)
+(*   start_loop p; *)
+(*   if Bits.is_set p.extbits lt_ext_bit then *)
+(*     send_extended_handshake p; *)
+(*   Lwt.return id *)
 
 let peer_choking p =
   p.peer_choking
@@ -489,7 +485,7 @@ let request_piece p ?block_size:(blk_size=default_block_size) idx len =
   loop [] 0 >>= fun () ->
   Lwt.return s
 
-let request_info_piece p idx =
+let request_meta_piece p idx =
   assert (idx >= 0);
   assert (Hashtbl.mem p.extensions "ut_metadata");
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -502,31 +498,28 @@ let request_info_piece p idx =
   Bcode.bencode (Bcode.BDict d) |> Put.run |> send_extended p id;
   w
 
-let request_info p =
-  let metadata_size = match p.metadata_size with
-    | None -> failwith "no metadata_size"
-    | Some n -> n
-  in
-  let s = String.create metadata_size in
-  let rec loop ws idx =
-    if idx * info_piece_size >= metadata_size then
-      Lwt.join ws
-    else
-    if info_request_count p.requests < pipeline_number then
-      let w =
-        request_info_piece p idx >>= fun buf ->
-        String.blit buf 0 s (idx * info_piece_size) (String.length buf);
-        Lwt.return ()
-      in
-      loop (w :: ws) (idx + 1)
-    else
-      Lwt_condition.wait p.can_request >>= fun () -> loop ws idx
-  in
-  loop [] 0 >>= fun () ->
-  Lwt.return s
-
-let add_handler p h =
-  ignore (Lwt_sequence.add_l h p.handlers)
+(* let request_meta_piece p idx len = *)
+(*   let metadata_size = match p.metadata_size with *)
+(*     | None -> failwith "no metadata_size" *)
+(*     | Some n -> n *)
+(*   in *)
+(*   let s = String.create metadata_size in *)
+(*   let rec loop ws idx = *)
+(*     if idx * info_piece_size >= metadata_size then *)
+(*       Lwt.join ws *)
+(*     else *)
+(*     if info_request_count p.requests < pipeline_number then *)
+(*       let w = *)
+(*         request_info_piece p idx >>= fun buf -> *)
+(*         String.blit buf 0 s (idx * info_piece_size) (String.length buf); *)
+(*         Lwt.return () *)
+(*       in *)
+(*       loop (w :: ws) (idx + 1) *)
+(*     else *)
+(*       Lwt_condition.wait p.can_request >>= fun () -> loop ws idx *)
+(*   in *)
+(*   loop [] 0 >>= fun () -> *)
+(*   Lwt.return s *)
 
 (* let fastextbit = 63 - (6*8+3) *)
 

@@ -1,5 +1,9 @@
 # OASIS_START
-# DO NOT EDIT (digest: 78ead3e2a818db05765d68cdd50db8fa)
+# DO NOT EDIT (digest: 91401eaeb63e3e77f3401ff12fef7ef2)
+Bcode
+Get
+Put
+Word160
 Bits
 Histo
 Info
@@ -12,4 +16,7 @@ Wire
 Download
 Client
 Rate
+Addr
+Tcp
+Log
 # OASIS_STOP

@@ -19,32 +19,35 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let (>>=) = Lwt.(>>=)
+type message =
+  | KEEP_ALIVE
+  | CHOKE
+  | UNCHOKE
+  | INTERESTED
+  | NOT_INTERESTED
+  | HAVE of int
+  | BITFIELD of Bits.t
+  | REQUEST of int * int * int
+  | PIECE of int * int * string
+  | CANCEL of int * int * int
+  | PORT of int
+  | HAVE_ALL
+  | HAVE_NONE
+  | SUGGEST of int
+  | REJECT of int * int * int
+  | ALLOWED of int list
+  | EXTENDED of int * string
 
-let max_connections = 5
-    
-type t = {
-  id : Word160.t;
-  ih : Word160.t;
-  trackers : Tracker.t list;
-}
+exception BadMsg of int * int
 
-let bittorrent_id_prefix = "-OC0001-"
+val string_of_message : message -> string
+val sprint : message -> unit -> string
+val get : int -> message Get.t
+val put : message -> Put.t
+val read : Tcp.socket -> message Lwt.t
+(* val write : Lwt_io.output_channel -> message -> unit Lwt.t *)
 
-let download cl =
-  Lwt_list.iter_p
-    (fun tr ->
-      Tracker.query tr cl.ih 44443 cl.id >>= fun resp ->
-      let peers = resp.Tracker.peers in
-      let peers = List.map (fun (addr, port) -> Peer.of_sockaddr addr port) peers in
-      Lwt_list.iter_p (fun p ->
-          Peer.connect p >>= fun () ->
-          Peer.handshake p ~id:cl.id ~ih:cl.ih >>= fun id' ->
-          Peer.request_info p >>= fun s ->
-          let info = Info.create (Get.run Bcode.bdecode s) in
-          Info.pp Format.std_formatter info;
-          Lwt.return ()) peers) cl.trackers
+(* type extension = *)
+(*   | UT_metadata *)
 
-let of_magnet mg =
-  let id = Word160.peer_id bittorrent_id_prefix in
-  { id; ih = mg.Magnet.xt; trackers = List.map Tracker.create mg.Magnet.tr }
+val lt_extension_bit : int
