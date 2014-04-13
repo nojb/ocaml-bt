@@ -27,12 +27,11 @@ type event =
   | Interested
   | NotInterested
   | Have of int
+  | HaveBitfield of Bits.t
   | BlockRequested of int * int * int
   | BlockReceived of int * int * string
-  | MetaPiece of int * string
-  | BitField of Bits.t
   | Port of int
-  | Finished
+  | Finished of (int * int * int) list
   | AvailableMetadata of int
   | MetaRequested of int
   | GotMetaPiece of int * string
@@ -50,22 +49,23 @@ val send_extended_handshake : t -> unit
 
 val peer_choking : t -> bool
 val peer_interested : t -> bool
-val has_piece : t -> idx:int -> bool
+val has_piece : t -> int -> bool
 val have : t -> Bits.t
                   
 val send_choke : t -> unit
 val send_unchoke : t -> unit
 val send_interested : t -> unit
 val send_not_interested : t -> unit
-val send_have : t -> idx:int -> unit
-
+val send_have : t -> int -> unit
+val send_have_bitfield : t -> Bits.t -> unit
+val send_request : t -> int * int * int -> unit
+  
 val send_reject_meta : t -> int -> unit
 val send_meta_piece : t -> int -> int * string -> unit
 
 val send_block : t -> int -> int -> string -> unit
   
-val request_block : t -> int -> int -> int -> string Lwt.t
-    
-val request_piece : t -> ?block_size:int -> int -> int -> string Lwt.t
-
 val request_meta_piece : t -> int -> unit
+
+val upload_rate : t -> float
+val download_rate : t -> float

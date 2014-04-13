@@ -19,9 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(* let failwith fmt = *)
-(*   Printf.ksprintf failwith fmt *)
-
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -31,12 +28,11 @@ type event =
   | Interested
   | NotInterested
   | Have of int
+  | HaveBitfield of Bits.t
   | BlockRequested of int * int * int
   | BlockReceived of int * int * string
-  | MetaPiece of int * string
-  | BitField of Bits.t
   | Port of int
-  | Finished
+  | Finished of (int * int * int) list
   | AvailableMetadata of int
   | MetaRequested of int
   | GotMetaPiece of int * string
@@ -54,10 +50,6 @@ let default_block_size = kilobyte 16
 
 exception Timeout
 
-(* type request_item = *)
-(*   [ `Block of int * int * int *)
-(*   | `Info of int ] *)
-
 type t = {
   addr : Addr.t;
   sock : Tcp.socket;
@@ -71,15 +63,18 @@ type t = {
   extbits : Bits.t;
   extensions : (string, int) Hashtbl.t;
   
-  requests : ((int * int * int) * string Lwt.u) Lwt_stream.t;
-  act_reqs : ((int * int * int) * string Lwt.u) Seq.t;
-  send_req : (int * int * int) -> string Lwt.t;
+  requests : (int * int * int) Lwt_stream.t;
+  mutable act_reqs : (int * int * int) list;
+  send_req : (int * int * int) -> unit;
   
   msg_queue : Wire.message Lwt_stream.t;
   send : Wire.message -> unit;
   
   mutable handle : (event -> unit) option;
-  mutable have : Bits.t
+  mutable have : Bits.t;
+
+  mutable upload : Rate.t;
+  mutable download : Rate.t
 }
 
 let signal p e =
@@ -135,7 +130,7 @@ let supported_extensions =
 let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
-    signal p (Choked []) (* XXX *)
+    signal p (Choked p.act_reqs)
   end
 
 let got_unchoke p =
@@ -155,41 +150,25 @@ let got_not_interested p =
   end
 
 let got_have_bitfield p b =
-  (* begin match p.info with *)
-  (* | None -> *)
-  (*   p.have <- b *)
-  (* | Some info -> *)
-  (*   Bits.blit b 0 p.have 0 (Array.length info.Info.hashes) *)
-  (* end; *)
-  for i = 0 to Bits.length b - 1 do
-    if Bits.is_set b i then signal p (Have i)
-  done
+  p.have <- b;
+  signal p (HaveBitfield b)
 
 let got_have p idx =
-  (* begin match p.info with *)
-  (* | None -> *)
-  (*   if idx >= Bits.length p.have then begin *)
-  (*     let bits = Bits.create (2 * (Bits.length p.have)) in *)
-  (*     Bits.blit p.have 0 bits 0 (Bits.length p.have); *)
-  (*     p.have <- bits *)
-  (*   end; *)
-  (*   Bits.set p.have idx *)
-  (* | Some _ -> *)
-  (*   Bits.set p.have idx *)
-  (* end; *)
+  if idx >= Bits.length p.have then begin
+    let bits = Bits.create (2 * (Bits.length p.have)) in
+    Bits.blit p.have 0 bits 0 (Bits.length p.have);
+    p.have <- bits
+  end;
+  Bits.set p.have idx;
   signal p (Have idx)
 
 let got_cancel p _ _ _ =
   ()
 
 let got_piece p idx off s =
-  try
-    let wake = Seq.remove_assoc p.act_reqs (idx, off, String.length s) in
-    Lwt.wakeup wake s;
-    signal p (BlockReceived (idx, off, s))
-  with
-  | Not_found ->
-    failwith "unrequested block"
+  p.act_reqs <- List.filter (fun (i, o, l) -> (i, o, l) <> (idx, off, String.length s)) p.act_reqs;
+  Rate.add p.download (String.length s);
+  signal p (BlockReceived (idx, off, s))
 
 let got_extended_handshake p bc =
   let m =
@@ -210,7 +189,6 @@ let got_request p idx off len =
   signal p (BlockRequested (idx, off, len))
 
 let got_message p m =
-  (* Trace.recv self#sprint (Wire.sprint m); *)
   match m with
   | Wire.KEEP_ALIVE -> ()
   | Wire.CHOKE -> got_choke p
@@ -251,16 +229,11 @@ let reader_loop p =
   in
   loop (got_message p)
 
+let send_request p (i, ofs, len) =
+  p.send (Wire.REQUEST (i, ofs, len))
+
 let writer_loop p =
   let keepalive_msg = Put.run (Wire.put Wire.KEEP_ALIVE) in
-  let rec loop () =
-    Lwt_stream.next p.requests >>= fun r ->
-    Seq.push p.act_reqs r >>= fun () ->
-    let ((idx, off, len), _) = r in
-    p.send (Wire.REQUEST (idx, off, len));
-    loop ()
-  in
-  ignore (loop ());
   let rec loop () =
     Lwt.pick [
       (Lwt_unix.sleep (float keepalive_delay) >>= fun () -> Lwt.return `Timeout);
@@ -275,6 +248,7 @@ let writer_loop p =
     | `Ready m ->
       Wire.put m |> Put.run |> Tcp.write p.sock >>= fun () ->
       Log.debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
+      (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
       loop ()
   in
   loop ()
@@ -282,11 +256,7 @@ let writer_loop p =
 let create sock id =
   let w, wake = Lwt.wait () in
   let requests, send_req = Lwt_stream.create () in
-  let send_req x =
-    let t, w = Lwt.wait () in
-    send_req (Some (x, w));
-    t
-  in
+  let send_req x = send_req (Some x) in
   let msg_queue, send = Lwt_stream.create () in
   let send x = send (Some x) in
   let p =
@@ -296,12 +266,14 @@ let create sock id =
       should_stop = w; extbits = Bits.create (8 * 8);
       extensions = Hashtbl.create 17;
       requests;
-      act_reqs = Seq.create ~capacity:request_pipeline_max ();
+      act_reqs = [];
       send_req;
       msg_queue;
       send;
       handle = None;
-      have = Bits.create 0 }
+      have = Bits.create 0;
+      download = Rate.create ();
+      upload = Rate.create () }
   in
   p
 
@@ -315,10 +287,10 @@ let start p h =
            (Addr.to_string p.addr) (Word160.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
-    signal p Finished;
+    signal p (Finished p.act_reqs);
     Lwt.return ()
   in
-  run_loop () |> ignore
+  Lwt.async run_loop
 
 let id p =
   p.id
@@ -341,7 +313,7 @@ let peer_choking p =
 let peer_interested p =
   p.peer_interested
 
-let has_piece p ~idx =
+let has_piece p idx =
   Bits.is_set p.have idx
 
 let have p =
@@ -371,42 +343,29 @@ let send_not_interested p =
     p.send Wire.NOT_INTERESTED
   end
 
-let send_have p ~idx =
+let send_have p idx =
   p.send (Wire.HAVE idx)
 
-let request_count seq =
-  let n = ref 0 in
-  Lwt_sequence.iter_l (function
-      | `Block _, _ -> incr n
-      | `Info _, _ -> ()) seq;
-  !n
-
-let info_request_count seq =
-  let n = ref 0 in
-  Lwt_sequence.iter_l (function
-      | `Block _, _ -> ()
-      | `Info _, _ -> incr n) seq;
-  !n
-
-let request_block p idx off len =
-  assert (idx >= 0 && off >= 0 && len >= 0);
-  p.send_req (idx, off, len)
+let send_have_bitfield p bits =
+  for i = 0 to Bits.length bits - 1 do
+    if Bits.is_set bits i then p.send (Wire.HAVE i)
+  done
   
-let request_piece p ?block_size:(blk_size=default_block_size) idx len =
-  assert (idx >= 0 && len >= 0 && blk_size >= 0);
-  let s = String.create len in
-  let rec loop ws off =
-    if off >= len then
-      Lwt.join ws
-    else
-      let sz = min blk_size (len - off) in
-      let w =
-        request_block p idx off sz >|= fun buf ->
-        String.blit buf 0 s off sz
-      in
-      loop (w :: ws) (off + sz)
-  in
-  loop [] 0 >|= fun () -> s
+(* let request_piece p ?block_size:(blk_size=default_block_size) idx len = *)
+(*   assert (idx >= 0 && len >= 0 && blk_size >= 0); *)
+(*   let s = String.create len in *)
+(*   let rec loop ws off = *)
+(*     if off >= len then *)
+(*       Lwt.join ws *)
+(*     else *)
+(*       let sz = min blk_size (len - off) in *)
+(*       let w = *)
+(*         request_block p idx off sz >|= fun buf -> *)
+(*         String.blit buf 0 s off sz *)
+(*       in *)
+(*       loop (w :: ws) (off + sz) *)
+(*   in *)
+(*   loop [] 0 >|= fun () -> s *)
 
 let request_meta_piece p idx =
   assert (idx >= 0);
@@ -444,3 +403,5 @@ let request_meta_piece p idx =
 (*   loop [] 0 >>= fun () -> *)
 (*   Lwt.return s *)
 
+let upload_rate p = Rate.get p.upload
+let download_rate p = Rate.get p.download

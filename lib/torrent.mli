@@ -19,26 +19,27 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(* type event = *)
+(*   | PieceVerified of int *)
+(*   | Loaded of int * int * Bits.t *)
+(*   | Completed *)
+                            
 type t
 
 val create : Meta.t -> t
-val update : t -> unit Lwt.t
+val update : t -> (int * int * Bits.t) Lwt.t
 val get_block : t -> int -> int -> int -> string Lwt.t
-(* val got_piece : t -> int -> string -> bool *)
-val peer_ready : t -> Peer.t -> unit
-val did_request : t -> int -> unit
-(* val request_lost : t -> int -> unit *)
+val request_block : t -> (int -> bool) -> (int * int * int) option
+val lost_request : t -> int * int * int -> unit
 val is_complete : t -> bool
-val got_block : t -> int -> int -> int -> bool
-(* val get_block : t -> int -> int -> int -> string Lwt.t *)
+val got_block : t -> int -> int -> string -> [ `Verified | `Failed | `Continue ] Lwt.t
 val down : t -> int64
 val up : t -> int64
 val amount_left : t -> int64
 val numgot : t -> int
 val have : t -> Bits.t
 val has_piece : t -> int -> bool
-val next : t -> Bits.t -> int option
-val got_have : t -> int -> unit
-val got_bitfield : t -> Bits.t -> unit
+val got_have : t -> int -> bool
+val got_bitfield : t -> Bits.t -> bool
 val lost_have : t -> int -> unit
 val lost_bitfield : t -> Bits.t -> unit

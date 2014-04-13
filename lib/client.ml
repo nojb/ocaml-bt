@@ -24,15 +24,19 @@ let (>|=) = Lwt.(>|=)
 
 module H = Word160
 
-let max_num_peers = 60
+let max_num_peers = 30
 let max_connections = 5
 let listen_ports = [50000]
+let max_requests = 5
 
 type event =
   | IncomingPeer of Tcp.socket * Addr.t
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
   | GotMetadata of Meta.t
+  | TorrentLoaded of int * int * Bits.t
+  | PieceVerified of int
+  | TorrentCompleted
 
 type metadata_state =
   | Nothing
@@ -42,6 +46,7 @@ type metadata_state =
 type stage =
   | NoMeta
   | PartialMeta of Meta.partial
+  | Loading of Meta.t * Torrent.t
   | Leeching of Meta.t * Torrent.t
   | Seeding of Meta.t * Torrent.t
 
@@ -54,8 +59,6 @@ type t = {
   chan : event Lwt_stream.t;
   push : event -> unit;
   mutable stage : stage;
-  (* mutable metadata : metadata_state; *)
-  (* mutable download : Download.t option *)
 }
 
 let create mg =
@@ -177,6 +180,7 @@ let roundup n r =
 
 let has_metadata bt =
   match bt.stage with
+  | Loading _
   | Leeching _
   | Seeding _ -> true
   | _ -> false
@@ -185,6 +189,7 @@ let has_partial_metadata bt =
   match bt.stage with
   | NoMeta -> false
   | PartialMeta _
+  | Loading _
   | Leeching _
   | Seeding _ -> true
 
@@ -208,8 +213,19 @@ let handle_available_metadata bt p len =
   | _ ->
     ()
 
+let request_block bt p =
+  match bt.stage with
+  | Leeching (_, t) ->
+    begin match Torrent.request_block t (Peer.has_piece p) with
+    | None ->
+      Peer.send_not_interested p
+    | Some pc ->
+      Peer.send_request p pc
+    end
+  | _ -> ()
+  
 let handle_peer_event bt p = function
-  | Peer.Finished ->
+  | Peer.Finished reqs ->
     Hashtbl.remove bt.peers (Peer.addr p);
     begin match bt.stage with
     | Leeching (_, dl) ->
@@ -218,19 +234,26 @@ let handle_peer_event bt p = function
     end
   | Peer.AvailableMetadata len ->
     handle_available_metadata bt p len
-  | Peer.Unchoked ->
+  | Peer.Choked reqs ->
     begin match bt.stage with
-    | Leeching (_, dl) -> Torrent.peer_ready dl p
+    | Leeching (_, t) -> List.iter (Torrent.lost_request t) reqs
     | _ -> ()
     end
+  | Peer.Unchoked ->
+    Log.info "peer just unchoked us (addr=%s)" (Addr.to_string (Peer.addr p));
+    for i = 1 to max_requests do
+      request_block bt p
+    done
   | Peer.Have i ->
     begin match bt.stage with
-    | Leeching (_, dl) -> Torrent.got_have dl i
+    | Leeching (_, dl) ->
+      if Torrent.got_have dl i then Peer.send_interested p
     | _ -> ()
     end
-  | Peer.BitField b ->
+  | Peer.HaveBitfield b ->
     begin match bt.stage with
-    | Leeching (_, dl) -> Torrent.got_bitfield dl b
+    | Leeching (_, dl) ->
+      if Torrent.got_bitfield dl b then Peer.send_interested p
     | _ -> ()
     end
   | Peer.MetaRequested i ->
@@ -238,6 +261,7 @@ let handle_peer_event bt p = function
     | NoMeta
     | PartialMeta _ ->
       Peer.send_reject_meta p i
+    | Loading (meta, _)
     | Leeching (meta, _)
     | Seeding (meta, _) ->
       Peer.send_meta_piece p i (Meta.length meta, Meta.get_piece meta i)
@@ -265,33 +289,36 @@ let handle_peer_event bt p = function
     | Leeching (_, dl)
     | Seeding (_, dl) ->
       if Torrent.has_piece dl idx then begin
-        let _ =
+        let aux _ =
           Torrent.get_block dl idx off len >|= Peer.send_block p idx off
         in
-        ()
+        Lwt.async aux
       end
     | _ ->
       ()
     end
   | Peer.BlockReceived (idx, off, s) ->
     begin match bt.stage with
-    | Leeching (meta, dl) ->
-      if not (Torrent.has_piece dl idx) then begin
-        assert false
-        (* ignore (Store.write st (Info.absolute_offset meta idx off) s >|= fun () -> *)
-        (*         if Torrent.got_block dl idx off (String.length s) then begin *)
-        (*           (\* if Torrent.verify_piece dl idx then *\) *)
-        (*           (\*   success "piece done" *\) *)
-        (*           (\* else *\) *)
-        (*           (\*   Torrent.forget_piece dl idx; *\) *)
-        (*           (\* if Torrent.missing_pieces dl = 0 then *\) *)
-        (*           Log.success "TORRENT DONE" *)
-        (*         end) *)
-      end
+    | Leeching (meta, t) ->
+      Log.success "received block (idx=%d,off=%d,len=%d)" idx off (String.length s);
+      let aux () =
+        Torrent.got_block t idx off s >|= function
+        | `Verified ->
+          bt.push (PieceVerified idx);
+          if Torrent.is_complete t then bt.push TorrentCompleted
+        | `Failed
+        | `Continue -> ()
+      in
+      Lwt.async aux;
+      request_block bt p
     | _ ->
       ()
     end
-  | _ ->
+  | Peer.Interested ->
+    ()
+  | Peer.NotInterested ->
+    ()
+  | Peer.Port _ ->
     ()
 
 let handle_event bt = function
@@ -299,26 +326,49 @@ let handle_event bt = function
     handle_incoming_peer bt sock addr
   | PeersReceived addrs ->
     Log.success "received %d peers" (List.length addrs);
-    let _ = Lwt_list.iter_p (fun addr ->
+    let aux () = Lwt_list.iter_p (fun addr ->
         Lwt.catch
           (fun () -> handle_received_peer bt addr)
           (fun e ->
              Log.error ~exn:e "connection failed (addr=%s)" (Addr.to_string addr);
              Lwt.return ())) addrs in
-    ()
+    Lwt.async aux
   | PeerEvent (p, e) ->
     handle_peer_event bt p e
-  | GotMetadata info ->
-    let dl = Torrent.create info in
-    (* let _ = *)
-    (*   Torrent.update dl >|= fun () -> *)
-    (*   bt.download <- Some dl; *)
-    (*   Hashtbl.iter (fun _ p -> Torrent.got_bitfield dl (Peer.have p)) bt.peers; *)
-    (*   Hashtbl.iter (fun _ p -> *)
-    (*       if not (Peer.peer_choking p) then Torrent.peer_ready dl p) bt.peers *)
-    (* in *)
-    (** XXX *)
-    ()
+  | GotMetadata meta ->
+    let t = Torrent.create meta in
+    bt.stage <- Loading (meta, t);
+    let aux () =
+      Torrent.update t >|= fun (good, tot, bits) -> bt.push (TorrentLoaded (good, tot, bits))
+    in
+    Lwt.async aux
+  | TorrentLoaded (good, total, bits) ->
+    begin match bt.stage with
+    | Loading (meta, t) ->
+      Log.success "torrent loaded (good=%d,total=%d)" good total;
+      bt.stage <- if Torrent.is_complete t then Seeding (meta, t) else Leeching (meta, t);
+      let wakeup_peer _ p =
+        Peer.send_have_bitfield p bits;
+        if Torrent.got_bitfield t (Peer.have p) then begin
+          Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p));
+          Peer.send_interested p;
+          if not (Peer.peer_choking p) then
+            for i = 1 to max_requests do request_block bt p done
+        end else
+          Peer.send_not_interested p
+      in
+      Hashtbl.iter wakeup_peer bt.peers
+    | _ ->
+      ()
+    end
+  | PieceVerified i ->
+    Log.success "piece verified and written to disk (idx=%d)" i
+  | TorrentCompleted ->
+    Log.success "torrent completed!";
+    begin match bt.stage with
+    | Leeching (meta, t) -> bt.stage <- Seeding (meta, t)
+    | _ -> ()
+    end
 
 let event_loop bt =
   let rec loop () =

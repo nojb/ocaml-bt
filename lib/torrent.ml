@@ -21,16 +21,27 @@
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
-              
+
+(* type event = *)
+(*   | PieceVerified of int *)
+(*   | Loaded of int * int * Bits.t *)
+(*   | Completed *)
+                            
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
 let rarest_first_cutoff = 1
 
+type active_piece = {
+  index : int;
+  blocks : [ `InProgress of int | `Done ] array;
+  length : int;
+  mutable missing : int
+}
+
 type t = {
   meta : Meta.t;
   store : Store.t;
-  scrambled : int array;
-  requested : Bits.t;
+  mutable active : (int * active_piece) list;
   completed : Bits.t;
   mutable up : int64;
   mutable down : int64;
@@ -38,18 +49,100 @@ type t = {
   mutable rarity : Histo.t
 }
 
+let standard_block_length = 16 * 1024
+
+let choose_block_in_piece ~endgame t a =
+  if endgame then
+    let rec loop min i =
+      if i >= Array.length a.blocks then
+        match min with
+        | None -> None
+        | Some (i, _) -> Some i
+      else match a.blocks.(i) with
+        | `InProgress n ->
+          begin match min with
+          | Some (_, j) ->
+            if j > n then loop (Some (i, n)) (i+1) else loop min (i+1)
+          | None ->
+            loop (Some (i, n)) (i+1)
+          end
+        | `Done ->
+          loop min (i+1)
+    in
+    match loop None 0 with
+    | Some i ->
+      begin match a.blocks.(i) with
+      | `InProgress n -> a.blocks.(i) <- `InProgress (n+1)
+      | `Done -> assert false
+      end;
+      Some i
+    | None ->
+      None
+  else
+    let rec loop i =
+      if i >= Array.length a.blocks then None
+      else match a.blocks.(i) with
+        | `InProgress 0 -> a.blocks.(i) <- `InProgress 1; Some i
+        | _ -> loop (i+1)
+    in
+    loop 0
+
+let request_block_in_piece ~endgame t a =
+  match choose_block_in_piece ~endgame t a with
+  | Some i ->
+    let start = i * standard_block_length in
+    Some (a.index, start, min standard_block_length (a.length - start))
+  | None ->
+    None
+
+let request_piece t have =
+  let is_interesting i =
+    have i && not (Bits.is_set t.completed i) && not (List.mem_assoc i t.active)
+  in
+  let r = Histo.pick is_interesting t.rarity in
+  if List.length r > 0 then
+    let i = List.nth r (Random.int (List.length r)) in
+    Some i
+  else
+    None
+  
+let request_block t have =
+  let rec loop ~endgame = function
+    | [] ->
+      None
+    | (i, a) :: act ->
+      if have i then
+        match request_block_in_piece ~endgame t a with
+        | None -> loop ~endgame act
+        | Some _ as b -> b
+      else
+        loop ~endgame act
+  in
+  match loop ~endgame:false t.active with
+  | None ->
+    begin match request_piece t have with
+    | None ->
+      loop ~endgame:true t.active
+    | Some pc ->
+      let len = Meta.piece_length t.meta pc in
+      let nblocks = Meta.block_count t.meta pc in
+      let a =
+        {index = pc; blocks = Array.create nblocks (`InProgress 0); length = len; missing = nblocks}
+      in
+      t.active <- (pc, a) :: t.active;
+      request_block_in_piece ~endgame:false t a
+    end
+  | Some _ as b -> b
+
 let create meta =
   let npieces = Array.length meta.Meta.hashes in
-  let scrambled = Array.init npieces (fun i -> i) in
-  Util.shuffle_array scrambled;
   { meta; store = Store.create ();
-    scrambled;
-    requested = Bits.create npieces;
+    active = [];
     completed = Bits.create npieces;
     up = 0L; down = 0L;
     amount_left = meta.Meta.total_length;
     rarity = Histo.empty }
-
+    
 let update dl =
   Lwt_list.iter_s
     (fun fi -> Store.add_file dl.store fi.Meta.file_path fi.Meta.file_size)
@@ -76,24 +169,31 @@ let update dl =
           loop acc (i+1)
   in
   let start_time = Unix.gettimeofday () in
-  loop dl.meta.Meta.total_length 0 >|= fun amount_left ->
+  loop dl.meta.Meta.total_length 0 >>= fun amount_left ->
   let end_time = Unix.gettimeofday () in
   Log.success
-    "torrent initialisation complete (good=%d,bad=%d,left=%Ld,secs=%.0f)"
+    "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
     (Bits.count dl.completed) numpieces amount_left (end_time -. start_time);
-  dl.amount_left <- amount_left
+  dl.amount_left <- amount_left;
+  Lwt.return (Bits.count dl.completed, numpieces, dl.completed)
 
 let get_block t i ofs len =
-  Store.read t.store (Meta.absolute_offset t.meta i ofs) len
+  Store.read t.store (Meta.block_offset t.meta i ofs) len
   
 let got_have self piece =
-  if not (Bits.is_set self.completed piece) then
-    self.rarity <- Histo.add piece self.rarity
+  if not (Bits.is_set self.completed piece) then begin
+    self.rarity <- Histo.add piece self.rarity;
+    true
+  end else
+    false
 
 let got_bitfield self b =
-  for i = 0 to Bits.length b - 1 do
-    if Bits.is_set b i then got_have self i
-  done
+  let rec loop interested i =
+    if i >= Bits.length b then interested
+    else if Bits.is_set b i then loop (got_have self i) (i+1)
+    else loop interested (i+1)
+  in
+  loop false 0
  
 let lost_have self piece =
   if not (Bits.is_set self.completed piece) then
@@ -104,124 +204,52 @@ let lost_bitfield self b =
     if Bits.is_set b i then lost_have self i
   done
 
-let request_lost self i =
-  if not (Bits.is_set self.completed i) then
-    Bits.unset self.requested i
-        
-(* let got_piece self i s = *)
-(*   assert (String.length s = Meta.piece_length self.meta i); *)
-(*   if Word160.digest_of_string s |> Word160.equal self.meta.Meta.hashes.(i) then begin *)
-(*     let o = Meta.piece_offset self.meta i in *)
-(*     Store.write self.store o s |> ignore; (\* FIXME *\) *)
-(*     self.amount_left <- Int64.(sub self.amount_left (of_int (String.length s))); *)
-(*     self.rarity <- H.remove_all i self.rarity; *)
-(*     Bits.unset self.requested i; *)
-(*     Bits.set self.completed i;  *)
-(*     Trace.metaf "Piece #%d verified and written to disk" i; *)
-(*     true *)
-(*   end *)
-(*   else begin *)
-(*     Bits.unset self.requested i; *)
-(*     Trace.metaf "Piece #%d failed hashcheck" i; *)
-(*     false *)
-(*   end *)
-
-let next self have =
-  let is_interesting i =
-    Bits.is_set have i && not (Bits.is_set self.completed i) &&
-    not (Bits.is_set self.requested i)
-  in
-  let r = Histo.pick is_interesting self.rarity in
-  if List.length r > 0 then
-    let i = List.nth r (Random.int (List.length r)) in
-    Some i
-  else
-    None
+let lost_request t (i, ofs, len) =
+  try
+    let a = List.assoc i t.active in
+    let n = ofs / standard_block_length in
+    match a.blocks.(n) with
+    | `InProgress n -> a.blocks.(n) <- `InProgress (max 0 (n-1))
+    | `Done -> ()
+  with
+  | Not_found -> ()
 
 let got_block t idx off s =
-  assert false
-
-let rec peer_ready dl p =
-  Log.info "looking a piece for peer to download (addr=%s,id=%s)"
-    (Addr.to_string (Peer.addr p)) (Word160.to_hex_short (Peer.id p));
-  let idx = next dl (Peer.have p) in
-  let aux idx =
-    Peer.request_piece p idx (Meta.piece_length dl.meta idx) >|= fun s ->
-    if Word160.digest_of_string s |> Word160.equal dl.meta.Meta.hashes.(idx) then begin
-      let o = Meta.piece_offset dl.meta idx in
-      Store.write dl.store o s |> ignore; (* FIXME *)
-      dl.amount_left <- Int64.(sub dl.amount_left (of_int (String.length s)));
-      dl.rarity <- Histo.remove_all idx dl.rarity;
-      Bits.unset dl.requested idx;
-      Bits.set dl.completed idx;
-      Log.success "piece verified and written to disk (idx=%d)" idx
-    end
-    else begin
-      Bits.unset dl.requested idx;
-      Log.error "piece failed hashcheck (idx=%d)" idx
-    end;
-    peer_ready dl p
-  in
-  match idx with
-  | Some idx -> Lwt.async (fun () -> aux idx)
-  | None -> ()
+  if not (Bits.is_set t.completed idx) then begin
+    let a = List.assoc idx t.active in
+    let n = off / standard_block_length in
+    match a.blocks.(n) with
+    | `InProgress _ ->
+      Store.write t.store (Meta.block_offset t.meta idx off) s >>= fun () ->
+      a.blocks.(n) <- `Done;
+      a.missing <- a.missing - 1;
+      if a.missing <= 0 then begin
+        Store.read t.store (Meta.piece_offset t.meta idx) a.length >>= fun s ->
+        if Word160.digest_of_string s = t.meta.Meta.hashes.(idx) then begin
+          Log.success "piece verified (idx=%d)" idx;
+          t.active <- List.remove_assoc idx t.active;
+          t.rarity <- Histo.remove_all idx t.rarity;
+          t.amount_left <- Int64.(sub t.amount_left (of_int a.length));
+          Bits.set t.completed idx;
+          Lwt.return `Verified
+          (* signal t (PieceVerified idx); *)
+        end else begin
+          t.active <- List.remove_assoc idx t.active;
+          Log.error "piece failed hashcheck (idx=%d)" idx;
+          Lwt.return `Failed
+        end
+      end else begin
+        Lwt.return `Continue
+      end
+    | `Done ->
+      Log.info "received a block that we already have";
+      Lwt.return `Continue
+  end else
+    Lwt.return `Verified
   
-let did_request self i =
-  if not (Bits.is_set self.completed i) then
-    Bits.set self.requested i
-
-  (* (\* FIXME end-game *\) *)
-  (* if Bits.count interesting > 0 then *)
-  (*   let r = H.pick (Bits.is_set have) self.rarity in *)
-  (*   if List.length r > 0 then *)
-  (* let rec loop i = *)
-  (*   if i >= Bits.length self.requested then None *)
-  (*   else *)
-  (*   if Bits.is_set self.requested i && have i then Some i *)
-  (*   else loop (i+1) *)
-  (* in *)
-  (* match loop 0 with *)
-  (* | Some i -> *)
-  (*   Trace.metaf "Picker: next: found %d" i; *)
-  (*   Some i *)
-  (* | None -> *)
-  (*   Trace.metaf "Picker: did not find in the requested set"; *)
-  (*   if Bits.count self.completed < rarest_first_cutoff then *)
-  (*     let rec loop i = *)
-  (*       if i >= Bits.length self.completed then None *)
-  (*       else if have self.scrambled.(i) then Some i *)
-  (*       else loop (i+1) *)
-  (*     in *)
-  (*     loop 0 *)
-  (*   else *)
-  (*     let r = H.pick have self.rarity in *)
-  (*     if List.length r > 0 then *)
-  (*       Some (Random.int (List.length r) |> List.nth r) *)
-  (*     else *)
-  (*       None *)
-
 let is_complete self =
   Bits.count self.completed = Bits.length self.completed
     
-(* let get_block self i o l = *)
-(*   if i < 0 || i >= Array.length self.hashes || o < 0 || *)
-(*      l < 0 || o + l > Meta.piece_length self.meta i then *)
-(*     invalid_arg_lwt "Torrent.get_block" *)
-(*   else *)
-(*     if Bits.is_set self.completed i then *)
-(*       let o = Int64.add (Meta.piece_offset self.meta i) (Int64.of_int o) in *)
-(*       Store.read self.store o l *)
-(*     else *)
-(*       invalid_arg_lwt "Torrent.get_block" *)
-
-
-(* match self.pieces.(i) with *)
-(* | DONE -> *)
-    (*   let o = Int64.(mul (of_int i) (of_int self.piece_size) |> add (of_int o)) in *)
-    (*   Store.read self.store o l *)
-    (* | _ -> *)
-    (*   invalid_arg_lwt "Torrent.get_block" *)
-
 let down self =
   self.down
 

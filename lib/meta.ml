@@ -156,7 +156,12 @@ let pp fmt info =
   Format.fprintf fmt "            files: @[<v>%a@]" pp_files info.files;
   Format.fprintf fmt "@]@."
 
-let absolute_offset meta idx off =
+let block_size = 16 * 1024
+
+let block_count meta i =
+  roundup (piece_length meta i) block_size / block_size
+
+let block_offset meta idx off =
   Int64.add (piece_offset meta idx) (Int64.of_int off)
 
 type partial = {

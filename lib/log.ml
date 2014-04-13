@@ -11,7 +11,7 @@ type level =
  | WARNING
  | ERROR
 
-let current_level = ref DEBUG
+let current_level = ref INFO
 
 type color =
   | NONE
