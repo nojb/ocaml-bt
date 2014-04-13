@@ -4,34 +4,70 @@ let start_time = ref (now ())
 
 let reset_timer () = start_time := now ()
 
+type level = 
+ | DEBUG
+ | INFO
+ | NOTICE
+ | WARNING
+ | ERROR
+
+let current_level = ref DEBUG
+
 type color =
-  | Red
-  | Yellow
-  | Green
-  | None
+  | NONE
+  | RED
+  | GREEN
+  | YELLOW
+  | BLUE
+  | MAGENTA
+  | CYAN
+  | WHITE
 
 let colorcode = function
-  | Red -> "\027[31;1m"
-  | Yellow -> "\027[33;1m"
-  | Green -> "\027[32m"
-  | None -> ""
+  | NONE -> ""
+  | RED -> "\027[31m"
+  | GREEN -> "\027[32m"
+  | YELLOW -> "\027[33m"
+  | BLUE -> "\027[34m"
+  | MAGENTA -> "\027[35m"
+  | CYAN -> "\027[36m"
+  | WHITE -> "\027[37m"
 
-let log title color ?sec ?exn fmt =
-  let color = color in (* if !Sys.interactive then color else None in  *)
-  Printf.ksprintf (fun msg ->
-      Printf.eprintf "%s[%.2f] %s%s: %s%s\n%!\027[0m"
-        (colorcode color)
-        (now () -. !start_time)
-        title
-        (match sec with None -> "" | Some s -> "(" ^ s ^ ")")
-        msg
-        (match exn with None -> "" | Some exn -> ": " ^ (Printexc.to_string exn))) fmt
+let string_of_level = function
+  | DEBUG -> "debug"
+  | INFO -> "info"
+  | NOTICE -> "notice"
+  | WARNING -> "warning"
+  | ERROR -> "error"
+
+let color_of_level = function
+  | DEBUG -> CYAN
+  | INFO -> WHITE
+  | NOTICE -> GREEN
+  | WARNING -> YELLOW
+  | ERROR -> RED
+
+let log level ?exn fmt =
+  let title = string_of_level level in
+  let color = if Unix.isatty Unix.stderr then color_of_level level else NONE in
+  if level >= !current_level then
+    Format.kfprintf (fun fmt ->
+        Printf.eprintf "\027[34m[%.3f]\027[0m %s%s\027[0m %s%s\n%!"
+          (now () -. !start_time)
+          (colorcode color)
+          ("(" ^ title ^ ")")
+          (Format.flush_str_formatter ())
+          (match exn with None -> "" | Some exn -> ": " ^ (Printexc.to_string exn)))
+      Format.str_formatter fmt
+  else
+    Format.ikfprintf (fun _ -> ()) Format.str_formatter fmt
     
-let error ?sec ?exn fmt = log "error" Red ?sec ?exn fmt
+let error ?exn fmt = log ERROR ?exn fmt
 
-let info ?sec ?exn fmt = log "info" None ?sec ?exn fmt
+let info ?exn fmt = log INFO ?exn fmt
 
-let warning ?sec ?exn fmt = log "warning" Yellow ?sec ?exn fmt
+let warning ?exn fmt = log WARNING ?exn fmt
 
-let success ?sec ?exn fmt = log "success" Green ?sec ?exn fmt
+let success ?exn fmt = log NOTICE ?exn fmt
     
+let debug ?exn fmt = log DEBUG ?exn fmt

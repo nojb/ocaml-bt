@@ -21,13 +21,15 @@
 
 type t
 
-val create : Info.t -> t
+val create : Meta.t -> t
 val update : t -> unit Lwt.t
+val get_block : t -> int -> int -> int -> string Lwt.t
 (* val got_piece : t -> int -> string -> bool *)
 val peer_ready : t -> Peer.t -> unit
 val did_request : t -> int -> unit
 (* val request_lost : t -> int -> unit *)
 val is_complete : t -> bool
+val got_block : t -> int -> int -> int -> bool
 (* val get_block : t -> int -> int -> int -> string Lwt.t *)
 val down : t -> int64
 val up : t -> int64

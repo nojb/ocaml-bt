@@ -22,18 +22,21 @@
 type t
 
 type event =
-  [ `Choked of (int * int * int) list
-  | `Unchoked
-  | `Interested
-  | `NotInterested
-  | `Have of int
-  | `Request of int * int * int
-  | `Piece of int * int * string
-  | `MetaPiece of int * string
-  | `BitField of Bits.t
-  | `Port of int
-  | `Finished
-  | `AvailableMetadata of int ]
+  | Choked of (int * int * int) list
+  | Unchoked
+  | Interested
+  | NotInterested
+  | Have of int
+  | BlockRequested of int * int * int
+  | BlockReceived of int * int * string
+  | MetaPiece of int * string
+  | BitField of Bits.t
+  | Port of int
+  | Finished
+  | AvailableMetadata of int
+  | MetaRequested of int
+  | GotMetaPiece of int * string
+  | RejectMetaPiece of int
 
 val create : Tcp.socket -> Word160.t -> t
 
@@ -55,17 +58,14 @@ val send_unchoke : t -> unit
 val send_interested : t -> unit
 val send_not_interested : t -> unit
 val send_have : t -> idx:int -> unit
+
+val send_reject_meta : t -> int -> unit
+val send_meta_piece : t -> int -> int * string -> unit
+
+val send_block : t -> int -> int -> string -> unit
   
 val request_block : t -> int -> int -> int -> string Lwt.t
     
 val request_piece : t -> ?block_size:int -> int -> int -> string Lwt.t
 
-val request_meta_piece : t -> int -> string Lwt.t
-(* val request_info : t -> string Lwt.t *)
-
-val set_metadata : t -> Info.t -> unit
-    
-val wait_ready : t -> unit Lwt.t
-
-(* val has_fast_ext : t -> bool *)
-(* val has_lt_ext : t -> bool *)
+val request_meta_piece : t -> int -> unit

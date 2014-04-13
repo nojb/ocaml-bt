@@ -1,19 +1,19 @@
 # OASIS_START
-# DO NOT EDIT (digest: 91401eaeb63e3e77f3401ff12fef7ef2)
+# DO NOT EDIT (digest: 0cc47df556be30a1707c75a5a1ad556a)
 Bcode
 Get
 Put
 Word160
 Bits
 Histo
-Info
+Meta
 Magnet
 Peer
 Store
 Tracker
 Util
 Wire
-Download
+Torrent
 Client
 Rate
 Addr

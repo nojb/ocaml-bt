@@ -199,6 +199,17 @@ let get len : message Get.t =
   else
     Get.(BE.uint8 >>= get' len)
 
+let memo_get =
+  let h = Hashtbl.create 17 in
+  fun len ->
+    try Hashtbl.find h len
+    with Not_found ->
+      let g = get len in
+      Hashtbl.add h len g;
+      g
+
+let get = memo_get
+
 (* let read ic = *)
 (*   Lwt_io.BE.read_int ic >>= fun len -> *)
 (*   read_exactly ic len >|= Get.run (get len) *)
@@ -219,7 +230,7 @@ let get len : message Get.t =
 (*   read_exactly fd 4 >>= fun s -> *)
 (*   Get.run Get.BE.int32 s *)
 
-let read_exactly = Util.read_exactly
+(* let read_exactly = Util.read_exactly *)
 
 let read sock =
   Tcp.read sock 4 >|= Get.run Get.BE.int >>= fun len ->

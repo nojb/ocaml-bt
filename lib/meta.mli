@@ -19,3 +19,13 @@ val length : t -> int
 val piece_length : t -> int -> int
 val piece_offset : t -> int -> int64
 val pp : Format.formatter -> t -> unit
+val absolute_offset : t -> int -> int -> int64
+
+type partial
+
+val create_partial : Word160.t -> int -> partial
+val add_piece : partial -> int -> string -> bool
+val pick_missing : partial -> int option
+val verify : partial -> t option
+val is_complete : partial -> bool
+  

@@ -16,8 +16,8 @@ Library bt
   Pack: true
   Install: true
   FindlibName: bt
-  Modules: Bcode, Get, Put, Word160, Bits, Histo, Info,
-           Magnet, Peer, Store, Tracker, Util, Wire, Download,
+  Modules: Bcode, Get, Put, Word160, Bits, Histo, Meta,
+           Magnet, Peer, Store, Tracker, Util, Wire, Torrent,
            Client, Rate, Addr, Tcp, Log
   BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix, sha, zarith, qcheck
   

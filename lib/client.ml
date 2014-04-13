@@ -28,26 +28,22 @@ let max_num_peers = 60
 let max_connections = 5
 let listen_ports = [50000]
 
-(* let _ = Lwt_log.Section.set_level Lwt_log.Section.main Lwt_log.Debug *)
-
-(* let log ?exn fmt = *)
-(*   Printf.ksprintf (fun msg -> Lwt_log.ign_debug_f ?exn "[client] %s" msg) fmt *)
-
-let error ?exn fmt = Log.error ~sec:"client" ?exn fmt
-let warning ?exn fmt = Log.warning ~sec:"client" ?exn fmt
-let success ?exn fmt = Log.success ~sec:"client" ?exn fmt
-let info ?exn fmt = Log.info ~sec:"client" ?exn fmt
-
 type event =
   | IncomingPeer of Tcp.socket * Addr.t
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
-  | GotMetadata of Info.t
+  | GotMetadata of Meta.t
 
 type metadata_state =
   | Nothing
-  | Partial of string * bool array
-  | Complete of Info.t
+  | Partial of string * bool array * int ref
+  | Complete of Meta.t
+
+type stage =
+  | NoMeta
+  | PartialMeta of Meta.partial
+  | Leeching of Meta.t * Torrent.t
+  | Seeding of Meta.t * Torrent.t
 
 type t = {
   id : H.t;
@@ -57,8 +53,9 @@ type t = {
   connecting : (Addr.t, unit) Hashtbl.t;
   chan : event Lwt_stream.t;
   push : event -> unit;
-  mutable metadata : metadata_state;
-  mutable download : Download.t option
+  mutable stage : stage;
+  (* mutable metadata : metadata_state; *)
+  (* mutable download : Download.t option *)
 }
 
 let create mg =
@@ -72,8 +69,7 @@ let create mg =
     connecting = Hashtbl.create 17;
     chan;
     push;
-    metadata = Nothing;
-    download = None }
+    stage = NoMeta }
 
 exception Cant_listen
 
@@ -85,7 +81,7 @@ let create_server handle =
     | p :: ports ->
       try
         let stop = Tcp.listen sock p handle in
-        info "listening on port %d" p;
+        Log.info "listening on port %d" p;
         p, stop
       with _ -> loop ports
   in
@@ -136,25 +132,25 @@ let add_peer bt sock addr ih id exts =
     if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake p;
     Hashtbl.add bt.peers addr p
   end else begin
-    warning "too many peers; rejecting new peer (addr=%s)" (Addr.to_string addr);
+    Log.warning "too many peers; rejecting new peer (addr=%s)" (Addr.to_string addr);
     Tcp.close sock |> ignore
   end
 
 let handle_incoming_peer bt sock addr =
-  info "incoming peer (addr=%s,present=%b)" (Addr.to_string addr) (Hashtbl.mem bt.peers addr);
+  Log.info "incoming peer (addr=%s,present=%b)" (Addr.to_string addr) (Hashtbl.mem bt.peers addr);
   if not (Hashtbl.mem bt.peers addr) then begin
     Lwt.catch
       (fun () ->
-        read_handshake sock >>= fun (ih, id, exts) ->
-        Tcp.write sock (handshake_message bt.id ih) >|= fun () ->
-        add_peer bt sock addr ih id exts)
+         read_handshake sock >>= fun (ih, id, exts) ->
+         Tcp.write sock (handshake_message bt.id ih) >|= fun () ->
+         add_peer bt sock addr ih id exts)
       (fun e ->
-         error ~exn:e "incoming peer handshake"; Lwt.return ()) |> ignore
+         Log.error ~exn:e "peer handshake failed"; Lwt.return ()) |> ignore
   end else
     Tcp.close sock |> ignore
- 
+
 let handle_received_peer bt addr =
-  info "received peer (addr=%s,present=%b,connecting=%b)"
+  Log.info "received peer (addr=%s,present=%b,connecting=%b)"
     (Addr.to_string addr) (Hashtbl.mem bt.peers addr) (Hashtbl.mem bt.connecting addr);
   if not (Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr) then begin
     Hashtbl.add bt.connecting addr ();
@@ -164,7 +160,7 @@ let handle_received_peer bt addr =
          Tcp.connect sock addr >>= fun () ->
          Tcp.write sock (handshake_message bt.id bt.ih) >>= fun () ->
          read_handshake sock >>= fun (ih, id, exts) ->
-         success "handshake successful (addr=%s,ih=%s,id=%s)"
+         Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
            (Addr.to_string addr) (Word160.to_hex_short ih) (Word160.to_hex_short id);
          add_peer bt sock addr ih id exts;
          Lwt.return ())
@@ -180,122 +176,159 @@ let roundup n r =
   (n + r - 1) / r * r
 
 let has_metadata bt =
-  match bt.metadata with
-  | Nothing
-  | Partial _ -> false
-  | Complete _ -> true
+  match bt.stage with
+  | Leeching _
+  | Seeding _ -> true
+  | _ -> false
 
 let has_partial_metadata bt =
-  match bt.metadata with
-  | Nothing -> false
-  | Partial _
-  | Complete _ -> true
+  match bt.stage with
+  | NoMeta -> false
+  | PartialMeta _
+  | Leeching _
+  | Seeding _ -> true
 
-let handle_available_metadata bt p len =
-  if not (has_partial_metadata bt) then begin
-    let buf = String.create len in
-    let npieces = roundup len info_piece_size / info_piece_size in
-    let have = Array.create npieces false in
-    bt.metadata <- Partial (buf, have);
-    success "received metadata info (len=%d)" len
-  end;
-  begin match bt.metadata with
-    | Nothing -> assert false
-    | Partial (buf, have) ->
-      let rec loop i =
-        if i >= Array.length have || has_metadata bt then
-          Lwt.return ()
-        else if not have.(i) then begin
-          Peer.request_meta_piece p i >>= fun s ->
-          if not have.(i) then begin
-            have.(i) <- true;
-            String.blit s 0 buf (i * info_piece_size) (String.length s)
-          end;
-          loop (i+1)
-        end else
-          loop (i+1)
-      in
-      Lwt.catch
-        (fun () ->
-           loop 0 >|= fun () ->
-           if not (has_metadata bt) then
-             let sha = Word160.digest_of_string buf in
-             if sha = bt.ih then begin
-               let info = Info.create (Get.run Bcode.bdecode buf) in
-               bt.metadata <- Complete info;
-               success "got complete metadata";
-               push_metadata bt info
-             end else begin
-               error "bad metadata data; retrying";
-               bt.metadata <- Nothing
-             end)
-        (fun e -> Lwt.return ()) |> ignore
-    | Complete _ ->
-      ()
-  end
-
-let handle_peer_event bt p ev =
-  match ev with
-  | `Finished ->
-    Hashtbl.remove bt.peers (Peer.addr p);
-    begin match bt.download with
-      | Some dl -> Download.lost_bitfield dl (Peer.have p)
-      | None -> ()
-    end
-  | `AvailableMetadata len ->
-    handle_available_metadata bt p len
-  | `Unchoked ->
-    begin match bt.download with
-      | Some dl -> Download.peer_ready dl p
-      | None -> ()
-    end
-  | `Have i ->
-    begin match bt.download with
-      | Some dl -> Download.got_have dl i
-      | None -> ()
-    end
-  | `BitField b ->
-    begin match bt.download with
-      | Some dl -> Download.got_bitfield dl b
-      | None -> ()
+let request_meta_piece bt (p : Peer.t) =
+  match bt.stage with
+  | PartialMeta meta ->
+    begin match Meta.pick_missing meta with
+    | None -> ()
+    | Some i -> Peer.request_meta_piece p i
     end
   | _ ->
     ()
 
-let event_loop bt =
-  let rec loop () =
-    Lwt_stream.next bt.chan >|= begin function
-    | IncomingPeer (sock, addr) ->
-      handle_incoming_peer bt sock addr
-    | PeersReceived addrs ->
-      success "received %d peers" (List.length addrs);
-      let _ = Lwt_list.iter_p (fun addr ->
-          Lwt.catch
-            (fun () -> handle_received_peer bt addr)
-            (fun e ->
-               error ~exn:e "error while connecting (addr=%s)" (Addr.to_string addr);
-               Lwt.return ())) addrs in
-      ()
-    | PeerEvent (p, ev) ->
-      handle_peer_event bt p ev
-    | GotMetadata info ->
-      let dl = Download.create info in
-      let _ =
-        Download.update dl >|= fun () ->
-        bt.download <- Some dl;
-        Hashtbl.iter (fun _ p -> Download.got_bitfield dl (Peer.have p)) bt.peers;
-        Hashtbl.iter (fun _ p ->
-            if not (Peer.peer_choking p) then Download.peer_ready dl p) bt.peers
-      in
+let handle_available_metadata bt p len =
+  match bt.stage with
+  | NoMeta ->
+    bt.stage <- PartialMeta (Meta.create_partial bt.ih len);
+    let npieces = roundup len info_piece_size / info_piece_size in
+    Log.success "metadata available (len=%d,npieces=%d)" len npieces;
+    request_meta_piece bt p
+  | _ ->
+    ()
+
+let handle_peer_event bt p = function
+  | Peer.Finished ->
+    Hashtbl.remove bt.peers (Peer.addr p);
+    begin match bt.stage with
+    | Leeching (_, dl) ->
+      Torrent.lost_bitfield dl (Peer.have p)
+    | _ -> ()
+    end
+  | Peer.AvailableMetadata len ->
+    handle_available_metadata bt p len
+  | Peer.Unchoked ->
+    begin match bt.stage with
+    | Leeching (_, dl) -> Torrent.peer_ready dl p
+    | _ -> ()
+    end
+  | Peer.Have i ->
+    begin match bt.stage with
+    | Leeching (_, dl) -> Torrent.got_have dl i
+    | _ -> ()
+    end
+  | Peer.BitField b ->
+    begin match bt.stage with
+    | Leeching (_, dl) -> Torrent.got_bitfield dl b
+    | _ -> ()
+    end
+  | Peer.MetaRequested i ->
+    begin match bt.stage with
+    | NoMeta
+    | PartialMeta _ ->
+      Peer.send_reject_meta p i
+    | Leeching (meta, _)
+    | Seeding (meta, _) ->
+      Peer.send_meta_piece p i (Meta.length meta, Meta.get_piece meta i)
+    end
+  | Peer.GotMetaPiece (i, s) ->
+    begin match bt.stage with
+    | PartialMeta meta ->
+      if Meta.add_piece meta i s then
+        match Meta.verify meta with
+        | Some meta ->
+          Log.success "got complete metadata";
+          push_metadata bt meta
+        | None ->
+          Log.error "metadata hash check failed";
+          bt.stage <- NoMeta
+      else
+        request_meta_piece bt p
+    | _ ->
       ()
     end
-    >>= loop
+  | Peer.RejectMetaPiece i ->
+    request_meta_piece bt p
+  | Peer.BlockRequested (idx, off, len) ->
+    begin match bt.stage with
+    | Leeching (_, dl)
+    | Seeding (_, dl) ->
+      if Torrent.has_piece dl idx then begin
+        let _ =
+          Torrent.get_block dl idx off len >|= Peer.send_block p idx off
+        in
+        ()
+      end
+    | _ ->
+      ()
+    end
+  | Peer.BlockReceived (idx, off, s) ->
+    begin match bt.stage with
+    | Leeching (meta, dl) ->
+      if not (Torrent.has_piece dl idx) then begin
+        assert false
+        (* ignore (Store.write st (Info.absolute_offset meta idx off) s >|= fun () -> *)
+        (*         if Torrent.got_block dl idx off (String.length s) then begin *)
+        (*           (\* if Torrent.verify_piece dl idx then *\) *)
+        (*           (\*   success "piece done" *\) *)
+        (*           (\* else *\) *)
+        (*           (\*   Torrent.forget_piece dl idx; *\) *)
+        (*           (\* if Torrent.missing_pieces dl = 0 then *\) *)
+        (*           Log.success "TORRENT DONE" *)
+        (*         end) *)
+      end
+    | _ ->
+      ()
+    end
+  | _ ->
+    ()
+
+let handle_event bt = function
+  | IncomingPeer (sock, addr) ->
+    handle_incoming_peer bt sock addr
+  | PeersReceived addrs ->
+    Log.success "received %d peers" (List.length addrs);
+    let _ = Lwt_list.iter_p (fun addr ->
+        Lwt.catch
+          (fun () -> handle_received_peer bt addr)
+          (fun e ->
+             Log.error ~exn:e "connection failed (addr=%s)" (Addr.to_string addr);
+             Lwt.return ())) addrs in
+    ()
+  | PeerEvent (p, e) ->
+    handle_peer_event bt p e
+  | GotMetadata info ->
+    let dl = Torrent.create info in
+    (* let _ = *)
+    (*   Torrent.update dl >|= fun () -> *)
+    (*   bt.download <- Some dl; *)
+    (*   Hashtbl.iter (fun _ p -> Torrent.got_bitfield dl (Peer.have p)) bt.peers; *)
+    (*   Hashtbl.iter (fun _ p -> *)
+    (*       if not (Peer.peer_choking p) then Torrent.peer_ready dl p) bt.peers *)
+    (* in *)
+    (** XXX *)
+    ()
+
+let event_loop bt =
+  let rec loop () =
+    Lwt_stream.next bt.chan >|= handle_event bt >>= loop
   in
   loop ()
 
 let start bt =
   let port, _ = create_server (push_incoming_peer bt) in
-  info "starting";
+  Log.info "starting";
   Lwt_list.iter_p (fun tr ->
       Tracker.query tr bt.ih port bt.id >|= fun resp ->
       push_peers_received bt resp.Tracker.peers) (List.flatten bt.trackers) |> ignore;

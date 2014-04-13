@@ -1,3 +1,5 @@
+let _ = Random.self_init ()
+    
 type file_info = {
   file_path     : string list;
   file_size     : int64
@@ -153,3 +155,54 @@ let pp fmt info =
   Format.fprintf fmt " number of pieces: %d@," (Array.length info.hashes);
   Format.fprintf fmt "            files: @[<v>%a@]" pp_files info.files;
   Format.fprintf fmt "@]@."
+
+let absolute_offset meta idx off =
+  Int64.add (piece_offset meta idx) (Int64.of_int off)
+
+type partial = {
+  ih : Word160.t;
+  length : int;
+  raw : string;
+  pieces : [ `Done | `Pending | `Missing ] array;
+  mutable missing : int
+}
+
+let create_partial ih length =
+  let npieces = roundup length info_piece_size / info_piece_size in
+  { ih; length; raw = String.create length; pieces = Array.create npieces `Missing;
+    missing = npieces }
+
+let not_done p n =
+  match p.pieces.(n) with
+  | `Done -> false
+  | `Pending
+  | `Missing -> true
+
+let add_piece p n s =
+  if not_done p n then begin
+    String.blit s 0 p.raw (n * info_piece_size) (String.length s);
+    p.pieces.(n) <- `Done;
+    p.missing <- p.missing - 1
+  end;
+  p.missing = 0
+
+let pick_missing p =
+  let rec loop pending i =
+    if i >= Array.length p.pieces then
+      if List.length pending = 0 then None
+      else Some (List.nth pending (Random.int (List.length pending)))
+    else match p.pieces.(i) with
+      | `Missing -> p.pieces.(i) <- `Pending; Some i
+      | `Done -> loop pending (i+1)
+      | `Pending -> loop (i :: pending) (i+1)
+  in
+  loop [] 0
+      
+let verify p =
+  if Word160.digest_of_string p.raw = p.ih then
+    Some (create (Get.run Bcode.bdecode p.raw))
+  else
+    None
+
+let is_complete p =
+  p.missing = 0
