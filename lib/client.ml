@@ -24,10 +24,14 @@ let (>|=) = Lwt.(>|=)
 
 module H = Word160
 
-let max_num_peers = 30
+let max_num_peers = 40
 let max_connections = 5
 let listen_ports = [50000]
 let max_requests = 5
+let max_downloaders_unchoke = 4
+let unchoking_frequency = 10
+let optimistic_unchoke_iterations = 3
+let rate_computation_iterations = 2
 
 type event =
   | IncomingPeer of Tcp.socket * Addr.t
@@ -37,11 +41,7 @@ type event =
   | TorrentLoaded of int * int * Bits.t
   | PieceVerified of int
   | TorrentCompleted
-
-type metadata_state =
-  | Nothing
-  | Partial of string * bool array * int ref
-  | Complete of Meta.t
+  | Rechoke of int * int
 
 type stage =
   | NoMeta
@@ -133,7 +133,11 @@ let add_peer bt sock addr ih id exts =
     let p = Peer.create sock id in
     Peer.start p (push_peer_event bt p);
     if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake p;
-    Hashtbl.add bt.peers addr p
+    Hashtbl.add bt.peers addr p;
+    match bt.stage with
+    | Leeching (_, t)
+    | Seeding (_, t) -> Peer.send_have_bitfield p (Torrent.have t)
+    | _ -> ()
   end else begin
     Log.warning "too many peers; rejecting new peer (addr=%s)" (Addr.to_string addr);
     Tcp.close sock |> ignore
@@ -173,6 +177,40 @@ let handle_received_peer bt addr =
     Lwt.return ()
   end
 
+let unchoke_peers bt optimistic =
+  let aux compare_peers =
+    let peers = Hashtbl.fold (fun _ p l -> p :: l) bt.peers [] in
+    let peers = List.sort compare_peers peers in
+    let rec loop choked downloaders = function
+      | [] -> choked
+      | p :: peers ->
+        if downloaders < max_downloaders_unchoke then
+          if Peer.am_choking p then begin
+            Peer.send_unchoke p;
+            if Peer.peer_interested p then loop choked (downloaders + 1) peers
+            else loop choked downloaders peers
+          end else
+            loop choked downloaders peers
+        else begin
+          loop (p :: choked) downloaders peers
+        end
+    in
+    let choked = loop [] 0 peers in
+    if List.length choked > 0 then
+      let r = Random.int (List.length choked) in
+      let i = ref 0 in
+      List.iter (fun p ->
+          if optimistic && !i = r then Peer.send_unchoke p else Peer.send_choke p;
+          incr i) choked
+  in
+  match bt.stage with
+  | Leeching _ ->
+    aux (fun a b -> compare (Peer.download_rate b) (Peer.download_rate a))
+  | Seeding _ ->
+    aux (fun a b -> compare (Peer.upload_rate b) (Peer.upload_rate a))
+  | _ ->
+    ()
+          
 let info_piece_size = 16 * 1024
 
 let roundup n r =
@@ -321,6 +359,28 @@ let handle_peer_event bt p = function
   | Peer.Port _ ->
     ()
 
+let reset_peer_rates bt =
+  Hashtbl.iter (fun _ p -> Peer.reset_rates p) bt.peers
+
+let display_info bt =
+  match bt.stage with
+  | Leeching (_, t)
+  | Seeding (_, t) ->
+    let dl, ul =
+      Hashtbl.fold
+        (fun _ p (dl, ul) -> (dl +. Peer.download_rate p, ul +. Peer.upload_rate p))
+        bt.peers (0.0, 0.0)
+    in
+    Log.info "%d/%d pieces (%d%%) with %d peers at %s/s (dl), %s/s (ul)"
+      (Bits.count (Torrent.have t))
+      (Bits.length (Torrent.have t))
+      (truncate (100.0 *. (float (Bits.count (Torrent.have t))) /. (float (Bits.length (Torrent.have t)))))
+      (Hashtbl.length bt.peers)
+      (Util.string_of_file_size (Int64.of_float dl))
+      (Util.string_of_file_size (Int64.of_float ul))
+  | _ ->
+    ()
+
 let handle_event bt = function
   | IncomingPeer (sock, addr) ->
     handle_incoming_peer bt sock addr
@@ -357,7 +417,8 @@ let handle_event bt = function
         end else
           Peer.send_not_interested p
       in
-      Hashtbl.iter wakeup_peer bt.peers
+      Hashtbl.iter wakeup_peer bt.peers;
+      bt.push (Rechoke (1, 1))
     | _ ->
       ()
     end
@@ -369,6 +430,17 @@ let handle_event bt = function
     | Leeching (meta, t) -> bt.stage <- Seeding (meta, t)
     | _ -> ()
     end
+  | Rechoke (optimistic, rateiter) ->
+    Log.info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter;
+    let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
+    let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
+    unchoke_peers bt (optimistic = 0);
+    display_info bt;
+    if rateiter = 0 then reset_peer_rates bt;
+    Lwt.async
+      (fun () ->
+         Lwt_unix.sleep (float unchoking_frequency) >|= fun () ->
+         bt.push (Rechoke (optimistic, rateiter)))
 
 let event_loop bt =
   let rec loop () =

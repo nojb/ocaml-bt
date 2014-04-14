@@ -319,27 +319,34 @@ let has_piece p idx =
 let have p =
   Bits.copy p.have
 
+let am_choking p =
+  p.am_choking
+
 let send_choke p =
   if not p.am_choking then begin
     p.am_choking <- true;
+    Log.info "choking peer (addr=%s)" (Addr.to_string p.addr);
     p.send Wire.CHOKE
   end
 
 let send_unchoke p =
   if p.am_choking then begin
     p.am_choking <- false;
+    Log.info "unchoking peer (addr=%s)" (Addr.to_string p.addr);
     p.send Wire.UNCHOKE
   end
 
 let send_interested p =
   if not p.am_interested then begin
     p.am_interested <- true;
+    Log.info "interested in peer (addr=%s)" (Addr.to_string p.addr);
     p.send Wire.INTERESTED
   end
 
 let send_not_interested p =
   if p.am_interested then begin
     p.am_interested <- false;
+    Log.info "not interested in peer (addr=%s)" (Addr.to_string p.addr);
     p.send Wire.NOT_INTERESTED
   end
 
@@ -405,3 +412,5 @@ let request_meta_piece p idx =
 
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download
+
+let reset_rates p = Rate.reset p.upload; Rate.reset p.download

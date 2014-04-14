@@ -29,8 +29,7 @@ let now () =
   Unix.gettimeofday ()
 
 let create () =
-  let now = now () in
-  {bytes = 0; reset = now; last = now}
+  {bytes = 0; reset = 0.0; last = 0.0}
 
 let add r count =
   r.bytes <- r.bytes + count;

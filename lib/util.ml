@@ -33,15 +33,6 @@ let string_of_file_size (b : int64) : string =
 (*     Printf.sprintf "%.1f %ciB" *)
 (*       (b' /. step ** (float exp)) ("KMGTPE".[exp-1]) *)
 
-let string_of_sockaddr = function
-  | Unix.ADDR_INET (addr, port) ->
-    Unix.string_of_inet_addr addr ^ ":" ^ string_of_int port
-  | Unix.ADDR_UNIX name ->
-    name
-
-let pp_inet_addr fmt addr =
-  Format.fprintf fmt "%s" (Unix.string_of_inet_addr addr)
-
 let really_read fd buf off len =
   let (>>=) = Lwt.(>>=) in
   assert (off + len <= String.length buf);
@@ -60,16 +51,6 @@ let read_exactly fd n =
   let s = String.create n in
   really_read fd s 0 n >>= fun () ->
   Lwt.return s
-  (* let s = String.create n in *)
-  (* let rec loop o l = *)
-  (*   if l <= 0 then *)
-  (*     Lwt.return s *)
-  (*   else *)
-  (*     Lwt_unix.read fd s o l >>= fun l' -> *)
-  (*     if l' = 0 then Lwt.fail End_of_file *)
-  (*     else loop (o+l') (l-l') *)
-  (* in *)
-(* loop 0 (String.length s) *)
 
 let really_write fd buf off len =
   let (>>=) = Lwt.(>>=) in
@@ -86,16 +67,6 @@ let really_write fd buf off len =
 
 let write_fully fd s =
   really_write fd s 0 (String.length s)
-  (* let (>>=) = Lwt.(>>=) in *)
-  (* let rec loop o l = *)
-  (*   if l <= 0 then *)
-  (*     Lwt.return_unit *)
-  (*   else *)
-  (*     Lwt_unix.write fd s o l >>= fun l' -> *)
-  (*     assert (l' > 0); *)
-  (*     loop (o+l') (l-l') *)
-  (* in *)
-  (* loop 0 (String.length s) *)
 
 let shuffle_array a =
   for i = Array.length a - 1 downto 1 do

@@ -49,6 +49,7 @@ val send_extended_handshake : t -> unit
 
 val peer_choking : t -> bool
 val peer_interested : t -> bool
+val am_choking : t -> bool
 val has_piece : t -> int -> bool
 val have : t -> Bits.t
                   
@@ -69,3 +70,4 @@ val request_meta_piece : t -> int -> unit
 
 val upload_rate : t -> float
 val download_rate : t -> float
+val reset_rates : t -> unit
