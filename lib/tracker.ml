@@ -22,9 +22,6 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let log fmt =
-  Printf.ksprintf (fun msg -> Lwt_log.ign_debug_f "[tracker] %s\n%!" msg) fmt
-              
 let failwith_lwt fmt =
   Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
 
@@ -191,7 +188,7 @@ module Udp = struct
           (fun () -> loop (`Announce_response trans_id))
           (function
             | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-              log "ANNOUNCE UDP announce request timeout after %d s; retrying..."
+              Log.info "ANNOUNCE UDP announce request timeout after %d s; retrying..."
                 (truncate (15.0 *. 2.0 ** float n));
               if n >= 2 then
                 loop (`Connect_request (n+1))
@@ -302,7 +299,7 @@ module Http = struct
 end
 
 let query tr ih ?up ?down ?left ?event port id =
-  log "announcing on %S" (Uri.to_string tr.uri);
+  Log.info "announcing on %S" (Uri.to_string tr.uri);
   match Uri.scheme tr.uri with
   | Some "http" | Some "https" ->
     Http.announce tr ih ?up ?down ?left ?event port id
