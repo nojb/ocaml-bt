@@ -386,12 +386,19 @@ let handle_event bt = function
     handle_incoming_peer bt sock addr
   | PeersReceived addrs ->
     Log.success "received %d peers" (List.length addrs);
-    let aux () = Lwt_list.iter_p (fun addr ->
-        Lwt.catch
-          (fun () -> handle_received_peer bt addr)
-          (fun e ->
-             Log.error ~exn:e "connection failed (addr=%s)" (Addr.to_string addr);
-             Lwt.return ())) addrs in
+    let aux () =
+      let rec loop = function
+        | [] -> Lwt.return ()
+        | addr :: addrs ->
+          ignore (Lwt.catch
+                    (fun () -> handle_received_peer bt addr)
+                    (fun e ->
+                       Log.error ~exn:e "connection failed (addr=%s)" (Addr.to_string addr);
+                       Lwt.return ()));
+          Lwt_unix.sleep 0.5 >>= fun () -> loop addrs
+      in
+      loop addrs
+    in
     Lwt.async aux
   | PeerEvent (p, e) ->
     handle_peer_event bt p e
