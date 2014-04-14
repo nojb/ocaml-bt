@@ -62,7 +62,6 @@ type t = {
 }
 
 let create mg =
-  (* let mg = Magnet.of_string s in *)
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
   { id = H.peer_id "OCTO";

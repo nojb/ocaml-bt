@@ -39,11 +39,7 @@ type event =
   | RejectMetaPiece of int
 
 let kilobyte n = n * 1024
-(* let lo_mark = 5 *)
-(* let hi_mark = 25 *)
 let keepalive_delay = 20 (* FIXME *)
-(* let request_backlog = 5 *)
-(* let rate_update_frequency = 3 *)
 let request_pipeline_max = 5
 let info_piece_size = kilobyte 16
 let default_block_size = kilobyte 16
@@ -59,7 +55,6 @@ type t = {
   mutable peer_choking : bool;
   mutable peer_interested : bool;
   should_stop : unit Lwt.t;
-  (* stop : unit Lwt.t; *)
   extbits : Bits.t;
   extensions : (string, int) Hashtbl.t;
   
@@ -358,22 +353,6 @@ let send_have_bitfield p bits =
     if Bits.is_set bits i then p.send (Wire.HAVE i)
   done
   
-(* let request_piece p ?block_size:(blk_size=default_block_size) idx len = *)
-(*   assert (idx >= 0 && len >= 0 && blk_size >= 0); *)
-(*   let s = String.create len in *)
-(*   let rec loop ws off = *)
-(*     if off >= len then *)
-(*       Lwt.join ws *)
-(*     else *)
-(*       let sz = min blk_size (len - off) in *)
-(*       let w = *)
-(*         request_block p idx off sz >|= fun buf -> *)
-(*         String.blit buf 0 s off sz *)
-(*       in *)
-(*       loop (w :: ws) (off + sz) *)
-(*   in *)
-(*   loop [] 0 >|= fun () -> s *)
-
 let request_meta_piece p idx =
   assert (idx >= 0);
   assert (Hashtbl.mem p.extensions "ut_metadata");
@@ -384,32 +363,6 @@ let request_meta_piece p idx =
   in
   Bcode.bencode (Bcode.BDict d) |> Put.run |> send_extended p id
     
-(* let rec request_meta_piece p idx = *)
-(*   if info_request_count p.requests < pipeline_number then *)
-(*     request_meta_piece0 p idx *)
-(*   else *)
-(*     Lwt_condition.wait p.can_request >>= fun () -> *)
-(*     request_meta_piece p idx *)
-
-(* let request_metadata p metadata_size = *)
-(*   let s = String.create metadata_size in *)
-(*   let rec loop ws idx = *)
-(*     if idx * info_piece_size >= metadata_size then *)
-(*       Lwt.join ws *)
-(*     else *)
-(*     if info_request_count p.requests < pipeline_number then *)
-(*       let w = *)
-(*         request_meta_piece p idx >>= fun buf -> *)
-(*         String.blit buf 0 s (idx * info_piece_size) (String.length buf); *)
-(*         Lwt.return () *)
-(*       in *)
-(*       loop (w :: ws) (idx + 1) *)
-(*     else *)
-(*       Lwt_condition.wait p.can_request >>= fun () -> loop ws idx *)
-(*   in *)
-(*   loop [] 0 >>= fun () -> *)
-(*   Lwt.return s *)
-
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download
 

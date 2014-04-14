@@ -1,3 +1,24 @@
+(* The MIT License (MIT)
+
+   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
+
 let max_udp_packet_size = 4096
 
 type socket = Lwt_unix.file_descr
@@ -25,33 +46,3 @@ let recv =
       | Unix.ADDR_INET x -> x
     in
     String.sub buf 0 n, addr
-
-(* let listen_on ?(queue_size = 3) host port = *)
-(*   let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in *)
-(*   let sa = Unix.ADDR_INET (Unix.inet_addr_any, port) in *)
-(*   let strm, push = Lwt_stream.create () in *)
-(*   let t, w = Lwt.wait () in *)
-(*   let w = lazy (Lwt.wakeup w ()) in *)
-(*   Lwt_unix.bind sock sa; *)
-(*   Lwt_unix.listen sock queue_size; *)
-(*   let buf = String.create max_udp_packet_size in *)
-(*   let rec loop () = *)
-(*     Lwt.pick [ *)
-(*       (Lwt_unix.recvfrom sock buf 0 max_udp_packet_size [] >|= fun (n, sa) -> `Read (n, sa)); *)
-(*       (t >|= fun () -> `Stop) *)
-(*     ] >>= function *)
-(*     | `Read (n, sa) -> *)
-(*       let sa = match sa with *)
-(*         | Unix.ADDR_UNIX _ -> assert false *)
-(*         | Unix.ADDR_INET (host, port) -> (host, port) *)
-(*       in *)
-(*       push (Some (String.sub buf 0 n, sa)); *)
-(*       if n >= max_udp_packet_size then *)
-(*         Printf.eprintf *)
-(*           "UDP: received packet of size >= max_udp_packet_size; some data may have been lost.\n%!"; *)
-(*       loop () *)
-(*     | `Stop -> *)
-(*       Lwt.return () *)
-(*   in *)
-(*   Lwt.catch loop (fun e -> push None; Lwt_log.info_f ~exn:e "UDP: stop listening") |> ignore; *)
-(*   strm, (fun () -> Lazy.force w) *)
