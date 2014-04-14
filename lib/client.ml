@@ -42,6 +42,7 @@ type event =
   | PieceVerified of int
   | TorrentCompleted
   | Rechoke of int * int
+  | Announce of Tracker.Tier.t * Tracker.event option
 
 type stage =
   | NoMeta
@@ -53,25 +54,33 @@ type stage =
 type t = {
   id : H.t;
   ih : H.t;
-  trackers : Tracker.t list list;
+  mutable trackers : Tracker.Tier.t list;
   peers : (Addr.t, Peer.t) Hashtbl.t;
   connecting : (Addr.t, unit) Hashtbl.t;
   chan : event Lwt_stream.t;
   push : event -> unit;
   mutable stage : stage;
+  mutable port : int
 }
 
 let create mg =
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
+  let trackers =
+    List.map (fun tr ->
+        let tier = Tracker.Tier.create () in
+        Tracker.Tier.add_tracker tier tr;
+        tier) mg.Magnet.tr
+  in
   { id = H.peer_id "OCTO";
     ih = mg.Magnet.xt;
-    trackers = List.map (fun tr -> [Tracker.create tr]) mg.Magnet.tr;
+    trackers;
     peers = Hashtbl.create 17;
     connecting = Hashtbl.create 17;
     chan;
     push;
-    stage = NoMeta }
+    stage = NoMeta;
+    port = -1}
 
 exception Cant_listen
 
@@ -447,6 +456,19 @@ let handle_event bt = function
       (fun () ->
          Lwt_unix.sleep (float unchoking_frequency) >|= fun () ->
          bt.push (Rechoke (optimistic, rateiter)))
+  | Announce (tier, event) ->
+    let doit () =
+      Tracker.Tier.query tier bt.ih ?event bt.port bt.id >>= fun resp ->
+      Log.success "announce on %s successful, reannouncing in %d seconds"
+        (Tracker.Tier.show tier) resp.Tracker.interval;
+      push_peers_received bt resp.Tracker.peers;
+      Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
+      bt.push (Announce (tier, None))
+    in
+    let safe_doit () =
+      Lwt.catch doit (fun e -> Log.error ~exn:e "announce failure"; Lwt.return ())
+    in
+    Lwt.async safe_doit
 
 let event_loop bt =
   let rec loop () =
@@ -456,8 +478,7 @@ let event_loop bt =
 
 let start bt =
   let port, _ = create_server (push_incoming_peer bt) in
+  bt.port <- port;
   Log.info "starting";
-  Lwt_list.iter_p (fun tr ->
-      Tracker.query tr bt.ih port bt.id >|= fun resp ->
-      push_peers_received bt resp.Tracker.peers) (List.flatten bt.trackers) |> ignore;
+  List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
   event_loop bt

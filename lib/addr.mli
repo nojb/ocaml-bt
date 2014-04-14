@@ -44,3 +44,5 @@ val to_string_compact : t -> string
 val to_sockaddr : t -> Unix.sockaddr
 
 val of_sockaddr : Unix.sockaddr -> t
+
+module Set : Set.S with type elt = t

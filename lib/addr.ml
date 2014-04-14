@@ -66,3 +66,5 @@ let to_sockaddr (ip, p) =
 let of_sockaddr = function
   | Unix.ADDR_UNIX _ -> failwith "of_sockaddr"
   | Unix.ADDR_INET (ip, p) -> (ip, p)
+
+module Set = Set.Make (struct type t1 = t type t = t1 let compare = compare end)

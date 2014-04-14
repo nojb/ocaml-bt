@@ -47,7 +47,4 @@ val put : message -> Put.t
 val read : Tcp.socket -> message Lwt.t
 (* val write : Lwt_io.output_channel -> message -> unit Lwt.t *)
 
-(* type extension = *)
-(*   | UT_metadata *)
-
 val lt_extension_bit : int

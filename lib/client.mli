@@ -23,6 +23,3 @@ type t
 
 val create : Magnet.t -> t
 val start : t -> unit Lwt.t
-
-(* val download : t -> unit Lwt.t *)
-(* val of_magnet : Magnet.t -> t *)

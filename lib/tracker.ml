@@ -35,12 +35,6 @@ let string_of_event = function
   | STOPPED -> "stopped"
   | COMPLETED -> "completed"
 
-type t = {
-  uri : Uri.t
-}
-
-type tracker = t
-
 type response = {
   peers : Addr.t list;
   leechers : int option;
@@ -208,7 +202,7 @@ module Udp = struct
     loop (`Connect_request 0)
 
   let announce tr ih ?up ?down ?left ?event port id =
-    let url = tr.uri in
+    let url = tr in
     let host = match Uri.host url with
       | None -> failwith "Empty Hostname"
       | Some host -> host
@@ -280,7 +274,7 @@ module Http = struct
       | None -> uri
       | Some x -> Uri.add_query_param' uri (name, f x)
     in
-    let uri = tr.uri in
+    let uri = tr in
     let uri = Uri.add_query_param' uri ("info_hash", Word160.to_bin ih) in
     let uri = Uri.add_query_param' uri ("peer_id", Word160.to_bin id) in
     let uri = add_param_maybe uri "uploaded" Int64.to_string up in
@@ -299,8 +293,8 @@ module Http = struct
 end
 
 let query tr ih ?up ?down ?left ?event port id =
-  Log.info "announcing on %S" (Uri.to_string tr.uri);
-  match Uri.scheme tr.uri with
+  Log.info "announcing on %S" (Uri.to_string tr);
+  match Uri.scheme tr with
   | Some "http" | Some "https" ->
     Http.announce tr ih ?up ?down ?left ?event port id
   | Some "udp" ->
@@ -310,11 +304,8 @@ let query tr ih ?up ?down ?left ?event port id =
   | None ->
     failwith_lwt "missing tracker url scheme"
 
-let create uri =
-  { uri }
-
 module Tier = struct
-  type t = tracker list ref
+  type t = Uri.t list ref
 
   exception No_valid_tracker
 
@@ -342,4 +333,9 @@ module Tier = struct
           loop (tr :: failtrs) rest
     in
     loop [] !tier
+
+  let show tier =
+    match !tier with
+    | [] -> "(no trackers)"
+    | tr :: _ -> Uri.to_string tr
 end

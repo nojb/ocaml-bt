@@ -19,9 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type t
-type tracker = t
-
 type event =
   | STARTED
   | STOPPED
@@ -37,10 +34,8 @@ type response = {
   interval : int
 }
 
-val create : Uri.t -> t
-
 val query :
-  t ->
+  Uri.t ->
   Word160.t ->
   ?up:int64 ->
   ?down:int64 ->
@@ -56,7 +51,8 @@ module Tier : sig
 
   val create : unit -> t
   val shuffle : t -> unit
-  val add_tracker : t -> tracker -> unit
+  val add_tracker : t -> Uri.t -> unit
   val query : t -> Word160.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
     int -> Word160.t -> response Lwt.t
+  val show : t -> string
 end
