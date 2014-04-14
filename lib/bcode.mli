@@ -20,10 +20,10 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type t =
-  | BInt of int64
-  | BString of string
-  | BList of t list
-  | BDict of (string * t) list
+  | Int of int64
+  | String of string
+  | List of t list
+  | Dict of (string * t) list
 
 val find : string -> t -> t
 val to_list : t -> t list

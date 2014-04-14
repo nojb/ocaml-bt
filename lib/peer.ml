@@ -102,8 +102,8 @@ let send_reject_meta p piece =
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let m =
     let open Put in
-    let d = [ "msg_type", Bcode.BInt 2L; "piece", Bcode.BInt (Int64.of_int piece) ] in
-    Bcode.bencode (Bcode.BDict d)
+    let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
+    Bcode.bencode (Bcode.Dict d)
   in
   send_extended p id (Put.run m)
 
@@ -112,10 +112,10 @@ let send_meta_piece p piece (len, s) =
   let m =
     let open Put in
     let d =
-      [ "msg_type", Bcode.BInt 1L;
-        "piece", Bcode.BInt (Int64.of_int piece);
-        "total_size", Bcode.BInt (Int64.of_int len) ] in
-    Bcode.bencode (Bcode.BDict d) >> string s
+      [ "msg_type", Bcode.Int 1L;
+        "piece", Bcode.Int (Int64.of_int piece);
+        "total_size", Bcode.Int (Int64.of_int len) ] in
+    Bcode.bencode (Bcode.Dict d) >> string s
   in
   send_extended p id (Put.run m)
   
@@ -296,9 +296,9 @@ let addr p =
 let send_extended_handshake p =
   let m =
     List.map (fun (id, (name, _)) ->
-        name, Bcode.BInt (Int64.of_int id)) supported_extensions
+        name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
-  let m = Bcode.BDict ["m", Bcode.BDict m] in
+  let m = Bcode.Dict ["m", Bcode.Dict m] in
   let s = Put.run (Bcode.bencode m) in
   send_extended p 0 s
 
@@ -358,10 +358,10 @@ let request_meta_piece p idx =
   assert (Hashtbl.mem p.extensions "ut_metadata");
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let d =
-    [ "msg_type", Bcode.BInt 0L;
-      "piece", Bcode.BInt (Int64.of_int idx) ]
+    [ "msg_type", Bcode.Int 0L;
+      "piece", Bcode.Int (Int64.of_int idx) ]
   in
-  Bcode.bencode (Bcode.BDict d) |> Put.run |> send_extended p id
+  Bcode.bencode (Bcode.Dict d) |> Put.run |> send_extended p id
     
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download

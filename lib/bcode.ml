@@ -20,60 +20,60 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type t =
-  | BInt of int64
-  | BString of string
-  | BList of t list
-  | BDict of (string * t) list
+  | Int of int64
+  | String of string
+  | List of t list
+  | Dict of (string * t) list
 
 let find (s : string) (bc : t) : t =
   match bc with
-  | BDict d ->
+  | Dict d ->
     List.assoc s d
   | _ ->
     invalid_arg "Bcode.find"
 
 let to_list = function
-  | BList l -> l
+  | List l -> l
   | _ -> invalid_arg "Bcode.to_list"
 
 let to_int64 = function
-  | BInt n -> n
+  | Int n -> n
   | _ -> invalid_arg "Bcode.to_int64"
 
 let to_int = function
-  | BInt n ->
+  | Int n ->
     if Int64.(compare n (of_int (to_int n))) = 0 then Int64.to_int n
     else invalid_arg "Bcode.to_int"
   | _ ->
     invalid_arg "Bcode.to_int"
 
 let to_string = function
-  | BString s -> s
+  | String s -> s
   | _ -> invalid_arg "Bcode.to_string"
 
 let to_dict = function
-  | BDict d -> d
+  | Dict d -> d
   | _ -> invalid_arg "Bcode.to_dict"
 
 (** Bcode parsing *)
 
 let bint =
-  Get.(wrapped (char 'i') any_int64 (char 'e') >|= fun n -> BInt n)
+  Get.(wrapped (char 'i') any_int64 (char 'e') >|= fun n -> Int n)
 
 let bstring' =
   Get.(any_int >>= fun n -> char ':' >> string_of_length n)
 
 let bstring =
-  Get.(bstring' >|= fun s -> BString s)
+  Get.(bstring' >|= fun s -> String s)
 
 let rec blist' () =
-  Get.(wrapped (char 'l') (many (fix bitem')) (char 'e') >|= fun l -> BList l)
+  Get.(wrapped (char 'l') (many (fix bitem')) (char 'e') >|= fun l -> List l)
 
 and bdict' () =
   Get.(wrapped
     (char 'd')
     (many (pair bstring' (fix bitem')))
-    (char 'e') >|= fun items -> BDict items)
+    (char 'e') >|= fun items -> Dict items)
 
 and bitem' () =
   Get.(bint <|> fix blist' <|> bstring <|> fix bdict')
@@ -87,13 +87,13 @@ let bdecode = bitem
 let rec bencode item =
   let open Put in
   match item with
-  | BInt n ->
+  | Int n ->
     char 'i' >> string (Int64.to_string n) >> char 'e'
-  | BString s ->
+  | String s ->
     string (string_of_int (String.length s)) >> char ':' >> string s
-  | BList l ->
+  | List l ->
     List.fold_left (fun i x -> i >> bencode x) (char 'l') l >> char 'e'
-  | BDict d ->
+  | Dict d ->
     List.fold_left (fun i (k, v) ->
         i >> string (string_of_int (String.length k)) >> char ':' >> string k >>
         bencode v) (char 'd') d >> char 'e'
