@@ -10,3 +10,4 @@
 - multiple torrents
 - peer manager: global blacklist, keep a list of "extra" peers for when existing connected peers disconnect.
 - encryption
+- Make Wire.PIECE of int * int * bitstring

@@ -228,7 +228,6 @@ let send_request p (i, ofs, len) =
   p.send (Wire.REQUEST (i, ofs, len))
 
 let writer_loop p =
-  let keepalive_msg = Put.run (Wire.put Wire.KEEP_ALIVE) in
   let rec loop () =
     Lwt.pick [
       (Lwt_unix.sleep (float keepalive_delay) >>= fun () -> Lwt.return `Timeout);
@@ -237,11 +236,11 @@ let writer_loop p =
     ]
     >>= function
     | `Timeout ->
-      Tcp.write p.sock keepalive_msg >>= loop
+      Wire.write p.sock Wire.KEEP_ALIVE >>= loop
     | `Stop ->
       Lwt.return_unit
     | `Ready m ->
-      Wire.put m |> Put.run |> Tcp.write p.sock >>= fun () ->
+      Wire.write p.sock m >>= fun () ->
       Log.debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
       (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
       loop ()

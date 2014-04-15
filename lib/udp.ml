@@ -29,20 +29,25 @@ let create_socket () =
   let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
   sock
 
-let send sock s (ip, p) =
-  Lwt_unix.sendto sock s 0 (String.length s) [] (Unix.ADDR_INET (ip, p)) >>= fun n ->
+let send sock s addr =
+  Lwt_unix.sendto sock s 0 (String.length s) [] (Addr.to_sockaddr addr) >>= fun n ->
   if n < String.length s then
-    Lwt_log.debug_f "[udp] send: could not send all the data (requested=%d,sent=%d)"
-      (String.length s) n
-  else
-    Lwt.return ()
+    Log.debug "[udp] send: could not send all the data (requested=%d,sent=%d)"
+      (String.length s) n;
+  Lwt.return ()
+
+let send_bitstring sock (s, off, len) addr =
+  assert (off land 7 = 0 && len land 7 = 0);
+  Lwt_unix.sendto sock s (off lsr 3) (len lsr 3) [] (Addr.to_sockaddr addr) >|= fun n ->
+  if n < String.length s then
+    Log.debug "[udp] send_bitstring: could not send all the data (requested=%d,sent=%d)"
+      len n
 
 let recv =
   let buf = String.create max_udp_packet_size in
   fun sock ->
-    Lwt_unix.recvfrom sock buf 0 max_udp_packet_size [] >>= fun n, iaddr ->
-    let addr = match iaddr with
-      | Unix.ADDR_UNIX _ -> assert false
-      | Unix.ADDR_INET x -> x
-    in
-    String.sub buf 0 n, addr
+    Lwt_unix.recvfrom sock buf 0 max_udp_packet_size [] >|= fun (n, iaddr) ->
+    String.sub buf 0 n, Addr.of_sockaddr iaddr
+
+let set_timeout sock t =
+  Lwt_unix.setsockopt_float sock Lwt_unix.SO_RCVTIMEO t

@@ -38,13 +38,11 @@ type message =
   | ALLOWED of int list
   | EXTENDED of int * string
 
-exception BadMsg of int * int
+(* exception BadMsg of int * int *)
 
 val string_of_message : message -> string
 val sprint : message -> unit -> string
-val get : int -> message Get.t
-val put : message -> Put.t
 val read : Tcp.socket -> message Lwt.t
-(* val write : Lwt_io.output_channel -> message -> unit Lwt.t *)
+val write : Tcp.socket -> message -> unit Lwt.t
 
 val lt_extension_bit : int

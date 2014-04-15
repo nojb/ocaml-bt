@@ -108,85 +108,85 @@ let fix f =
   fun s i ->
     (f ()) s i
 
-module type S = sig
-  val uint8 : int t
-  val sint8 : int t
-  val uint16 : int t
-  val sint16 : int t
-  val int32 : int32 t
-  val int : int t
-  val int64 : int64 t
-end
+(* module type S = sig *)
+(*   val uint8 : int t *)
+(*   val sint8 : int t *)
+(*   val uint16 : int t *)
+(*   val sint16 : int t *)
+(*   val int32 : int32 t *)
+(*   val int : int t *)
+(*   val int64 : int64 t *)
+(* end *)
 
-external swap16 : int -> int     = "%bswap16"
-external swap32 : int32 -> int32 = "%bswap_int32"
-external swap64 : int64 -> int64 = "%bswap_int64"
-external unsafe_get_u8  : string -> int -> int   = "%string_unsafe_get"
-external unsafe_get_u16 : string -> int -> int   = "%caml_string_get16u"
-external unsafe_get_32 : string -> int -> int32 = "%caml_string_get32u"
-external unsafe_get_64 : string -> int -> int64 = "%caml_string_get64u"
+(* external swap16 : int -> int     = "%bswap16" *)
+(* external swap32 : int32 -> int32 = "%bswap_int32" *)
+(* external swap64 : int64 -> int64 = "%bswap_int64" *)
+(* external unsafe_get_u8  : string -> int -> int   = "%string_unsafe_get" *)
+(* external unsafe_get_u16 : string -> int -> int   = "%caml_string_get16u" *)
+(* external unsafe_get_32 : string -> int -> int32 = "%caml_string_get32u" *)
+(* external unsafe_get_64 : string -> int -> int64 = "%caml_string_get64u" *)
 
-let sign8 v =
-  (v lsl (Sys.word_size-9)) asr (Sys.word_size-9)
+(* let sign8 v = *)
+(*   (v lsl (Sys.word_size-9)) asr (Sys.word_size-9) *)
 
-let sign16 v =
-  (v lsl (Sys.word_size-17)) asr (Sys.word_size-17)
+(* let sign16 v = *)
+(*   (v lsl (Sys.word_size-17)) asr (Sys.word_size-17) *)
 
-module BE = struct
-  let uint8 s i =
-    if String.length s < i+1 then Failure
-    else Success (unsafe_get_u8 s i, i+1)
-  let sint8 s i =
-    if String.length s < i+1 then Failure
-    else Success (sign8 (unsafe_get_u8 s i), i+1)
-  let uint16 s i =
-    if String.length s < i+2 then Failure
-    else if Sys.big_endian then Success (unsafe_get_u16 s i, i+2)
-    else Success (swap16 (unsafe_get_u16 s i), i+2)
-  let sint16 s i =
-    if String.length s < i+2 then Failure
-    else if Sys.big_endian then
-      Success (sign16 (unsafe_get_u16 s i), i+2)
-    else
-      Success (sign16 (swap16 (unsafe_get_u16 s i)), i+2)
-  let int32 s i =
-    if String.length s < i+4 then Failure
-    else if Sys.big_endian then Success (unsafe_get_32 s i, i+4)
-    else Success (swap32 (unsafe_get_32 s i), i+4)
-  let int =
-    int32 >|= Int32.to_int
-  let int64 s i =
-    if String.length s < i+8 then Failure
-    else if Sys.big_endian then Success (unsafe_get_64 s i, i+8)
-    else Success (swap64 (unsafe_get_64 s i), i+8)
-end
+(* module BE = struct *)
+(*   let uint8 s i = *)
+(*     if String.length s < i+1 then Failure *)
+(*     else Success (unsafe_get_u8 s i, i+1) *)
+(*   let sint8 s i = *)
+(*     if String.length s < i+1 then Failure *)
+(*     else Success (sign8 (unsafe_get_u8 s i), i+1) *)
+(*   let uint16 s i = *)
+(*     if String.length s < i+2 then Failure *)
+(*     else if Sys.big_endian then Success (unsafe_get_u16 s i, i+2) *)
+(*     else Success (swap16 (unsafe_get_u16 s i), i+2) *)
+(*   let sint16 s i = *)
+(*     if String.length s < i+2 then Failure *)
+(*     else if Sys.big_endian then *)
+(*       Success (sign16 (unsafe_get_u16 s i), i+2) *)
+(*     else *)
+(*       Success (sign16 (swap16 (unsafe_get_u16 s i)), i+2) *)
+(*   let int32 s i = *)
+(*     if String.length s < i+4 then Failure *)
+(*     else if Sys.big_endian then Success (unsafe_get_32 s i, i+4) *)
+(*     else Success (swap32 (unsafe_get_32 s i), i+4) *)
+(*   let int = *)
+(*     int32 >|= Int32.to_int *)
+(*   let int64 s i = *)
+(*     if String.length s < i+8 then Failure *)
+(*     else if Sys.big_endian then Success (unsafe_get_64 s i, i+8) *)
+(*     else Success (swap64 (unsafe_get_64 s i), i+8) *)
+(* end *)
 
-module LE = struct
-  let uint8 s i =
-    if String.length s < i+1 then Failure
-    else Success (unsafe_get_u8 s i, i+1)
-  let sint8 s i =
-    if String.length s < i+1 then Failure
-    else Success (sign8 (unsafe_get_u8 s i), i+1)
-  let uint16 s i =
-    if String.length s < i+2 then Failure
-    else if Sys.big_endian then Success (swap16 (unsafe_get_u16 s i), i+2)
-    else Success (unsafe_get_u16 s i, i+2)
-  let sint16 s i =
-    if String.length s < i+2 then Failure
-    else if Sys.big_endian then Success (sign16 (swap16 (unsafe_get_u16 s i)), i+2)
-    else Success (sign16 (unsafe_get_u16 s i), i+2)
-  let int32 s i =
-    if String.length s < i+4 then Failure
-    else if Sys.big_endian then Success (swap32 (unsafe_get_32 s i), i+4)
-    else Success (unsafe_get_32 s i, i+4)
-  let int =
-    int32 >|= Int32.to_int
-  let int64 s i =
-    if String.length s < i+8 then Failure
-    else if Sys.big_endian then Success (swap64 (unsafe_get_64 s i), i+8)
-    else Success (unsafe_get_64 s i, i+8)
-end
+(* module LE = struct *)
+(*   let uint8 s i = *)
+(*     if String.length s < i+1 then Failure *)
+(*     else Success (unsafe_get_u8 s i, i+1) *)
+(*   let sint8 s i = *)
+(*     if String.length s < i+1 then Failure *)
+(*     else Success (sign8 (unsafe_get_u8 s i), i+1) *)
+(*   let uint16 s i = *)
+(*     if String.length s < i+2 then Failure *)
+(*     else if Sys.big_endian then Success (swap16 (unsafe_get_u16 s i), i+2) *)
+(*     else Success (unsafe_get_u16 s i, i+2) *)
+(*   let sint16 s i = *)
+(*     if String.length s < i+2 then Failure *)
+(*     else if Sys.big_endian then Success (sign16 (swap16 (unsafe_get_u16 s i)), i+2) *)
+(*     else Success (sign16 (unsafe_get_u16 s i), i+2) *)
+(*   let int32 s i = *)
+(*     if String.length s < i+4 then Failure *)
+(*     else if Sys.big_endian then Success (swap32 (unsafe_get_32 s i), i+4) *)
+(*     else Success (unsafe_get_32 s i, i+4) *)
+(*   let int = *)
+(*     int32 >|= Int32.to_int *)
+(*   let int64 s i = *)
+(*     if String.length s < i+8 then Failure *)
+(*     else if Sys.big_endian then Success (swap64 (unsafe_get_64 s i), i+8) *)
+(*     else Success (unsafe_get_64 s i, i+8) *)
+(* end *)
 
 let string s' =
   let l = String.length s' in

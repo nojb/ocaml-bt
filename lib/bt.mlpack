@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 0cc47df556be30a1707c75a5a1ad556a)
+# DO NOT EDIT (digest: 8d8c53e15d3df8ab5089aaae5a52a510)
 Bcode
 Get
 Put
@@ -12,11 +12,12 @@ Peer
 Store
 Tracker
 Util
-Wire
 Torrent
 Client
 Rate
 Addr
 Tcp
 Log
+Udp
+Wire
 # OASIS_STOP

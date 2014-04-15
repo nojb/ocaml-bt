@@ -113,16 +113,14 @@ let push_metadata bt info =
 let proto = "BitTorrent protocol"
 
 let read_handshake sock =
-  let get_handshake =
-    let open Get in
-    char (String.length proto |> Char.chr) >>
-    string proto >>
-    string_of_length 8 >|= Bits.of_bin >>= fun extbits ->
-    string_of_length 20 >|= Word160.from_bin >>= fun ih ->
-    string_of_length 20 >|= Word160.from_bin >>= fun id ->
-    return (ih, id, extbits)
-  in
-  Tcp.read sock (49 + String.length proto) >|= Get.run get_handshake
+  Tcp.read sock (49 + String.length proto) >|= fun hs ->
+  bitmatch Bitstring.bitstring_of_string hs with
+  | { 19 : 8;
+      proto : 19 * 8 : string;
+      extbits : 8 * 8 : string, bind (Bits.of_bin extbits);
+      ih : 20 * 8 : string, bind (Word160.from_bin ih);
+      id : 20 * 8 : string, bind (Word160.from_bin id) } ->
+    (ih, id, extbits)
 
 let extended_bits =
   let bits = Bits.create (8 * 8) in
@@ -130,12 +128,12 @@ let extended_bits =
   bits
 
 let handshake_message id ih =
-  Printf.sprintf "%c%s%s%s%s"
-    (String.length proto |> Char.chr) proto
-    (Bits.to_bin extended_bits)
-    (Word160.to_bin ih)
-    (Word160.to_bin id)
-
+  BITSTRING
+    { 19 : 8; proto : -1 : string;
+      Bits.to_bin extended_bits : 8 * 8 : string;
+      Word160.to_bin ih : 20 * 8 : string;
+      Word160.to_bin id : 20 * 8 : string }
+  
 let add_peer bt sock addr ih id exts =
   if Hashtbl.length bt.peers < max_num_peers then begin
     let p = Peer.create sock id in
@@ -157,7 +155,7 @@ let handle_incoming_peer bt sock addr =
     Lwt.catch
       (fun () ->
          read_handshake sock >>= fun (ih, id, exts) ->
-         Tcp.write sock (handshake_message bt.id ih) >|= fun () ->
+         Tcp.write_bitstring sock (handshake_message bt.id ih) >|= fun () ->
          add_peer bt sock addr ih id exts)
       (fun e ->
          Log.error ~exn:e "peer handshake failed"; Lwt.return ()) |> ignore
@@ -173,7 +171,7 @@ let handle_received_peer bt addr =
       (fun () ->
          let sock = Tcp.create_socket () in
          Tcp.connect sock addr >>= fun () ->
-         Tcp.write sock (handshake_message bt.id bt.ih) >>= fun () ->
+         Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
          read_handshake sock >>= fun (ih, id, exts) ->
          Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
            (Addr.to_string addr) (Word160.to_hex_short ih) (Word160.to_hex_short id);
@@ -250,12 +248,18 @@ let request_meta_piece bt (p : Peer.t) =
     ()
 
 let handle_available_metadata bt p len =
+  let npieces = roundup len info_piece_size / info_piece_size in
+  Log.success "metadata available (len=%d,npieces=%d)" len npieces;
   match bt.stage with
   | NoMeta ->
     bt.stage <- PartialMeta (Meta.create_partial bt.ih len);
-    let npieces = roundup len info_piece_size / info_piece_size in
-    Log.success "metadata available (len=%d,npieces=%d)" len npieces;
     request_meta_piece bt p
+  | PartialMeta m ->
+    if Meta.partial_length m = len then
+      request_meta_piece bt p
+    else
+      Log.warning "metadata size mismatch (expected=%d,received=%d)"
+        (Meta.partial_length m) len
   | _ ->
     ()
 
@@ -315,6 +319,7 @@ let handle_peer_event bt p = function
   | Peer.GotMetaPiece (i, s) ->
     begin match bt.stage with
     | PartialMeta meta ->
+      Log.success "got meta piece (i=%d)" i;
       if Meta.add_piece meta i s then
         match Meta.verify meta with
         | Some meta ->
@@ -329,6 +334,7 @@ let handle_peer_event bt p = function
       ()
     end
   | Peer.RejectMetaPiece i ->
+    Log.warning "meta piece rejected (i=%d)" i;
     request_meta_piece bt p
   | Peer.BlockRequested (idx, off, len) ->
     begin match bt.stage with

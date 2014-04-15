@@ -25,6 +25,7 @@ val block_offset : t -> int -> int -> int64
 type partial
 
 val create_partial : Word160.t -> int -> partial
+val partial_length : partial -> int
 val add_piece : partial -> int -> string -> bool
 val pick_missing : partial -> int option
 val verify : partial -> t option

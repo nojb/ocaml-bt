@@ -24,7 +24,10 @@ type socket
 val create_socket : unit -> socket
 val close : socket -> unit Lwt.t
 val write : socket -> string -> unit Lwt.t
+val write_bitstring : socket -> Bitstring.bitstring -> unit Lwt.t
 val read : socket -> int -> string Lwt.t
+val read_int32_be : socket -> int32 Lwt.t
+val write_int32_be : socket -> int32 -> unit Lwt.t
 val connect : socket -> Addr.t -> unit Lwt.t
 val listen : ?backlog:int -> socket -> int -> (socket -> Addr.t -> unit) -> (unit -> unit)
 val getpeeraddr : socket -> Addr.t

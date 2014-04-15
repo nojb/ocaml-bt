@@ -177,6 +177,9 @@ let create_partial ih length =
   { ih; length; raw = String.create length; pieces = Array.create npieces `Missing;
     missing = npieces }
 
+let partial_length m =
+  m.length
+
 let not_done p n =
   match p.pieces.(n) with
   | `Done -> false

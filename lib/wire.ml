@@ -52,161 +52,149 @@ let string_of_message = function
   | NOT_INTERESTED ->
     "NOT_INTERESTED"
   | HAVE i ->
-    sprintf "HAVE %d" i
+    sprintf "HAVE(i=%d)" i
   | BITFIELD b ->
-    sprintf "BITFIELD count: %d" (Bits.count b)
+    sprintf "BITFIELD(count=%d)" (Bits.count b)
   | REQUEST (i, off, len) ->
-    sprintf "REQUEST %d offset: %d length: %d" i off len
+    sprintf "REQUEST(i=%d,off=%d,len=%d)" i off len
   | PIECE (i, off, _) ->
-    sprintf "PIECE %d offset: %d" i off
+    sprintf "PIECE(i=%d,off=%d)" i off
   | CANCEL (i, off, len) ->
-    sprintf "CANCEL %d offset: %d length: %d" i off len
+    sprintf "CANCEL(i=%d,off=%d,len=%d)" i off len
   | PORT port ->
-    sprintf "PORT %d" port
+    sprintf "PORT(port=%d)" port
   | HAVE_ALL ->
     "HAVE_ALL"
   | HAVE_NONE ->
     "HAVE_NONE"
   | SUGGEST i ->
-    sprintf "SUGGEST_PIECE %d" i
+    sprintf "SUGGEST_PIECE(i=%d)" i
   | REJECT (i, off, len) ->
-    sprintf "REJECT_PIECE %d off: %d len: %d" i off len
+    sprintf "REJECT_PIECE(i=%d,off=%d,len=%d)" i off len
   | ALLOWED pieces ->
-    sprintf "ALLOWED_FAST %s" (String.concat " " (List.map string_of_int pieces))
+    sprintf "ALLOWED_FAST(%s)" (String.concat "," (List.map string_of_int pieces))
   | EXTENDED (id, _) ->
-    sprintf "EXTENDED %d" id
+    sprintf "EXTENDED(id=%d)" id
 
 let sprint m () =
   string_of_message m
 
-let put' msg : Put.t =
-  let open Put in
-  let open Put.BE in
-  match msg with
+let put' = function
   | KEEP_ALIVE ->
-    string ""
+    Bitstring.empty_bitstring
   | CHOKE ->
-    int8 0
+    BITSTRING { 0 : 8 }
   | UNCHOKE ->
-    int8 1
+    BITSTRING { 1 : 8 }
   | INTERESTED ->
-    int8 2
+    BITSTRING { 2 : 8 }
   | NOT_INTERESTED ->
-    int8 3
+    BITSTRING { 3 : 8 }
   | HAVE i ->
-    int8 4 >> int i
+    BITSTRING { 4 : 8; Int32.of_int i : 32 }
   | BITFIELD bits ->
-    int8 5 >> string (Bits.to_bin bits)
+    BITSTRING { 5 : 8; Bits.to_bin bits : -1 : string }
   | REQUEST (i, off, len) ->
-    int8 6 >> int i >> int off >> int len
+    BITSTRING { 6 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
   | PIECE (i, off, s) ->
-    int8 7 >> int i >> int off >> string s
+    BITSTRING { 7 : 8; Int32.of_int i : 32; Int32.of_int off : 32; s : -1 : string }
   | CANCEL (i, off, len) ->
-    int8 8 >> int i >> int off >> int len
+    BITSTRING { 8 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
   | PORT i ->
-    int8 9 >> int16 i
-  | HAVE_ALL ->
-    int8 14
-  | HAVE_NONE ->
-    int8 15
+    BITSTRING { 9 : 8; i : 16 }
   | SUGGEST i ->
-    int8 13 >> int i
+    BITSTRING { 13 : 8; Int32.of_int i : 32 }
+  | HAVE_ALL ->
+    BITSTRING { 14 : 8 }
+  | HAVE_NONE ->
+    BITSTRING { 15 : 8 }
   | REJECT (i, off, len) ->
-    int8 16 >> int i >> int off >> int len
+    BITSTRING { 16 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
   | ALLOWED pieces ->
-    List.fold_left (fun acc i -> acc >> int i) (int8 17) pieces
+    let rec loop = function
+      | [] -> Bitstring.empty_bitstring
+      | p :: pieces -> BITSTRING { Int32.of_int p : 32; loop pieces : -1 : bitstring }
+    in
+    BITSTRING { 17 : 8; loop pieces : -1 : bitstring }
   | EXTENDED (id, s) ->
-    int8 20 >> int8 id >> string s
-
-let put msg =
-  let p = put' msg in
-  Put.(BE.int (length p) >> p)
-
-(* let write oc msg = *)
-(*   put msg |> Put.run |> Lwt_io.write oc *)
+    BITSTRING { 20 : 8; id : 8; s : -1 : string }
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
+let write sock msg =
+  let doit () =
+    let bs = put' msg in
+    let len = Bitstring.bitstring_length bs in
+    assert (len land 7 = 0);
+    let len = BITSTRING { Int32.of_int (len lsr 3) : 32 } in
+    (* Bitstring.hexdump_bitstring stderr bs; *)
+    Tcp.write_bitstring sock len >>= fun () ->
+    Tcp.write_bitstring sock bs
+  in
+  Lwt.catch doit Lwt.fail
+
 exception BadMsg of int * int
 
-let get' len id : message Get.t =
-  let open Get in
-  let open Get.BE in
-  match id with
-  | 0 ->
-    return CHOKE
-  | 1 ->
-    return UNCHOKE
-  | 2 ->
-    return INTERESTED
-  | 3 ->
-    return NOT_INTERESTED
-  | 4 ->
-    int >>= fun i ->
-    return (HAVE i)
-  | 5 ->
-    string_of_length (len-1) >>= fun s ->
-    return (BITFIELD (Bits.of_bin s))
-  | 6 ->
-    int >>= fun i ->
-    int >>= fun off ->
-    int >>= fun len ->
-    return (REQUEST (i, off, len))
-  | 7 ->
-    int >>= fun i ->
-    int >>= fun off ->
-    string_of_length (len-9) >>= fun s ->
-    return (PIECE (i, off, s))
-  | 8 ->
-    int >>= fun i ->
-    int >>= fun off ->
-    int >>= fun len ->
-    return (CANCEL (i, off, len))
-  | 9 ->
-    uint16 >>= fun port ->
-    return (PORT port)
-  | 14 ->
-    return HAVE_ALL
-  | 15 ->
-    return HAVE_NONE
-  | 13 ->
-    int >>= fun i ->
-    return (SUGGEST i)
-  | 16 ->
-    int >>= fun i ->
-    int >>= fun off ->
-    int >>= fun len ->
-    return (REJECT (i, off, len))
-  | 17 ->
-    many int >>= fun pieces ->
-    return (ALLOWED pieces)
-  | 20 ->
-    uint8 >>= fun id ->
-    string_of_length (len-2) >>= fun s ->
-    return (EXTENDED (id, s))
-  | _ ->
-    fail (* fail (BadMsg (len, id)) *)
-
-let get len : message Get.t =
-  if len = 0 then
-    Get.return KEEP_ALIVE
-  else
-    Get.(BE.uint8 >>= get' len)
-
-let memo_get =
-  let h = Hashtbl.create 17 in
-  fun len ->
-    try Hashtbl.find h len
-    with Not_found ->
-      let g = get len in
-      Hashtbl.add h len g;
-      g
-
-let get = memo_get
+let get len s =
+  bitmatch Bitstring.bitstring_of_string s with
+  | { _ } as bs when Bitstring.bitstring_length bs = 0 ->
+    KEEP_ALIVE
+  | { 0 : 8 } ->
+    CHOKE
+  | { 1 : 8 } ->
+    UNCHOKE
+  | { 2 : 8 } ->
+    INTERESTED
+  | { 3 : 8 } ->
+    NOT_INTERESTED
+  | { 4 : 8; i : 32 : bind (Int32.to_int i) } ->
+    HAVE i
+  | { 5 : 8; s : -1 : string, bind (Bits.of_bin s) } ->
+    BITFIELD s
+  | { 6 : 8; i : 32 : bind (Int32.to_int i);
+      off : 32 : bind (Int32.to_int off);
+      len : 32 : bind (Int32.to_int len) } ->
+    REQUEST (i, off, len)
+  | { 7 : 8; i : 32 : bind (Int32.to_int i);
+      off : 32 : bind (Int32.to_int off);
+      s : -1 : string } ->
+    PIECE (i, off, s)
+  | { 8 : 8; i : 32 : bind (Int32.to_int i);
+      off : 32 : bind (Int32.to_int off);
+      len : 32 : bind (Int32.to_int len) } ->
+    CANCEL (i, off, len)
+  | { 9 : 8; port : 16 } ->
+    PORT port
+  | { 13 : 8; i : 32 : bind (Int32.to_int i) } ->
+    SUGGEST i
+  | { 14 : 8 } ->
+    HAVE_ALL
+  | { 15 : 8 } ->
+    HAVE_NONE
+  | { 16 : 8; i : 32 : bind (Int32.to_int i);
+      off : 32 : bind (Int32.to_int off);
+      len : 32 : bind (Int32.to_int len) } ->
+    REJECT (i, off, len)
+  | { 17 : 8; pieces : -1 : bitstring } ->
+    let rec loop bs =
+      bitmatch bs with
+      | { p : 32; bs : -1 : bitstring } -> Int32.to_int p :: loop bs
+      | { } -> []
+    in
+    ALLOWED (loop pieces)
+  | { 20 : 8; id : 8; s : -1 : string } ->
+    EXTENDED (id, s)
+  | { _ } ->
+    failwith "can't parse msg"
+    (* fail (\* fail (BadMsg (len, id)) *\) *)
 
 let read sock =
-  Tcp.read sock 4 >|= Get.run Get.BE.int >>= fun len ->
-  Tcp.read sock len >|= Get.run (get len)
+  let doit () =
+    Tcp.read_int32_be sock >|= Int32.to_int >>= fun len ->
+    Tcp.read sock len >|= get len
+    (* Bitstring.hexdump_bitstring stderr s; *)
+  in
+  Lwt.catch doit Lwt.fail
 
 let lt_extension_bit = 43 (* 20-th bit from the right *)

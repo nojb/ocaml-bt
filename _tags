@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 40ab01acc641a6cf92044c62fdbea0e9)
+# DO NOT EDIT (digest: 04b6468c4ffe63c86484b1305cc6c3da)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -27,18 +27,21 @@
 "lib/store.cmx": for-pack(Bt)
 "lib/tracker.cmx": for-pack(Bt)
 "lib/util.cmx": for-pack(Bt)
-"lib/wire.cmx": for-pack(Bt)
 "lib/torrent.cmx": for-pack(Bt)
 "lib/client.cmx": for-pack(Bt)
 "lib/rate.cmx": for-pack(Bt)
 "lib/addr.cmx": for-pack(Bt)
 "lib/tcp.cmx": for-pack(Bt)
 "lib/log.cmx": for-pack(Bt)
+"lib/udp.cmx": for-pack(Bt)
+"lib/wire.cmx": for-pack(Bt)
 # Executable find_ih
 <examples/find_ih.{native,byte}>: pkg_bt.dht
 <examples/*.ml{,i}>: pkg_bt.dht
 <examples/find_ih.{native,byte}>: custom
 # Executable tryit
+<lib/tryit.{native,byte}>: pkg_bitstring
+<lib/tryit.{native,byte}>: pkg_bitstring.syntax
 <lib/tryit.{native,byte}>: pkg_cohttp
 <lib/tryit.{native,byte}>: pkg_cohttp.lwt
 <lib/tryit.{native,byte}>: pkg_lwt
@@ -48,6 +51,8 @@
 <lib/tryit.{native,byte}>: pkg_uri
 <lib/tryit.{native,byte}>: pkg_zarith
 <lib/tryit.{native,byte}>: use_bt
+<lib/*.ml{,i}>: pkg_bitstring
+<lib/*.ml{,i}>: pkg_bitstring.syntax
 <lib/*.ml{,i}>: pkg_cohttp
 <lib/*.ml{,i}>: pkg_cohttp.lwt
 <lib/*.ml{,i}>: pkg_lwt

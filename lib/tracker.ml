@@ -44,118 +44,155 @@ type response = {
 
 exception Error of string
 exception Warning of string
-           
-module Udp = struct
-  let send fd buf =
-    Lwt_unix.write fd buf 0 (String.length buf) >>= fun len ->
-    if len <> String.length buf then
-      failwith_lwt "udp_send: could not send entire packet"
-    else
-      Lwt.return_unit
 
-  let packet_length = 512
+module UdpTracker = struct
+  (* let send fd buf = *)
+  (*   Lwt_unix.write fd buf 0 (String.length buf) >>= fun len -> *)
+  (*   if len <> String.length buf then *)
+  (*     failwith_lwt "udp_send: could not send entire packet" *)
+  (*   else *)
+  (*     Lwt.return_unit *)
 
-  let recv fd =
-    let buf = String.create packet_length in
-    Lwt_unix.read fd buf 0 packet_length >>= fun len ->
-    Lwt.return (String.sub buf 0 len)
+  (* let packet_length = 512 *)
+
+  (* let recv fd = *)
+  (*   let buf = String.create packet_length in *)
+  (*   Lwt_unix.read fd buf 0 packet_length >>= fun len -> *)
+  (*   Lwt.return (String.sub buf 0 len) *)
 
   let fresh_transaction_id () =
     Random.int32 Int32.max_int
 
-  let get_ip_addr =
-    let open Get in
-    let open Get.BE in
-    uint8 >>= fun a ->
-    uint8 >>= fun b ->
-    uint8 >>= fun c ->
-    uint8 >|= fun d ->
-    Addr.Ip.of_ints a b c d
-    (* Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d) *)
+  (* let get_ip_addr = *)
+  (*   let open Get in *)
+  (*   let open Get.BE in *)
+  (*   uint8 >>= fun a -> *)
+  (*   uint8 >>= fun b -> *)
+  (*   uint8 >>= fun c -> *)
+  (*   uint8 >|= fun d -> *)
+  (*   Addr.Ip.of_ints a b c d *)
+  (* Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d) *)
 
-  let map_maybe f x if_none =
-    match x with
-    | None -> f if_none
-    | Some x -> f x
+  (* let map_maybe f x if_none = *)
+  (*   match x with *)
+  (*   | None -> f if_none *)
+  (*   | Some x -> f x *)
 
-  let connect_response trans_id =
-    let open Get in
-    let open Get.BE in
-    int32 >>= fun n ->
-    if n = 3l then
-      any_string >|= fun msg -> `Error msg
-    else begin
-      int32 >>= fun trans_id' ->
-      assert (Int32.compare trans_id trans_id' = 0);
-      int64 >|= fun conn_id -> `Ok conn_id
-    end
+  let connect_response trans_id s =
+    bitmatch Bitstring.bitstring_of_string s with
+    | { 3l : 32; msg : -1 : string } ->
+      `Error msg
+    | { n : 32; trans_id' : 32 : check (trans_id = trans_id'); conn_id : 64 } ->
+      `Ok conn_id
+  (* let open Get in *)
+  (* let open Get.BE in *)
+  (* int32 >>= fun n -> *)
+  (* if n = 3l then *)
+  (*   any_string >|= fun msg -> `Error msg *)
+  (* else begin *)
+  (*   int32 >>= fun trans_id' -> *)
+  (*   assert (Int32.compare trans_id trans_id' = 0); *)
+  (*   int64 >|= fun conn_id -> `Ok conn_id *)
+  (* end *)
 
   let connect_request trans_id =
-    let open Put in
-    let open Put.BE in
-    int64 0x41727101980L >>
-    int32 0l >>
-    int32 trans_id
-      
-  let announce_request conn_id trans_id ih up down left event port id =
-    let open Put in
-    let open Put.BE in
-    int64 conn_id >>
-    int32 1l >>
-    int32 trans_id >>
-    string (Word160.to_bin ih) >>
-    string (Word160.to_bin id) >>
-    map_maybe int64 down 0L >>
-    map_maybe int64 left 0L >>
-    map_maybe int64 up 0L >>
-    int32
-      (match event with
-       | None -> 0l
-       | Some COMPLETED -> 1l
-       | Some STARTED -> 2l
-       | Some STOPPED -> 3l) >>
-    int32 0l >>
-    int32 0l >>
-    int32 (-1l) >>
-    int16 port
+    BITSTRING { 0x41727101980L : 64; 0l : 32; trans_id : 32 }
+  (* let open Put in *)
+  (* let open Put.BE in *)
+  (* int64 0x41727101980L >> *)
+  (* int32 0l >> *)
+  (* int32 trans_id *)
 
-  let announce_response trans_id =
-    let open Get in
-    let open Get.BE in
-    int32 >>= fun n ->
-    assert (n = 1l || n = 3l);
-    if n = 3l then (* error *)
-      any_string >|= fun msg -> `Error msg
-    else begin
-      let peer_info =
-        get_ip_addr >>= fun addr ->
-        uint16 >>= fun port ->
-        return (addr, port)
+  let announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event port id =
+    let event = match event with
+      | None -> 0l
+      | Some COMPLETED -> 1l
+      | Some STARTED -> 2l
+      | Some STOPPED -> 3l
+    in
+    BITSTRING { conn_id : 64; 1l : 32; trans_id : 32;
+                Word160.to_bin ih : 20 * 8 : string;
+                Word160.to_bin id : 20 * 8 : string;
+                down : 64; left : 64; up : 64;
+                event : 32; 0l : 32; 0l : 32; -1l : 32;
+                port : 16 }                
+
+  (* let open Put in *)
+  (* let open Put.BE in *)
+  (* int64 conn_id >> *)
+  (* int32 1l >> *)
+  (* int32 trans_id >> *)
+  (* string (Word160.to_bin ih) >> *)
+  (* string (Word160.to_bin id) >> *)
+  (* map_maybe int64 down 0L >> *)
+  (* map_maybe int64 left 0L >> *)
+  (* map_maybe int64 up 0L >> *)
+  (* int32 *)
+  (*   (match event with *)
+  (*    | None -> 0l *)
+  (*    | Some COMPLETED -> 1l *)
+  (*    | Some STARTED -> 2l *)
+  (*    | Some STOPPED -> 3l) >> *)
+  (* int32 0l >> *)
+  (* int32 0l >> *)
+  (* int32 (-1l) >> *)
+  (* int16 port *)
+
+  let announce_response trans_id s =
+    bitmatch Bitstring.bitstring_of_string s with
+    | { 3l : 32; msg : -1 : string } ->
+      `Error msg
+    | { 1l : 32; trans_id' : 32 : check (trans_id = trans_id');
+        interval : 32 : bind (Int32.to_int interval);
+        leechers : 32 : bind (Int32.to_int leechers);
+        seeders : 32 : bind (Int32.to_int seeders);
+        peers : -1 : bitstring } ->
+      let rec loop bs =
+        bitmatch bs with
+        | { a : 8; b : 8; c : 8; d : 8; p : 16; bs : -1 : bitstring } ->
+          (Addr.Ip.of_ints a b c d, p) :: loop bs
+        | { _ } as bs when Bitstring.bitstring_length bs = 0 ->
+          []
       in
-      int32 >>= fun trans_id' ->
-      assert (Int32.compare trans_id trans_id' = 0);
-      int32 >|= Int32.to_int >>= fun interval ->
-      int32 >|= Int32.to_int >>= fun leechers ->
-      int32 >|= Int32.to_int >>= fun seeders ->
-      many peer_info >|= fun peers ->
-      (* let rec loop () = *)
-      (*   in *)
-      (*   either (end_of_input >|= fun () -> []) *)
-      (*     (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest)) *)
-      (* in *)
-      (* loop () >|= fun new_peers -> *)
-      `Ok { peers; leechers = Some leechers; seeders = Some seeders; interval; }
-    end
+      let peers = loop peers in
+      `Ok {peers; leechers = Some leechers; seeders = Some seeders; interval}
+  (* in *)
+  (*   let open Get in *)
+  (*   let open Get.BE in *)
+  (*   int32 >>= fun n -> *)
+  (*   assert (n = 1l || n = 3l); *)
+  (*   if n = 3l then (\* error *\) *)
+  (*     any_string >|= fun msg -> `Error msg *)
+  (*   else begin *)
+  (*     let peer_info = *)
+  (*       get_ip_addr >>= fun addr -> *)
+  (*       uint16 >>= fun port -> *)
+  (*       return (addr, port) *)
+  (*     in *)
+  (*     int32 >>= fun trans_id' -> *)
+  (*     assert (Int32.compare trans_id trans_id' = 0); *)
+  (*     int32 >|= Int32.to_int >>= fun interval -> *)
+  (*     int32 >|= Int32.to_int >>= fun leechers -> *)
+  (*     int32 >|= Int32.to_int >>= fun seeders -> *)
+  (*     many peer_info >|= fun peers -> *)
+  (*     (\* let rec loop () = *\) *)
+  (*     (\*   in *\) *)
+  (*     (\*   either (end_of_input >|= fun () -> []) *\) *)
+  (*     (\*     (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest)) *\) *)
+  (*     (\* in *\) *)
+  (*     (\* loop () >|= fun new_peers -> *\) *)
+  (*     `Ok { peers; leechers = Some leechers; seeders = Some seeders; interval; } *)
+  (*   end *)
 
-  let set_timeout fd x =
-    Lwt_unix.setsockopt_float fd Lwt_unix.SO_RCVTIMEO x
+  (* let set_timeout fd x = *)
+  (*   Lwt_unix.setsockopt_float fd Lwt_unix.SO_RCVTIMEO x *)
 
-  let do_announce fd ih ?up ?down ?left ?event port id =
+  let do_announce fd addr ih ?up ?down ?left ?event port id : response Lwt.t =
     let rec loop = function
       | `Connect_request n ->
         let trans_id = fresh_transaction_id () in
-        Put.run (connect_request trans_id) |> send fd >>= fun () ->
-        set_timeout fd (15.0 *. 2.0 ** float n);
+        Udp.send_bitstring fd (connect_request trans_id) addr >>= fun () ->
+        Udp.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
           (fun () -> loop (`Connect_response trans_id))
           (function
@@ -163,21 +200,22 @@ module Udp = struct
               if n >= 8 then
                 failwith_lwt "connect_request: too many retries"
               else begin
-                Lwt_log.info_f "UDP connect request timeout after %d s; retrying..."
-                  (truncate (15.0 *. 2.0 ** float n)) >>= fun () ->
+                Log.info "UDP connect request timeout after %d s; retrying..."
+                  (truncate (15.0 *. 2.0 ** float n));
                 loop (`Connect_request (n+1))
               end
             | exn -> Lwt.fail exn)
       | `Connect_response trans_id ->
-        recv fd >|= Get.run (connect_response trans_id) >>= begin function
-          | `Error msg -> Lwt.fail (Error msg)
-          | `Ok conn_id -> loop (`Announce_request (conn_id, 0))
+        Udp.recv fd >>= fun (s, _) ->
+        begin match connect_response trans_id s with
+        | `Error msg -> Lwt.fail (Error msg)
+        | `Ok conn_id -> loop (`Announce_request (conn_id, 0))
         end
       | `Announce_request (conn_id, n) ->
         let trans_id = fresh_transaction_id () in
-        let create_packet = announce_request conn_id trans_id ih up down left event port id in
-        send fd (Put.run create_packet) >>= fun () ->
-        set_timeout fd (15.0 *. 2.0 ** float n);
+        let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event port id in
+        Udp.send_bitstring fd create_packet addr >>= fun () ->
+        Udp.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
           (fun () -> loop (`Announce_response trans_id))
           (function
@@ -192,7 +230,8 @@ module Udp = struct
               Lwt.fail exn)
       | `Announce_response trans_id ->
         try
-          recv fd >|= Get.run (announce_response trans_id) >>= function
+          Udp.recv fd >>= fun (s, _) ->
+          match announce_response trans_id s with
           | `Error msg -> Lwt.fail (Error msg)
           | `Ok resp -> Lwt.return resp
         with
@@ -211,14 +250,16 @@ module Udp = struct
       | None -> failwith "Empty Port"
       | Some port -> port
     in
-    Lwt_unix.gethostbyname host >>= fun he ->
-    let addr = he.Lwt_unix.h_addr_list.(0) in
-    let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
-    Lwt_unix.connect fd (Lwt_unix.ADDR_INET (addr, port)) >>= fun () ->
-    do_announce fd ih ?up ?down ?left ?event port id
+    (* Lwt_unix.gethostbyname host >>= fun he -> *)
+    (* let addr = he.Lwt_unix.h_addr_list.(0) in *)
+    let addr = (Addr.Ip.of_string host, port) in
+    let fd = Udp.create_socket () in
+    (* let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in *)
+    (* Lwt_unix.connect fd (Lwt_unix.ADDR_INET (addr, port)) >>= fun () -> *)
+    do_announce fd addr ih ?up ?down ?left ?event port id
 end
 
-module Http = struct
+module HttpTracker = struct
   let either f g x =
     try f x with _ -> g x
 
@@ -285,7 +326,7 @@ module Http = struct
     let uri = add_param_maybe uri "event" string_of_event event in
     Cohttp_lwt_unix.Client.get uri >>= fun (_, body) ->
     Cohttp_lwt_body.to_string body >>= fun body ->
-    Lwt_log.info_f "Received response from HTTP tracker body: %S" body >>= fun () ->
+    Log.info "Received response from HTTP tracker body: %S" body;
     try
       Get.run Bcode.bdecode body |> decode_response
     with exn ->
@@ -296,9 +337,9 @@ let query tr ih ?up ?down ?left ?event port id =
   Log.info "announcing on %S" (Uri.to_string tr);
   match Uri.scheme tr with
   | Some "http" | Some "https" ->
-    Http.announce tr ih ?up ?down ?left ?event port id
+    HttpTracker.announce tr ih ?up ?down ?left ?event port id
   | Some "udp" ->
-    Udp.announce tr ih ?up ?down ?left ?event port id
+    UdpTracker.announce tr ih ?up ?down ?left ?event port id
   | Some sch ->
     failwith_lwt "unknown tracker url scheme: %S" sch
   | None ->
@@ -311,7 +352,7 @@ module Tier = struct
 
   let create () =
     ref []
-      
+
   let shuffle tier =
     let a = Array.of_list !tier in
     Util.shuffle_array a;
@@ -329,7 +370,8 @@ module Tier = struct
           tier := tr :: List.rev_append failtrs rest;
           Lwt.return resp
         with
-        | _ ->
+        | e ->
+          Log.error ~exn:e "error while announcing on %S" (Uri.to_string tr);
           loop (tr :: failtrs) rest
     in
     loop [] !tier

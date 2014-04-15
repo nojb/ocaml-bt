@@ -37,6 +37,15 @@ let write sock s =
       loop (off + n) (len - n)
   in
   loop 0 (String.length s)
+
+let write_bitstring sock (s, off, len) =
+  assert (off land 7 = 0 && len land 7 = 0);
+  let rec loop off len =
+    if len <= 0 then Lwt.return ()
+    else Lwt_unix.write sock s off len >>= fun n ->
+      loop (off + n) (len - n)
+  in
+  loop (off lsr 3) (len lsr 3)
     
 let read sock n =
   let s = String.create n in
@@ -48,6 +57,14 @@ let read sock n =
       | n -> loop (off + n) (len - n)
   in
   loop 0 n
+
+let read_int32_be sock =
+  read sock 4 >|= fun s ->
+  bitmatch Bitstring.bitstring_of_string s with
+  | { n : 32 } -> n
+
+let write_int32_be sock n =
+  write_bitstring sock (BITSTRING { n : 32 })
 
 (* let bind sock addr = *)
 (*   Lwt_unix.bind sock (Addr.to_sockaddr addr) *)
@@ -77,7 +94,10 @@ let listen ?(backlog = 5) sock port handle =
     | `Stop ->
       Lwt.return ()
   in
-  Lwt.catch loop (fun e -> Lwt_log.debug_f ~exn:e "listen") |> ignore;
+  let doit () =
+    Lwt.catch loop (fun e -> Log.error ~exn:e "error while listening"; Lwt.return ())
+  in
+  Lwt.async doit;
   (fun () -> Lazy.force w)
 
 let getpeeraddr sock =

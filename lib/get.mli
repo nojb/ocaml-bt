@@ -21,19 +21,6 @@
 
 type 'a t
 
-module type S = sig
-  val uint8 : int t
-  val sint8 : int t
-  val uint16 : int t
-  val sint16 : int t
-  val int32 : int32 t
-  val int : int t
-  val int64 : int64 t
-end
-
-module BE : S
-module LE : S
-
 val string : string -> unit t
 val any_string : string t
 val end_of_input : unit t
