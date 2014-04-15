@@ -84,9 +84,9 @@ module UdpTracker = struct
         peers : -1 : bitstring } ->
       let rec loop bs =
         bitmatch bs with
-        | { a : 8; b : 8; c : 8; d : 8; p : 16; bs : -1 : bitstring } ->
-          (Addr.Ip.of_ints a b c d, p) :: loop bs
-        | { _ } as bs when Bitstring.bitstring_length bs = 0 ->
+        | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } ->
+          Addr.of_string_compact addr :: loop bs
+        | { _ } ->
           []
       in
       let peers = loop peers in
@@ -174,19 +174,15 @@ module HttpTracker = struct
       let interval = Bcode.find "interval" d |> Bcode.to_int in
       (* let min_interval = try Some (Bcode.find "min interval" d) with _ -> None in *)
       let compact_peers peers =
-        let pr = Bcode.to_string peers in
-        let rec loop i =
-          if i >= String.length pr then []
-          else
-            let addr =
-              Addr.Ip.of_ints
-                (int_of_char pr.[i+0]) (int_of_char pr.[i+1])
-                (int_of_char pr.[i+2]) (int_of_char pr.[i+3])
-            in
-            let port = int_of_char pr.[i+4] lsl 8 + int_of_char pr.[i+5] in
-            (addr, port) :: loop (i+6)
+        let peers = Bcode.to_string peers in
+        let rec loop bs =
+          bitmatch bs with
+          | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } ->
+            Addr.of_string_compact addr :: loop bs
+          | { _ } ->
+            []
         in
-        loop 0
+        loop (Bitstring.bitstring_of_string peers)
       in
       let usual_peers peers =
         Bcode.to_list peers |>

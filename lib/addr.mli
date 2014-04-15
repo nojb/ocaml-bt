@@ -29,6 +29,7 @@ module Ip : sig
   val to_string : t -> string
   val of_ints : int -> int -> int -> int -> t
   val to_ints : t -> int * int * int * int
+  val of_string_compact : Bitstring.bitstring -> t
 end
 
 type t = Ip.t * int
@@ -44,5 +45,7 @@ val to_string_compact : t -> string
 val to_sockaddr : t -> Unix.sockaddr
 
 val of_sockaddr : Unix.sockaddr -> t
+
+val of_string_compact : Bitstring.bitstring -> t
 
 module Set : Set.S with type elt = t

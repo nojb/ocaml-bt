@@ -44,6 +44,11 @@ module Ip = struct
 
   let to_ints ip =
     Scanf.sscanf (Unix.string_of_inet_addr ip) "%d.%d.%d.%d" (fun a b c d -> (a, b, c, d))
+
+  let of_string_compact s =
+    bitmatch s with
+    | { a : 8; b : 8; c : 8; d : 8 } ->
+      of_ints a b c d
 end
 
 type t = Ip.t * int
@@ -66,5 +71,10 @@ let to_sockaddr (ip, p) =
 let of_sockaddr = function
   | Unix.ADDR_UNIX _ -> failwith "of_sockaddr"
   | Unix.ADDR_INET (ip, p) -> (ip, p)
+
+let of_string_compact s =
+  bitmatch s with
+  | { ip : 4 * 8 : bitstring; p : 16 } ->
+    (Ip.of_string_compact ip, p)
 
 module Set = Set.Make (struct type t1 = t type t = t1 let compare = compare end)
