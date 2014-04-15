@@ -1,13 +1,14 @@
-- Use ocaml-bitstring instead of Get.t
-- Add *_opt variants to Bcode and use that to parse Meta.
-- Use Buffer.t's directly to parse bcode.
-- libutp
-- dht
-- upnp nat
-- pmp-nat
-- proxy
-- fast resume
-- multiple torrents
-- peer manager: global blacklist, keep a list of "extra" peers for when existing connected peers disconnect.
-- encryption
-- Make Wire.PIECE of int * int * bitstring
+* TODO [2/13]
+  - [X] Use ocaml-bitstring instead of Get.t
+  - [ ] Add *_opt variants to Bcode and use that to parse Meta.
+  - [X] Use Buffer.t's directly to parse bcode.
+  - [ ] libutp
+  - [ ] dht
+  - [ ] upnp nat
+  - [ ] pmp-nat
+  - [ ] proxy
+  - [ ] fast resume
+  - [ ] multiple torrents
+  - [ ] peer manager: global blacklist, keep a list of "extra" peers for when existing connected peers disconnect.
+  - [ ] encryption
+  - [ ] Make Wire.PIECE of int * int * bitstring
