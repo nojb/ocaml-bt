@@ -46,37 +46,8 @@ exception Error of string
 exception Warning of string
 
 module UdpTracker = struct
-  (* let send fd buf = *)
-  (*   Lwt_unix.write fd buf 0 (String.length buf) >>= fun len -> *)
-  (*   if len <> String.length buf then *)
-  (*     failwith_lwt "udp_send: could not send entire packet" *)
-  (*   else *)
-  (*     Lwt.return_unit *)
-
-  (* let packet_length = 512 *)
-
-  (* let recv fd = *)
-  (*   let buf = String.create packet_length in *)
-  (*   Lwt_unix.read fd buf 0 packet_length >>= fun len -> *)
-  (*   Lwt.return (String.sub buf 0 len) *)
-
   let fresh_transaction_id () =
     Random.int32 Int32.max_int
-
-  (* let get_ip_addr = *)
-  (*   let open Get in *)
-  (*   let open Get.BE in *)
-  (*   uint8 >>= fun a -> *)
-  (*   uint8 >>= fun b -> *)
-  (*   uint8 >>= fun c -> *)
-  (*   uint8 >|= fun d -> *)
-  (*   Addr.Ip.of_ints a b c d *)
-  (* Unix.inet_addr_of_string (Printf.sprintf "%03d.%03d.%03d.%03d" a b c d) *)
-
-  (* let map_maybe f x if_none = *)
-  (*   match x with *)
-  (*   | None -> f if_none *)
-  (*   | Some x -> f x *)
 
   let connect_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
@@ -84,24 +55,9 @@ module UdpTracker = struct
       `Error msg
     | { n : 32; trans_id' : 32 : check (trans_id = trans_id'); conn_id : 64 } ->
       `Ok conn_id
-  (* let open Get in *)
-  (* let open Get.BE in *)
-  (* int32 >>= fun n -> *)
-  (* if n = 3l then *)
-  (*   any_string >|= fun msg -> `Error msg *)
-  (* else begin *)
-  (*   int32 >>= fun trans_id' -> *)
-  (*   assert (Int32.compare trans_id trans_id' = 0); *)
-  (*   int64 >|= fun conn_id -> `Ok conn_id *)
-  (* end *)
 
   let connect_request trans_id =
     BITSTRING { 0x41727101980L : 64; 0l : 32; trans_id : 32 }
-  (* let open Put in *)
-  (* let open Put.BE in *)
-  (* int64 0x41727101980L >> *)
-  (* int32 0l >> *)
-  (* int32 trans_id *)
 
   let announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event port id =
     let event = match event with
@@ -116,27 +72,6 @@ module UdpTracker = struct
                 down : 64; left : 64; up : 64;
                 event : 32; 0l : 32; 0l : 32; -1l : 32;
                 port : 16 }                
-
-  (* let open Put in *)
-  (* let open Put.BE in *)
-  (* int64 conn_id >> *)
-  (* int32 1l >> *)
-  (* int32 trans_id >> *)
-  (* string (Word160.to_bin ih) >> *)
-  (* string (Word160.to_bin id) >> *)
-  (* map_maybe int64 down 0L >> *)
-  (* map_maybe int64 left 0L >> *)
-  (* map_maybe int64 up 0L >> *)
-  (* int32 *)
-  (*   (match event with *)
-  (*    | None -> 0l *)
-  (*    | Some COMPLETED -> 1l *)
-  (*    | Some STARTED -> 2l *)
-  (*    | Some STOPPED -> 3l) >> *)
-  (* int32 0l >> *)
-  (* int32 0l >> *)
-  (* int32 (-1l) >> *)
-  (* int16 port *)
 
   let announce_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
@@ -156,36 +91,6 @@ module UdpTracker = struct
       in
       let peers = loop peers in
       `Ok {peers; leechers = Some leechers; seeders = Some seeders; interval}
-  (* in *)
-  (*   let open Get in *)
-  (*   let open Get.BE in *)
-  (*   int32 >>= fun n -> *)
-  (*   assert (n = 1l || n = 3l); *)
-  (*   if n = 3l then (\* error *\) *)
-  (*     any_string >|= fun msg -> `Error msg *)
-  (*   else begin *)
-  (*     let peer_info = *)
-  (*       get_ip_addr >>= fun addr -> *)
-  (*       uint16 >>= fun port -> *)
-  (*       return (addr, port) *)
-  (*     in *)
-  (*     int32 >>= fun trans_id' -> *)
-  (*     assert (Int32.compare trans_id trans_id' = 0); *)
-  (*     int32 >|= Int32.to_int >>= fun interval -> *)
-  (*     int32 >|= Int32.to_int >>= fun leechers -> *)
-  (*     int32 >|= Int32.to_int >>= fun seeders -> *)
-  (*     many peer_info >|= fun peers -> *)
-  (*     (\* let rec loop () = *\) *)
-  (*     (\*   in *\) *)
-  (*     (\*   either (end_of_input >|= fun () -> []) *\) *)
-  (*     (\*     (peer_info >>= fun pi -> loop () >>= fun rest -> return (pi :: rest)) *\) *)
-  (*     (\* in *\) *)
-  (*     (\* loop () >|= fun new_peers -> *\) *)
-  (*     `Ok { peers; leechers = Some leechers; seeders = Some seeders; interval; } *)
-  (*   end *)
-
-  (* let set_timeout fd x = *)
-  (*   Lwt_unix.setsockopt_float fd Lwt_unix.SO_RCVTIMEO x *)
 
   let do_announce fd addr ih ?up ?down ?left ?event port id : response Lwt.t =
     let rec loop = function
@@ -229,14 +134,13 @@ module UdpTracker = struct
             | exn ->
               Lwt.fail exn)
       | `Announce_response trans_id ->
-        try
+        let doit () =
           Udp.recv fd >>= fun (s, _) ->
           match announce_response trans_id s with
           | `Error msg -> Lwt.fail (Error msg)
           | `Ok resp -> Lwt.return resp
-        with
-        | Get.Get_error -> failwith_lwt "Udp.announce_response: packet too short"
-        | exn -> Lwt.fail exn
+        in
+        Lwt.catch doit Lwt.fail
     in
     loop (`Connect_request 0)
 
@@ -250,12 +154,8 @@ module UdpTracker = struct
       | None -> failwith "Empty Port"
       | Some port -> port
     in
-    (* Lwt_unix.gethostbyname host >>= fun he -> *)
-    (* let addr = he.Lwt_unix.h_addr_list.(0) in *)
     let addr = (Addr.Ip.of_string host, port) in
     let fd = Udp.create_socket () in
-    (* let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in *)
-    (* Lwt_unix.connect fd (Lwt_unix.ADDR_INET (addr, port)) >>= fun () -> *)
     do_announce fd addr ih ?up ?down ?left ?event port id
 end
 
@@ -328,7 +228,7 @@ module HttpTracker = struct
     Cohttp_lwt_body.to_string body >>= fun body ->
     Log.info "Received response from HTTP tracker body: %S" body;
     try
-      Get.run Bcode.bdecode body |> decode_response
+      Bcode.decode body |> decode_response
     with exn ->
       Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn))
 end

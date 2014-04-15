@@ -57,61 +57,98 @@ let to_dict = function
 
 (** Bcode parsing *)
 
-let bint =
-  Get.(wrapped (char 'i') any_int64 (char 'e') >|= fun n -> Int n)
+let decode_partial s =
+  let len = String.length s in
+  let rec loop pos =
+    assert (pos < len);
+    match s.[pos] with
+    | 'i' ->
+      let start = pos+1 in
+      let rec loop1 pos =
+        assert (pos < len);
+        match s.[pos] with
+        | 'e' -> Int (Int64.of_string (String.sub s start (pos-start))), pos+1
+        | _ -> loop1 (pos+1)
+      in
+      loop1 start
+    | 'l' ->
+      let start = pos+1 in
+      let rec loop1 pos =
+        assert (pos < len);
+        match s.[pos] with
+        | 'e' -> [], pos+1
+        | _ ->
+          let x, pos = loop pos in
+          let xs, pos = loop1 pos in
+          x :: xs, pos
+      in
+      let xs, pos = loop1 start in
+      List xs, pos
+    | '0' .. '9' ->
+      let start = pos in
+      let rec loop1 pos =
+        assert (pos < len);
+        match s.[pos] with
+        | '0' .. '9' ->
+          loop1 (pos+1)
+        | ':' ->
+          let n = int_of_string (String.sub s start (pos-start)) in
+          String (String.sub s (pos+1) n), pos+n+1
+        | _ ->
+          assert false
+      in
+      loop1 (start+1)
+    | 'd' ->
+      let start = pos+1 in
+      let rec loop1 pos =
+        assert (pos < len);
+        match s.[pos] with
+        | 'e' -> [], pos+1
+        | _ ->
+          match loop pos with
+          | String k, pos ->
+            let v, pos = loop pos in
+            let d, pos = loop1 pos in
+            (k, v) :: d, pos
+          | _ -> assert false
+      in
+      let d, pos = loop1 start in
+      Dict d, pos
+    | _ ->
+      assert false
+  in
+  loop 0
 
-let bstring' =
-  Get.(any_int >>= fun n -> char ':' >> string_of_length n)
+let decode s =
+  let bc, _ = decode_partial s in
+  bc
 
-let bstring =
-  Get.(bstring' >|= fun s -> String s)
-
-let rec blist' () =
-  Get.(wrapped (char 'l') (many (fix bitem')) (char 'e') >|= fun l -> List l)
-
-and bdict' () =
-  Get.(wrapped
-    (char 'd')
-    (many (pair bstring' (fix bitem')))
-    (char 'e') >|= fun items -> Dict items)
-
-and bitem' () =
-  Get.(bint <|> fix blist' <|> bstring <|> fix bdict')
-
-let blist = Get.fix blist'
-let bdict = Get.fix bdict'
-let bitem = Get.fix bitem'
-
-let bdecode = bitem
-
-let rec bencode item =
-  let open Put in
-  match item with
-  | Int n ->
-    char 'i' >> string (Int64.to_string n) >> char 'e'
-  | String s ->
-    string (string_of_int (String.length s)) >> char ':' >> string s
-  | List l ->
-    List.fold_left (fun i x -> i >> bencode x) (char 'l') l >> char 'e'
-  | Dict d ->
-    List.fold_left (fun i (k, v) ->
-        i >> string (string_of_int (String.length k)) >> char ':' >> string k >>
-        bencode v) (char 'd') d >> char 'e'
-  (* let b = Buffer.create 17 in *)
-  (* let rec loop = function *)
-  (* | BInt n -> Printf.bprintf b "i%se" (Int64.to_string n) *)
-  (* | BString s -> Printf.bprintf b "%d:%s" (String.length s) s *)
-  (* | BList l -> *)
-  (*     Buffer.add_char b 'l'; *)
-  (*     List.iter loop l; *)
-  (*     Buffer.add_char b 'e' *)
-  (* | BDict d -> *)
-  (*     Buffer.add_char b 'd'; *)
-  (*     List.iter (fun (k, v) -> *)
-  (*       Printf.bprintf b "%d:%s" (String.length k) k; *)
-  (*       loop v) d; *)
-  (*     Buffer.add_char b 'e' *)
-  (* in loop item; Buffer.contents b *)
+let encode item =
+  let b = Buffer.create 17 in
+  let rec loop = function
+    | Int n ->
+      Buffer.add_char b 'i';
+      Buffer.add_string b (Int64.to_string n);
+      Buffer.add_char b 'e'
+    | String s ->
+      Buffer.add_string b (string_of_int (String.length s));
+      Buffer.add_char b ':';
+      Buffer.add_string b s
+    | List l ->
+      Buffer.add_char b 'l';
+      List.iter loop l;
+      Buffer.add_char b 'e'
+    | Dict d ->
+      Buffer.add_char b 'd';
+      List.iter (fun (k, v) ->
+          Buffer.add_string b (string_of_int (String.length k));
+          Buffer.add_char b ':';
+          Buffer.add_string b k;
+          loop v) d;
+      Buffer.add_char b 'e'
+  in
+  loop item;
+  Buffer.contents b
 
 (* let test_bdecode () = *)
 (*   let ints = *)

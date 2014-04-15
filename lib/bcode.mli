@@ -32,8 +32,9 @@ val to_int : t -> int
 val to_string : t -> string
 val to_dict : t -> (string * t) list
 
-val bdecode : t Get.t
-val bencode : t -> Put.t
+val decode : string -> t
+val decode_partial : string -> t * int
+val encode : t -> string
 
 (* val from_file : string -> t *)
 (* val from_string : string -> t *)

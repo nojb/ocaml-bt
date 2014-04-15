@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 04b6468c4ffe63c86484b1305cc6c3da)
+# DO NOT EDIT (digest: 01d183cdfc702e97a60206193acc91dc)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -16,8 +16,6 @@
 # Library bt
 "lib/bt.cmxs": use_bt
 "lib/bcode.cmx": for-pack(Bt)
-"lib/get.cmx": for-pack(Bt)
-"lib/put.cmx": for-pack(Bt)
 "lib/word160.cmx": for-pack(Bt)
 "lib/bits.cmx": for-pack(Bt)
 "lib/histo.cmx": for-pack(Bt)

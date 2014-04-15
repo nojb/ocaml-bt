@@ -84,7 +84,7 @@ let send_block p i o s =
   p.send (Wire.PIECE (i, o, s))
 
 let got_ut_metadata p data =
-  let m, data_start = Get.run_partial Bcode.bdecode data in
+  let m, data_start = Bcode.decode_partial data in
   let msg_type = Bcode.to_int (Bcode.find "msg_type" m) in
   let piece = Bcode.to_int (Bcode.find "piece" m) in
   let data = String.sub data data_start (String.length data - data_start) in
@@ -101,23 +101,21 @@ let got_ut_metadata p data =
 let send_reject_meta p piece =
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let m =
-    let open Put in
     let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
-    Bcode.bencode (Bcode.Dict d)
+    Bcode.encode (Bcode.Dict d)
   in
-  send_extended p id (Put.run m)
+  send_extended p id m
 
 let send_meta_piece p piece (len, s) =
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let m =
-    let open Put in
     let d =
       [ "msg_type", Bcode.Int 1L;
         "piece", Bcode.Int (Int64.of_int piece);
         "total_size", Bcode.Int (Int64.of_int len) ] in
-    Bcode.bencode (Bcode.Dict d) >> string s
+    Bcode.encode (Bcode.Dict d) ^ s
   in
-  send_extended p id (Put.run m)
+  send_extended p id m
   
 let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata) ]
@@ -197,7 +195,7 @@ let got_message p m =
   | Wire.CANCEL (idx, off, len) -> got_cancel p idx off len
   (* | Wire.HAVE_ALL *)
   (* | Wire.HAVE_NONE -> raise (InvalidProtocol m) *)
-  | Wire.EXTENDED (0, s) -> got_extended_handshake p (Get.run Bcode.bdecode s)
+  | Wire.EXTENDED (0, s) -> got_extended_handshake p (Bcode.decode s)
   | Wire.EXTENDED (id, s) -> got_extended p id s
   | _ -> assert false
 
@@ -298,8 +296,8 @@ let send_extended_handshake p =
         name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.Dict ["m", Bcode.Dict m] in
-  let s = Put.run (Bcode.bencode m) in
-  send_extended p 0 s
+  (* let s = Put.run (Bcode.bencode m) in *)
+  send_extended p 0 (Bcode.encode m)
 
 let peer_choking p =
   p.peer_choking
@@ -360,7 +358,7 @@ let request_meta_piece p idx =
     [ "msg_type", Bcode.Int 0L;
       "piece", Bcode.Int (Int64.of_int idx) ]
   in
-  Bcode.bencode (Bcode.Dict d) |> Put.run |> send_extended p id
+  Bcode.encode (Bcode.Dict d) |> send_extended p id
     
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download

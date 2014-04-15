@@ -70,7 +70,7 @@ let hashes bc =
   split_at 20 |> Array.map Word160.from_bin
 
 let info_hash (bc : Bcode.t) =
-  Bcode.bencode bc |> Put.run |> Word160.digest_of_string
+  Word160.digest_of_string (Bcode.encode bc)  (* |> Put.run |> Word160.digest_of_string *)
 
 let piece_length bc =
   Bcode.find "piece length" bc |> Bcode.to_int
@@ -133,7 +133,7 @@ let create bc =
   let total_length = total_length bc in
   let files = files bc in
   { name; info_hash; piece_length; total_length;
-    hashes; files; encoded = Put.run (Bcode.bencode bc) }
+    hashes; files; encoded = Bcode.encode bc }
 
 let piece_length info i =
   assert (i >= 0 && i < Array.length info.hashes);
@@ -208,7 +208,7 @@ let pick_missing p =
       
 let verify p =
   if Word160.digest_of_string p.raw = p.ih then
-    Some (create (Get.run Bcode.bdecode p.raw))
+    Some (create (Bcode.decode p.raw))
   else
     None
 
