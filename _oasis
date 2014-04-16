@@ -12,7 +12,7 @@ Flag examples
   Default$: false
 
 Library bt
-  Path: lib
+  Path: bt
   Pack: true
   Install: true
   FindlibName: bt
@@ -31,7 +31,7 @@ Executable find_ih
   BuildDepends: bt.dht
 
 Executable tryit
-  Path: lib
+  Path: bt
   MainIs: tryit.ml
   Build$: true
   Custom: true
