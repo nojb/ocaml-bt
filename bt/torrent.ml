@@ -22,11 +22,6 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-(* type event = *)
-(*   | PieceVerified of int *)
-(*   | Loaded of int * int * Bits.t *)
-(*   | Completed *)
-                            
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
 let rarest_first_cutoff = 1
@@ -178,6 +173,7 @@ let update dl =
   Lwt.return (Bits.count dl.completed, numpieces, dl.completed)
 
 let get_block t i ofs len =
+  t.up <- Int64.add t.up (Int64.of_int len);
   Store.read t.store (Meta.block_offset t.meta i ofs) len
   
 let got_have self piece =
@@ -215,6 +211,7 @@ let lost_request t (i, ofs, len) =
   | Not_found -> ()
 
 let got_block t idx off s =
+  t.down <- Int64.add t.down (Int64.of_int (String.length s));
   if not (Bits.is_set t.completed idx) then begin
     let a = List.assoc idx t.active in
     let n = off / standard_block_length in
@@ -232,7 +229,6 @@ let got_block t idx off s =
           t.amount_left <- Int64.(sub t.amount_left (of_int a.length));
           Bits.set t.completed idx;
           Lwt.return `Verified
-          (* signal t (PieceVerified idx); *)
         end else begin
           t.active <- List.remove_assoc idx t.active;
           Log.error "piece failed hashcheck (idx=%d)" idx;

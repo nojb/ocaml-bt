@@ -10,8 +10,9 @@ type level =
  | NOTICE
  | WARNING
  | ERROR
+ | FATAL
 
-let current_level = ref INFO
+let current_level = ref FATAL
 
 type color =
   | NONE
@@ -39,6 +40,7 @@ let string_of_level = function
   | NOTICE -> "notice"
   | WARNING -> "warning"
   | ERROR -> "error"
+  | FATAL -> "fatal"
 
 let color_of_level = function
   | DEBUG -> CYAN
@@ -46,6 +48,7 @@ let color_of_level = function
   | NOTICE -> GREEN
   | WARNING -> YELLOW
   | ERROR -> RED
+  | FATAL -> RED
 
 let log level ?exn fmt =
   let title = string_of_level level in

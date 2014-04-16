@@ -376,7 +376,7 @@ let handle_peer_event bt p = function
 let reset_peer_rates bt =
   Hashtbl.iter (fun _ p -> Peer.reset_rates p) bt.peers
 
-let display_info bt =
+let print_info bt =
   match bt.stage with
   | Leeching (_, t)
   | Seeding (_, t) ->
@@ -385,12 +385,14 @@ let display_info bt =
         (fun _ p (dl, ul) -> (dl +. Peer.download_rate p, ul +. Peer.upload_rate p))
         bt.peers (0.0, 0.0)
     in
-    Log.info "%d/%d pieces (%d%%) with %d peers at %s/s (dl), %s/s (ul)"
+    Printf.eprintf "Progress: %d/%d (%d%%) Peers: %d Downloaded: %s (%s/s) Uploaded: %s (%s/s)\n%!"
       (Bits.count (Torrent.have t))
       (Bits.length (Torrent.have t))
       (truncate (100.0 *. (float (Bits.count (Torrent.have t))) /. (float (Bits.length (Torrent.have t)))))
       (Hashtbl.length bt.peers)
+      (Util.string_of_file_size (Torrent.down t))
       (Util.string_of_file_size (Int64.of_float dl))
+      (Util.string_of_file_size (Torrent.up t))
       (Util.string_of_file_size (Int64.of_float ul))
   | _ ->
     ()
@@ -456,7 +458,7 @@ let handle_event bt = function
     let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
     let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
     unchoke_peers bt (optimistic = 0);
-    display_info bt;
+    print_info bt;
     if rateiter = 0 then reset_peer_rates bt;
     Lwt.async
       (fun () ->

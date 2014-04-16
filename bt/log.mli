@@ -4,6 +4,7 @@ type level =
  | NOTICE
  | WARNING
  | ERROR
+ | FATAL
 
 val current_level : level ref
 
