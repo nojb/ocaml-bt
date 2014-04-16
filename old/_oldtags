@@ -1,8 +1,0 @@
-true: debug
-true: bit_annot
-true: package(lwt), package(lwt.react)
-true: package(uri)
-true: package(cohttp.lwt)
-true: package(sha)
-true: package(qcheck)
-true: package(zarith)
