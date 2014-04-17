@@ -22,8 +22,6 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-module H = Word160
-
 let max_num_peers = 40
 let max_connections = 5
 let listen_ports = [50000]
@@ -52,8 +50,8 @@ type stage =
   | Seeding of Meta.t * Torrent.t
 
 type t = {
-  id : H.t;
-  ih : H.t;
+  id : SHA1.t;
+  ih : SHA1.t;
   mutable trackers : Tracker.Tier.t list;
   peers : (Addr.t, Peer.t) Hashtbl.t;
   connecting : (Addr.t, unit) Hashtbl.t;
@@ -72,7 +70,7 @@ let create mg =
         Tracker.Tier.add_tracker tier tr;
         tier) mg.Magnet.tr
   in
-  { id = H.peer_id "OCTO";
+  { id = SHA1.peer_id "OCTO";
     ih = mg.Magnet.xt;
     trackers;
     peers = Hashtbl.create 17;
@@ -118,8 +116,8 @@ let read_handshake sock =
   | { 19 : 8;
       proto : 19 * 8 : string;
       extbits : 8 * 8 : string, bind (Bits.of_bin extbits);
-      ih : 20 * 8 : string, bind (Word160.from_bin ih);
-      id : 20 * 8 : string, bind (Word160.from_bin id) } ->
+      ih : 20 * 8 : string, bind (SHA1.from_bin ih);
+      id : 20 * 8 : string, bind (SHA1.from_bin id) } ->
     (ih, id, extbits)
 
 let extended_bits =
@@ -131,8 +129,8 @@ let handshake_message id ih =
   BITSTRING
     { 19 : 8; proto : -1 : string;
       Bits.to_bin extended_bits : 8 * 8 : string;
-      Word160.to_bin ih : 20 * 8 : string;
-      Word160.to_bin id : 20 * 8 : string }
+      SHA1.to_bin ih : 20 * 8 : string;
+      SHA1.to_bin id : 20 * 8 : string }
   
 let add_peer bt sock addr ih id exts =
   if Hashtbl.length bt.peers < max_num_peers then begin
@@ -174,7 +172,7 @@ let handle_received_peer bt addr =
          Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
          read_handshake sock >>= fun (ih, id, exts) ->
          Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
-           (Addr.to_string addr) (Word160.to_hex_short ih) (Word160.to_hex_short id);
+           (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
          add_peer bt sock addr ih id exts;
          Lwt.return ())
       (fun () ->
@@ -466,7 +464,7 @@ let handle_event bt = function
          bt.push (Rechoke (optimistic, rateiter)))
   | Announce (tier, event) ->
     let doit () =
-      Tracker.Tier.query tier bt.ih ?event bt.port bt.id >>= fun resp ->
+      Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:bt.port ~id:bt.id >>= fun resp ->
       Log.success "announce on %s successful, reannouncing in %d seconds"
         (Tracker.Tier.show tier) resp.Tracker.interval;
       push_peers_received bt resp.Tracker.peers;

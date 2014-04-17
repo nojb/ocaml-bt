@@ -67,8 +67,8 @@ module UdpTracker = struct
       | Some STOPPED -> 3l
     in
     BITSTRING { conn_id : 64; 1l : 32; trans_id : 32;
-                Word160.to_bin ih : 20 * 8 : string;
-                Word160.to_bin id : 20 * 8 : string;
+                SHA1.to_bin ih : 20 * 8 : string;
+                SHA1.to_bin id : 20 * 8 : string;
                 down : 64; left : 64; up : 64;
                 event : 32; 0l : 32; 0l : 32; -1l : 32;
                 port : 16 }                
@@ -212,8 +212,8 @@ module HttpTracker = struct
       | Some x -> Uri.add_query_param' uri (name, f x)
     in
     let uri = tr in
-    let uri = Uri.add_query_param' uri ("info_hash", Word160.to_bin ih) in
-    let uri = Uri.add_query_param' uri ("peer_id", Word160.to_bin id) in
+    let uri = Uri.add_query_param' uri ("info_hash", SHA1.to_bin ih) in
+    let uri = Uri.add_query_param' uri ("peer_id", SHA1.to_bin id) in
     let uri = add_param_maybe uri "uploaded" Int64.to_string up in
     let uri = add_param_maybe uri "downloaded" Int64.to_string down in
     let uri = add_param_maybe uri "left" Int64.to_string left in
@@ -229,7 +229,7 @@ module HttpTracker = struct
       Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn))
 end
 
-let query tr ih ?up ?down ?left ?event port id =
+let query tr ~ih ?up ?down ?left ?event ~port ~id =
   Log.info "announcing on %S" (Uri.to_string tr);
   match Uri.scheme tr with
   | Some "http" | Some "https" ->
@@ -257,12 +257,12 @@ module Tier = struct
   let add_tracker seq tr =
     seq := tr :: !seq
 
-  let query tier ih ?up ?down ?left ?event port id =
+  let query tier ~ih ?up ?down ?left ?event ~port ~id =
     let rec loop failtrs = function
       | [] -> Lwt.fail No_valid_tracker
       | tr :: rest ->
         try
-          query tr ih ?up ?down ?left ?event port id >>= fun resp ->
+          query tr ~ih ?up ?down ?left ?event ~port ~id >>= fun resp ->
           tier := tr :: List.rev_append failtrs rest;
           Lwt.return resp
         with

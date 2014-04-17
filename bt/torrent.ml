@@ -157,7 +157,7 @@ let update dl =
     else
       let off = Int64.(mul (of_int i) (of_int piece_size)) in
       Store.read dl.store off (plen i) >>= fun s ->
-        if Word160.digest_of_string s |> Word160.equal dl.meta.Meta.hashes.(i) then begin
+        if SHA1.digest_of_string s |> SHA1.equal dl.meta.Meta.hashes.(i) then begin
           Bits.set dl.completed i;
           loop (Int64.(sub acc (of_int (plen i)))) (i+1)
         end else
@@ -222,7 +222,7 @@ let got_block t idx off s =
       a.missing <- a.missing - 1;
       if a.missing <= 0 then begin
         Store.read t.store (Meta.piece_offset t.meta idx) a.length >>= fun s ->
-        if Word160.digest_of_string s = t.meta.Meta.hashes.(idx) then begin
+        if SHA1.digest_of_string s = t.meta.Meta.hashes.(idx) then begin
           Log.success "piece verified (idx=%d)" idx;
           t.active <- List.remove_assoc idx t.active;
           t.rarity <- Histo.remove_all idx t.rarity;

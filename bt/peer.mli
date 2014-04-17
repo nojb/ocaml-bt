@@ -37,11 +37,11 @@ type event =
   | GotMetaPiece of int * string
   | RejectMetaPiece of int
 
-val create : Tcp.socket -> Word160.t -> t
+val create : Tcp.socket -> SHA1.t -> t
 
 val start : t -> (event -> unit) -> unit
 
-val id : t -> Word160.t
+val id : t -> SHA1.t
 
 val addr : t -> Addr.t
 

@@ -5,8 +5,8 @@ type file_info = {
 
 type t = {
   name : string;
-  info_hash : Word160.t;
-  hashes : Word160.t array;
+  info_hash : SHA1.t;
+  hashes : SHA1.t array;
   piece_length : int;
   total_length : int64;
   files : file_info list;
@@ -24,7 +24,7 @@ val block_offset : t -> int -> int -> int64
 
 type partial
 
-val create_partial : Word160.t -> int -> partial
+val create_partial : SHA1.t -> int -> partial
 val partial_length : partial -> int
 val add_piece : partial -> int -> string -> bool
 val pick_missing : partial -> int option

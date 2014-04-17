@@ -49,7 +49,7 @@ exception Timeout
 type t = {
   addr : Addr.t;
   sock : Tcp.socket;
-  mutable id : Word160.t;
+  mutable id : SHA1.t;
   mutable am_choking : bool;
   mutable am_interested : bool;
   mutable peer_choking : bool;
@@ -276,7 +276,7 @@ let start p h =
       (fun () -> Lwt.join [reader_loop p; writer_loop p])
       (fun e ->
          Log.error ~exn:e "peer input/output error (addr=%s,id=%s)"
-           (Addr.to_string p.addr) (Word160.to_hex_short p.id);
+           (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
     signal p (Finished p.act_reqs);

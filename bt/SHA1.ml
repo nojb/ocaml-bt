@@ -66,7 +66,7 @@ let from_bin x =
   x
       
 let digest_of_string s =
-  Sha1.to_bin (Sha1.string s)
+  Cryptokit.hash_string (Cryptokit.Hash.sha1 ()) s
     
 let to_z s =
   Z.of_bits s

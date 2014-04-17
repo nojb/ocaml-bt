@@ -20,7 +20,7 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type t = {
-  xt : Word160.t;
+  xt : SHA1.t;
   dn : string option;
   tr : Uri.t list
 }

@@ -20,7 +20,7 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type t = {
-  xt : Word160.t;
+  xt : SHA1.t;
   dn : string option;
   tr : Uri.t list
 }
@@ -63,10 +63,10 @@ let _of_string s =
     | ("xt", xt) :: rest ->
       let xt =
         try
-          match_prefix xt "urn:btih:" |> Word160.of_hex
+          match_prefix xt "urn:btih:" |> SHA1.of_hex
         with
         | Not_found ->
-          match_prefix xt "urn:sha1:" |> Word160.of_base32
+          match_prefix xt "urn:sha1:" |> SHA1.of_base32
       in
       loop (Some xt) dn tr rest
     | ("dn", dn) :: rest ->

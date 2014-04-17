@@ -16,10 +16,10 @@ Library bt
   Pack: true
   Install: true
   FindlibName: bt
-  Modules: Bcode, Word160, Bits, Histo, Meta,
+  Modules: Bcode, SHA1, Bits, Histo, Meta,
            Magnet, Peer, Store, Tracker, Util, Torrent,
            Client, Rate, Addr, Tcp, Log, Udp, Wire
-  BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix, sha, zarith, qcheck, bitstring, bitstring.syntax
+  BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix, cryptokit, zarith, qcheck, bitstring, bitstring.syntax
   
 Executable find_ih
   Path: examples

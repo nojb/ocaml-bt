@@ -36,13 +36,13 @@ type response = {
 
 val query :
   Uri.t ->
-  Word160.t ->
+  ih:SHA1.t ->
   ?up:int64 ->
   ?down:int64 ->
   ?left:int64 ->
   ?event:event ->
-  int ->
-  Word160.t -> response Lwt.t
+  port:int ->
+  id:SHA1.t -> response Lwt.t
 
 module Tier : sig
   type t
@@ -52,7 +52,7 @@ module Tier : sig
   val create : unit -> t
   val shuffle : t -> unit
   val add_tracker : t -> Uri.t -> unit
-  val query : t -> Word160.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
-    int -> Word160.t -> response Lwt.t
+  val query : t -> ih:SHA1.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
+    port:int -> id:SHA1.t -> response Lwt.t
   val show : t -> string
 end

@@ -7,8 +7,8 @@ type file_info = {
 
 type t = {
   name : string;
-  info_hash : Word160.t;
-  hashes : Word160.t array;
+  info_hash : SHA1.t;
+  hashes : SHA1.t array;
   piece_length : int;
   total_length : int64;
   files : file_info list;
@@ -67,10 +67,10 @@ let split_at n s =
 
 let hashes bc =
   Bcode.find "pieces" bc |> Bcode.to_string |>
-  split_at 20 |> Array.map Word160.from_bin
+  split_at 20 |> Array.map SHA1.from_bin
 
 let info_hash (bc : Bcode.t) =
-  Word160.digest_of_string (Bcode.encode bc)  (* |> Put.run |> Word160.digest_of_string *)
+  SHA1.digest_of_string (Bcode.encode bc)  (* |> Put.run |> Word160.digest_of_string *)
 
 let piece_length bc =
   Bcode.find "piece length" bc |> Bcode.to_int
@@ -148,7 +148,7 @@ let piece_offset info i =
 let pp fmt info =
   Format.fprintf fmt "@[<v>";
   Format.fprintf fmt "             name: %s@," info.name;
-  Format.fprintf fmt "        info hash: %s@," (Word160.to_hex info.info_hash);
+  Format.fprintf fmt "        info hash: %s@," (SHA1.to_hex info.info_hash);
   (* Format.fprintf fmt "    announce-list: @[<v>%a@]@," pp_announce_list announce_list; *)
   Format.fprintf fmt "     total length: %s@," (Util.string_of_file_size info.total_length);
   Format.fprintf fmt "     piece length: %s@," (Util.string_of_file_size (Int64.of_int info.piece_length));
@@ -165,7 +165,7 @@ let block_offset meta idx off =
   Int64.add (piece_offset meta idx) (Int64.of_int off)
 
 type partial = {
-  ih : Word160.t;
+  ih : SHA1.t;
   length : int;
   raw : string;
   pieces : [ `Done | `Pending | `Missing ] array;
@@ -207,7 +207,7 @@ let pick_missing p =
   loop [] 0
       
 let verify p =
-  if Word160.digest_of_string p.raw = p.ih then
+  if SHA1.digest_of_string p.raw = p.ih then
     Some (create (Bcode.decode p.raw))
   else
     None

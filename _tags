@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 2046aa9eeb23e23c2c2daaeb31a71ec2)
+# DO NOT EDIT (digest: e85271a37b6cc20a223b2119d139dca3)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -16,7 +16,7 @@
 # Library bt
 "bt/bt.cmxs": use_bt
 "bt/bcode.cmx": for-pack(Bt)
-"bt/word160.cmx": for-pack(Bt)
+"bt/SHA1.cmx": for-pack(Bt)
 "bt/bits.cmx": for-pack(Bt)
 "bt/histo.cmx": for-pack(Bt)
 "bt/meta.cmx": for-pack(Bt)
@@ -42,10 +42,10 @@
 <bt/tryit.{native,byte}>: pkg_bitstring.syntax
 <bt/tryit.{native,byte}>: pkg_cohttp
 <bt/tryit.{native,byte}>: pkg_cohttp.lwt
+<bt/tryit.{native,byte}>: pkg_cryptokit
 <bt/tryit.{native,byte}>: pkg_lwt
 <bt/tryit.{native,byte}>: pkg_lwt.unix
 <bt/tryit.{native,byte}>: pkg_qcheck
-<bt/tryit.{native,byte}>: pkg_sha
 <bt/tryit.{native,byte}>: pkg_uri
 <bt/tryit.{native,byte}>: pkg_zarith
 <bt/tryit.{native,byte}>: use_bt
@@ -53,10 +53,10 @@
 <bt/*.ml{,i}>: pkg_bitstring.syntax
 <bt/*.ml{,i}>: pkg_cohttp
 <bt/*.ml{,i}>: pkg_cohttp.lwt
+<bt/*.ml{,i}>: pkg_cryptokit
 <bt/*.ml{,i}>: pkg_lwt
 <bt/*.ml{,i}>: pkg_lwt.unix
 <bt/*.ml{,i}>: pkg_qcheck
-<bt/*.ml{,i}>: pkg_sha
 <bt/*.ml{,i}>: pkg_uri
 <bt/*.ml{,i}>: pkg_zarith
 <bt/*.ml{,i}>: use_bt
