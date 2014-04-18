@@ -31,3 +31,4 @@ val write_int32_be : socket -> int32 -> unit Lwt.t
 val connect : socket -> Addr.t -> unit Lwt.t
 val listen : ?backlog:int -> socket -> int -> (socket -> Addr.t -> unit) -> (unit -> unit)
 val getpeeraddr : socket -> Addr.t
+val io : socket -> Lwt_io.input_channel * Lwt_io.output_channel

@@ -122,24 +122,20 @@ let put' = function
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let write sock msg =
+let write output msg =
   let doit () =
-    let bs = put' msg in
-    let len = Bitstring.bitstring_length bs in
-    assert (len land 7 = 0);
-    let len = BITSTRING { Int32.of_int (len lsr 3) : 32 } in
+    let (bs, boff, blen) = put' msg in
+    assert (boff land 7 = 0 && blen land 7 = 0);
     (* Bitstring.hexdump_bitstring stderr bs; *)
-    Tcp.write_bitstring sock len >>= fun () ->
-    Tcp.write_bitstring sock bs
+    Lwt_io.BE.write_int output (blen lsr 3) >>= fun () ->
+    Lwt_io.write_from_exactly output bs (boff lsr 3) (blen lsr 3)
+    (* Tcp.write_bitstring sock len >>= fun () -> *)
+    (* Tcp.write_bitstring sock bs *)
   in
   Lwt.catch doit Lwt.fail
 
-exception BadMsg of int * int
-
-let get len s =
+let parse s =
   bitmatch Bitstring.bitstring_of_string s with
-  | { _ } as bs when Bitstring.bitstring_length bs = 0 ->
-    KEEP_ALIVE
   | { 0 : 8 } ->
     CHOKE
   | { 1 : 8 } ->
@@ -189,11 +185,18 @@ let get len s =
     failwith "can't parse msg"
     (* fail (\* fail (BadMsg (len, id)) *\) *)
 
-let read sock =
+let max_packet_len = 32 * 1024
+
+let read input =
   let doit () =
-    Tcp.read_int32_be sock >|= Int32.to_int >>= fun len ->
-    Tcp.read sock len >|= get len
-    (* Bitstring.hexdump_bitstring stderr s; *)
+    Lwt_io.BE.read_int input >>= fun len ->
+    assert (len <= max_packet_len);
+    if len = 0 then
+      Lwt.return KEEP_ALIVE
+    else
+      let buf = String.create len in
+      Lwt_io.read_into_exactly input buf 0 len >|= fun () -> parse buf
+      (* Bitstring.hexdump_bitstring stderr s; *)
   in
   Lwt.catch doit Lwt.fail
 

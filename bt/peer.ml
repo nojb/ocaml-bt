@@ -48,7 +48,9 @@ exception Timeout
 
 type t = {
   addr : Addr.t;
-  sock : Tcp.socket;
+  (* sock : Tcp.socket; *)
+  output : Lwt_io.output_channel;
+  input : Lwt_io.input_channel;
   mutable id : SHA1.t;
   mutable am_choking : bool;
   mutable am_interested : bool;
@@ -201,7 +203,7 @@ let got_message p m =
 
 let reader_loop p =
   let input = Lwt_stream.from
-      (fun () -> Wire.read p.sock >>= fun msg ->
+      (fun () -> Wire.read p.input >>= fun msg ->
         Log.debug "%s >>> %s" (Addr.to_string p.addr) (Wire.string_of_message msg);
         Lwt.return (Some msg))
   in
@@ -234,11 +236,11 @@ let writer_loop p =
     ]
     >>= function
     | `Timeout ->
-      Wire.write p.sock Wire.KEEP_ALIVE >>= loop
+      Wire.write p.output Wire.KEEP_ALIVE >>= loop
     | `Stop ->
       Lwt.return_unit
     | `Ready m ->
-      Wire.write p.sock m >>= fun () ->
+      Wire.write p.output m >>= fun () ->
       Log.debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
       (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
       loop ()
@@ -251,8 +253,9 @@ let create sock id =
   let send_req x = send_req (Some x) in
   let msg_queue, send = Lwt_stream.create () in
   let send x = send (Some x) in
+  let input, output = Tcp.io sock in
   let p =
-    { addr = Tcp.getpeeraddr sock; sock; id;
+    { addr = Tcp.getpeeraddr sock; input; output; id;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
       should_stop = w; extbits = Bits.create (8 * 8);
@@ -296,7 +299,6 @@ let send_extended_handshake p =
         name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.Dict ["m", Bcode.Dict m] in
-  (* let s = Put.run (Bcode.bencode m) in *)
   send_extended p 0 (Bcode.encode m)
 
 let peer_choking p =

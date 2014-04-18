@@ -42,7 +42,7 @@ type message =
 
 val string_of_message : message -> string
 val sprint : message -> unit -> string
-val read : Tcp.socket -> message Lwt.t
-val write : Tcp.socket -> message -> unit Lwt.t
+val read : Lwt_io.input_channel -> message Lwt.t
+val write : Lwt_io.output_channel -> message -> unit Lwt.t
 
 val lt_extension_bit : int

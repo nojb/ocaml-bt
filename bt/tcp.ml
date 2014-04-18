@@ -107,3 +107,7 @@ let getpeeraddr sock =
 
 (* let set_timeout sock = *)
 (*   Lwt_unix.setsockopt_float sock Unix.SO_RCVTIMEO 5. *)
+
+let io sock =
+  Lwt_io.of_fd ~mode:Lwt_io.Input sock,
+  Lwt_io.of_fd ~mode:Lwt_io.Output sock
