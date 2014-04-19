@@ -1,6 +1,6 @@
 OASISFormat: 0.4
 Name: bt
-Version: 0.1
+Version: 0.1.2
 Synopsis: BitTorrent library and client using Lwt
 Authors: Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 License: MIT
