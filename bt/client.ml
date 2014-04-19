@@ -55,6 +55,7 @@ type t = {
   mutable trackers : Tracker.Tier.t list;
   peers : (Addr.t, Peer.t) Hashtbl.t;
   connecting : (Addr.t, unit) Hashtbl.t;
+  mutable saved : Addr.t list;
   chan : event Lwt_stream.t;
   push : event -> unit;
   mutable stage : stage;
@@ -75,6 +76,7 @@ let create mg =
     trackers;
     peers = Hashtbl.create 17;
     connecting = Hashtbl.create 17;
+    saved = [];
     chan;
     push;
     stage = NoMeta;
@@ -131,56 +133,109 @@ let handshake_message id ih =
       Bits.to_bin extended_bits : 8 * 8 : string;
       SHA1.to_bin ih : 20 * 8 : string;
       SHA1.to_bin id : 20 * 8 : string }
+
+let know_peer bt addr =
+  Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr || List.mem addr bt.saved
+
+let is_seeding bt =
+  match bt.stage with
+  | Seeding _ -> true
+  | _ -> false
+
+let need_more_peers bt =
+  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_num_peers) &&
+  not (is_seeding bt)
   
-let add_peer bt sock addr ih id exts =
-  if Hashtbl.length bt.peers < max_num_peers then begin
-    let p = Peer.create sock id in
-    Peer.start p (push_peer_event bt p);
-    if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake p;
-    Hashtbl.add bt.peers addr p;
-    match bt.stage with
-    | Leeching (_, t)
-    | Seeding (_, t) -> Peer.send_have_bitfield p (Torrent.have t)
-    | _ -> ()
-  end else begin
-    Log.warning "too many peers; rejecting new peer (addr=%s)" (Addr.to_string addr);
-    Tcp.close sock |> ignore
+let peer_joined bt sock addr ih id exts =
+  let p = Peer.create sock id in
+  Peer.start p (push_peer_event bt p);
+  if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake p;
+  Hashtbl.add bt.peers addr p;
+  match bt.stage with
+  | Leeching (_, t)
+  | Seeding (_, t) -> Peer.send_have_bitfield p (Torrent.have t)
+  | _ -> ()
+
+let rec peer_connection_failed bt addr =
+  if need_more_peers bt && List.length bt.saved > 0 then begin
+    let addr = List.hd bt.saved in
+    bt.saved <- List.tl bt.saved;
+    let doit () =
+      let sock = Tcp.create_socket () in
+      Tcp.connect sock addr >>= fun () ->
+      Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
+      read_handshake sock >|= fun (ih, id, exts) ->
+      Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
+        (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
+      peer_joined bt sock addr ih id exts
+    in
+    Lwt.async (fun () -> try_connect bt addr doit)
+  end
+
+and try_connect bt addr f =
+  Hashtbl.add bt.connecting addr ();
+  let doit () = Lwt.finalize f (fun () -> Hashtbl.remove bt.connecting addr; Lwt.return ()) in
+  Lwt.catch doit
+    (fun e ->
+       Log.error ~exn:e "try_connect";
+       peer_connection_failed bt addr;
+       Lwt.return ())
+
+let peer_finished bt p =
+  Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
+  Hashtbl.remove bt.peers (Peer.addr p);
+  if need_more_peers bt && List.length bt.saved > 0 then begin
+    let addr = List.hd bt.saved in
+    bt.saved <- List.tl bt.saved;
+    Log.info "contacting saved peer (addr=%s)" (Addr.to_string addr);
+    let doit () =
+      let sock = Tcp.create_socket () in
+      Tcp.connect sock addr >>= fun () ->
+      Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
+      read_handshake sock >|= fun (ih, id, exts) ->
+      Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
+        (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
+      peer_joined bt sock addr ih id exts
+    in
+    Lwt.async (fun () -> try_connect bt addr doit)
   end
 
 let handle_incoming_peer bt sock addr =
-  Log.info "incoming peer (addr=%s,present=%b)" (Addr.to_string addr) (Hashtbl.mem bt.peers addr);
-  if not (Hashtbl.mem bt.peers addr) then begin
-    Lwt.catch
-      (fun () ->
-         read_handshake sock >>= fun (ih, id, exts) ->
-         Tcp.write_bitstring sock (handshake_message bt.id ih) >|= fun () ->
-         add_peer bt sock addr ih id exts)
-      (fun e ->
-         Log.error ~exn:e "peer handshake failed"; Lwt.return ()) |> ignore
-  end else
-    Tcp.close sock |> ignore
+  if not (know_peer bt addr) then
+    if need_more_peers bt then begin
+      Log.info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
+      let doit () =
+        read_handshake sock >>= fun (ih, id, exts) ->
+        Tcp.write_bitstring sock (handshake_message bt.id ih) >|= fun () ->
+        peer_joined bt sock addr ih id exts
+      in
+      Lwt.async (fun () -> try_connect bt addr doit)
+    end else begin
+      Log.warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
+      bt.saved <- addr :: bt.saved;
+      Lwt.async (fun () -> Tcp.close sock)
+    end
 
 let handle_received_peer bt addr =
-  Log.info "received peer (addr=%s,present=%b,connecting=%b)"
-    (Addr.to_string addr) (Hashtbl.mem bt.peers addr) (Hashtbl.mem bt.connecting addr);
-  if not (Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr) then begin
-    Hashtbl.add bt.connecting addr ();
-    Lwt.finalize
-      (fun () ->
-         let sock = Tcp.create_socket () in
-         Tcp.connect sock addr >>= fun () ->
-         Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
-         read_handshake sock >>= fun (ih, id, exts) ->
-         Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
-           (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
-         add_peer bt sock addr ih id exts;
-         Lwt.return ())
-      (fun () ->
-         Hashtbl.remove bt.connecting addr; Lwt.return ())
-  end else begin
-    Lwt.return ()
-  end
-
+  if not (know_peer bt addr) then
+    if need_more_peers bt then begin
+      Log.info "contacting outgoing peer (addr=%s)" (Addr.to_string addr);
+      let doit () =
+        let sock = Tcp.create_socket () in
+        Tcp.connect sock addr >>= fun () ->
+        Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
+        read_handshake sock >|= fun (ih, id, exts) ->
+        Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
+          (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
+        peer_joined bt sock addr ih id exts
+      in
+      Lwt.async (fun () -> try_connect bt addr doit)
+    end
+    else begin
+      Log.warning "too many peers; saving outgoing peer for later (addr=%s)" (Addr.to_string addr);
+      bt.saved <- addr :: bt.saved
+    end
+    
 let unchoke_peers bt optimistic =
   let aux compare_peers =
     let peers = Hashtbl.fold (fun _ p l -> p :: l) bt.peers [] in
@@ -274,7 +329,7 @@ let request_block bt p =
   
 let handle_peer_event bt p = function
   | Peer.Finished reqs ->
-    Hashtbl.remove bt.peers (Peer.addr p);
+    peer_finished bt p;
     begin match bt.stage with
     | Leeching (_, dl) ->
       Torrent.lost_bitfield dl (Peer.have p)
@@ -383,7 +438,18 @@ let print_info bt =
         (fun _ p (dl, ul) -> (dl +. Peer.download_rate p, ul +. Peer.upload_rate p))
         bt.peers (0.0, 0.0)
     in
-    Printf.eprintf "Progress: %d/%d (%d%%) Peers: %d Downloaded: %s (%s/s) Uploaded: %s (%s/s)\n%!"
+    let eta =
+      let left = Torrent.amount_left t in
+      if dl = 0.0 then "Inf"
+      else
+        let eta = Int64.to_float left /. dl in
+        let tm = Unix.gmtime eta in
+        if tm.Unix.tm_mday > 1 || tm.Unix.tm_mon > 0 || tm.Unix.tm_year > 70 then "More than a day"
+        else
+          Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+    in
+
+    Printf.eprintf "Progress: %d/%d (%d%%) Peers: %d Downloaded: %s (%s/s) Uploaded: %s (%s/s) ETA: %s\n%!"
       (Bits.count (Torrent.have t))
       (Bits.length (Torrent.have t))
       (truncate (100.0 *. (float (Bits.count (Torrent.have t))) /. (float (Bits.length (Torrent.have t)))))
@@ -392,6 +458,7 @@ let print_info bt =
       (Util.string_of_file_size (Int64.of_float dl))
       (Util.string_of_file_size (Torrent.up t))
       (Util.string_of_file_size (Int64.of_float ul))
+      eta
   | _ ->
     ()
 
@@ -404,12 +471,8 @@ let handle_event bt = function
       let rec loop = function
         | [] -> Lwt.return ()
         | addr :: addrs ->
-          ignore (Lwt.catch
-                    (fun () -> handle_received_peer bt addr)
-                    (fun e ->
-                       Log.error ~exn:e "connection failed (addr=%s)" (Addr.to_string addr);
-                       Lwt.return ()));
-          Lwt_unix.sleep 0.5 >>= fun () -> loop addrs
+          handle_received_peer bt addr;
+          Lwt_unix.sleep 0.1 >>= fun () -> loop addrs
       in
       loop addrs
     in

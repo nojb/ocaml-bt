@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: e85271a37b6cc20a223b2119d139dca3)
+# DO NOT EDIT (digest: d5079b5b311f66616c0a23f593b277e2)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -33,22 +33,6 @@
 "bt/log.cmx": for-pack(Bt)
 "bt/udp.cmx": for-pack(Bt)
 "bt/wire.cmx": for-pack(Bt)
-# Executable find_ih
-<examples/find_ih.{native,byte}>: pkg_bt.dht
-<examples/*.ml{,i}>: pkg_bt.dht
-<examples/find_ih.{native,byte}>: custom
-# Executable tryit
-<bt/tryit.{native,byte}>: pkg_bitstring
-<bt/tryit.{native,byte}>: pkg_bitstring.syntax
-<bt/tryit.{native,byte}>: pkg_cohttp
-<bt/tryit.{native,byte}>: pkg_cohttp.lwt
-<bt/tryit.{native,byte}>: pkg_cryptokit
-<bt/tryit.{native,byte}>: pkg_lwt
-<bt/tryit.{native,byte}>: pkg_lwt.unix
-<bt/tryit.{native,byte}>: pkg_qcheck
-<bt/tryit.{native,byte}>: pkg_uri
-<bt/tryit.{native,byte}>: pkg_zarith
-<bt/tryit.{native,byte}>: use_bt
 <bt/*.ml{,i}>: pkg_bitstring
 <bt/*.ml{,i}>: pkg_bitstring.syntax
 <bt/*.ml{,i}>: pkg_cohttp
@@ -59,7 +43,35 @@
 <bt/*.ml{,i}>: pkg_qcheck
 <bt/*.ml{,i}>: pkg_uri
 <bt/*.ml{,i}>: pkg_zarith
-<bt/*.ml{,i}>: use_bt
-<bt/tryit.{native,byte}>: custom
+# Executable find_ih
+<examples/find_ih.{native,byte}>: pkg_bt.dht
+<examples/*.ml{,i}>: pkg_bt.dht
+<examples/find_ih.{native,byte}>: custom
+# Executable otorrent
+<otorrent/otorrent.{native,byte}>: pkg_bitstring
+<otorrent/otorrent.{native,byte}>: pkg_bitstring.syntax
+<otorrent/otorrent.{native,byte}>: pkg_cmdliner
+<otorrent/otorrent.{native,byte}>: pkg_cohttp
+<otorrent/otorrent.{native,byte}>: pkg_cohttp.lwt
+<otorrent/otorrent.{native,byte}>: pkg_cryptokit
+<otorrent/otorrent.{native,byte}>: pkg_lwt
+<otorrent/otorrent.{native,byte}>: pkg_lwt.unix
+<otorrent/otorrent.{native,byte}>: pkg_qcheck
+<otorrent/otorrent.{native,byte}>: pkg_uri
+<otorrent/otorrent.{native,byte}>: pkg_zarith
+<otorrent/otorrent.{native,byte}>: use_bt
+<otorrent/*.ml{,i}>: pkg_bitstring
+<otorrent/*.ml{,i}>: pkg_bitstring.syntax
+<otorrent/*.ml{,i}>: pkg_cmdliner
+<otorrent/*.ml{,i}>: pkg_cohttp
+<otorrent/*.ml{,i}>: pkg_cohttp.lwt
+<otorrent/*.ml{,i}>: pkg_cryptokit
+<otorrent/*.ml{,i}>: pkg_lwt
+<otorrent/*.ml{,i}>: pkg_lwt.unix
+<otorrent/*.ml{,i}>: pkg_qcheck
+<otorrent/*.ml{,i}>: pkg_uri
+<otorrent/*.ml{,i}>: pkg_zarith
+<otorrent/*.ml{,i}>: use_bt
+<otorrent/otorrent.{native,byte}>: custom
 # OASIS_STOP
 # true: bin_annot

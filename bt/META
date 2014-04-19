@@ -1,7 +1,7 @@
 # OASIS_START
-# DO NOT EDIT (digest: 2761f6f95d68be0c4ef30166db1ad3e3)
+# DO NOT EDIT (digest: e5cd70a8483351f51b426e59f70502e5)
 version = "0.1"
-description = "BitTorrent client library"
+description = "BitTorrent library and client using Lwt"
 requires =
 "lwt uri cohttp cohttp.lwt lwt.unix cryptokit zarith qcheck bitstring bitstring.syntax"
 archive(byte) = "bt.cma"

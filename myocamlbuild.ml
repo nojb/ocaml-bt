@@ -1,5 +1,5 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: d22f5fd5f0e4bcab39fc8fb86f00e3b6) *)
+(* DO NOT EDIT (digest: 8bbc9043967d7e90534212c9ca56d8c1) *)
 module OASISGettext = struct
 (* # 22 "src/oasis/OASISGettext.ml" *)
 
@@ -598,7 +598,7 @@ let package_default =
      MyOCamlbuildBase.lib_ocaml = [("bt", ["bt"], [])];
      lib_c = [];
      flags = [];
-     includes = []
+     includes = [("otorrent", ["bt"])]
   }
   ;;
 

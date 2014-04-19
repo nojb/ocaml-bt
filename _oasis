@@ -1,15 +1,11 @@
 OASISFormat: 0.4
 Name: bt
 Version: 0.1
-Synopsis: BitTorrent client library
-Authors: Nicolas Ojeda Bar
+Synopsis: BitTorrent library and client using Lwt
+Authors: Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 License: MIT
 Plugins: META (0.4), DevFiles (0.4)
 BuildTools: ocamlbuild
-
-Flag examples
-  Description: Build the examples
-  Default$: false
 
 Library bt
   Path: bt
@@ -19,22 +15,23 @@ Library bt
   Modules: Bcode, SHA1, Bits, Histo, Meta,
            Magnet, Peer, Store, Tracker, Util, Torrent,
            Client, Rate, Addr, Tcp, Log, Udp, Wire
-  BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix, cryptokit, zarith, qcheck, bitstring, bitstring.syntax
+  BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix,
+                cryptokit, zarith, qcheck, bitstring, bitstring.syntax
   
 Executable find_ih
   Path: examples
   MainIs: find_ih.ml
-  Build$: flag(examples)
+  Build$: false
   Custom: true
   CompiledObject: best
   Install: false
   BuildDepends: bt.dht
 
-Executable tryit
-  Path: bt
-  MainIs: tryit.ml
+Executable otorrent
+  Path: otorrent
+  MainIs: otorrent.ml
   Build$: true
   Custom: true
   CompiledObject: best
   Install: false
-  BuildDepends: bt
+  BuildDepends: bt, cmdliner
