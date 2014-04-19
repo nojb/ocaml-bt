@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: d5079b5b311f66616c0a23f593b277e2)
+# DO NOT EDIT (digest: f179b6d24145f7173ee7f547efe74cf8)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -43,10 +43,6 @@
 <bt/*.ml{,i}>: pkg_qcheck
 <bt/*.ml{,i}>: pkg_uri
 <bt/*.ml{,i}>: pkg_zarith
-# Executable find_ih
-<examples/find_ih.{native,byte}>: pkg_bt.dht
-<examples/*.ml{,i}>: pkg_bt.dht
-<examples/find_ih.{native,byte}>: custom
 # Executable otorrent
 <otorrent/otorrent.{native,byte}>: pkg_bitstring
 <otorrent/otorrent.{native,byte}>: pkg_bitstring.syntax

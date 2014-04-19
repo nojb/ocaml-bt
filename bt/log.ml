@@ -12,7 +12,7 @@ type level =
  | ERROR
  | FATAL
 
-let current_level = ref INFO
+let current_level = ref FATAL
 
 type color =
   | NONE

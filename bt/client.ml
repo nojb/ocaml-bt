@@ -405,7 +405,9 @@ let handle_peer_event bt p = function
   | Peer.BlockReceived (idx, off, s) ->
     begin match bt.stage with
     | Leeching (meta, t) ->
-      Log.success "received block (idx=%d,off=%d,len=%d)" idx off (String.length s);
+      Log.success "received block (idx=%d,off=%d,len=%d) from %s (%s/s)"
+        idx off (String.length s) (Addr.to_string (Peer.addr p))
+        (Util.string_of_file_size (Int64.of_float (Peer.download_rate p)));
       let aux () =
         Torrent.got_block t idx off s >|= function
         | `Verified ->
@@ -494,7 +496,7 @@ let handle_event bt = function
       let wakeup_peer _ p =
         Peer.send_have_bitfield p bits;
         if Torrent.got_bitfield t (Peer.have p) then begin
-          Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p));
+          (* Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p)); *)
           Peer.send_interested p;
           if not (Peer.peer_choking p) then
             for i = 1 to max_requests do request_block bt p done

@@ -1,5 +1,9 @@
 open Cmdliner
 
+let debug =
+  let doc = "Enable debug output (note: this generates a LOT of output)" in
+  Arg.(value & flag & info ["d"; "debug"] ~doc)
+
 let magnets =
   let doc = "Magnet link of the torrent(s) to download" in
   Arg.(value & pos_all string [] & info [] ~docv:"MAGNET" ~doc)
@@ -10,8 +14,12 @@ let download magnet =
     (fun () -> Bt.Client.start bt)
     (fun e -> Bt.Log.error ~exn:e "fatal error during download"; Lwt.return ())
 
+let download_all debug magnets =
+  if debug then Bt.Log.current_level := Bt.Log.INFO;
+  Lwt_main.run (Lwt_list.iter_p download magnets)
+
 let download_t =
-  Term.(pure (fun xs -> Lwt_main.run (Lwt_list.iter_p download xs)) $ magnets)
+  Term.(pure download_all $ debug $ magnets)
 
 let info =
   let doc = "download torrent(s)" in

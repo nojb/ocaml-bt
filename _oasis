@@ -17,15 +17,6 @@ Library bt
            Client, Rate, Addr, Tcp, Log, Udp, Wire
   BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix,
                 cryptokit, zarith, qcheck, bitstring, bitstring.syntax
-  
-Executable find_ih
-  Path: examples
-  MainIs: find_ih.ml
-  Build$: false
-  Custom: true
-  CompiledObject: best
-  Install: false
-  BuildDepends: bt.dht
 
 Executable otorrent
   Path: otorrent

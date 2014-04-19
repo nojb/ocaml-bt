@@ -57,7 +57,7 @@ let port (_, p) = p
 
 let ip (ip, _) = ip
 
-let to_string (ip, p) = Printf.sprintf "%s:%d" (Unix.string_of_inet_addr ip) p
+let to_string (ip, p) = Printf.sprintf "[%s]:%d" (Unix.string_of_inet_addr ip) p
 
 let to_string_compact (ip, p) =
   let (a, b, c, d) = Ip.to_ints ip in
