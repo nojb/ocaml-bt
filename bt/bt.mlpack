@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 35295366d1cda4493e6c467c7494eb9a)
+# DO NOT EDIT (digest: f4cfecc86f2bb36496c4601903a7c937)
 Bcode
 SHA1
 Bits
@@ -14,8 +14,8 @@ Torrent
 Client
 Rate
 Addr
-Tcp
 Log
 Udp
 Wire
+IO
 # OASIS_STOP

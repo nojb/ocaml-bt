@@ -247,15 +247,15 @@ let writer_loop p =
   in
   loop ()
 
-let create sock id =
+let create sock addr id =
   let w, wake = Lwt.wait () in
   let requests, send_req = Lwt_stream.create () in
   let send_req x = send_req (Some x) in
   let msg_queue, send = Lwt_stream.create () in
   let send x = send (Some x) in
-  let input, output = Tcp.io sock in
+  let input, output = IO.in_channel sock, IO.out_channel sock in
   let p =
-    { addr = Tcp.getpeeraddr sock; input; output; id;
+    { addr; input; output; id;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
       should_stop = w; extbits = Bits.create (8 * 8);

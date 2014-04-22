@@ -22,7 +22,7 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let max_num_peers = 40
+let max_num_peers = 20
 let max_connections = 5
 let listen_ports = [50000]
 let max_requests = 5
@@ -32,7 +32,7 @@ let optimistic_unchoke_iterations = 3
 let rate_computation_iterations = 2
 
 type event =
-  | IncomingPeer of Tcp.socket * Addr.t
+  | IncomingPeer of IO.socket * Addr.t
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
   | GotMetadata of Meta.t
@@ -84,19 +84,19 @@ let create mg =
 
 exception Cant_listen
 
-let create_server handle =
-  let sock = Tcp.create_socket () in
-  let rec loop = function
-    | [] ->
-      raise Cant_listen
-    | p :: ports ->
-      try
-        let stop = Tcp.listen sock p handle in
-        Log.info "listening on port %d" p;
-        p, stop
-      with _ -> loop ports
-  in
-  loop listen_ports
+(* let create_server handle = *)
+(*   let sock = Tcp.create_socket () in *)
+(*   let rec loop = function *)
+(*     | [] -> *)
+(*       raise Cant_listen *)
+(*     | p :: ports -> *)
+(*       try *)
+(*         let stop = Tcp.listen sock p handle in *)
+(*         Log.info "listening on port %d" p; *)
+(*         p, stop *)
+(*       with _ -> loop ports *)
+(*   in *)
+(*   loop listen_ports *)
 
 let push_incoming_peer bt sock addr =
   bt.push (IncomingPeer (sock, addr))
@@ -113,7 +113,7 @@ let push_metadata bt info =
 let proto = "BitTorrent protocol"
 
 let read_handshake sock =
-  Tcp.read sock (49 + String.length proto) >|= fun hs ->
+  sock#read_string (49 + String.length proto) >|= fun hs ->
   bitmatch Bitstring.bitstring_of_string hs with
   | { 19 : 8;
       proto : 19 * 8 : string;
@@ -147,7 +147,7 @@ let need_more_peers bt =
   not (is_seeding bt)
   
 let peer_joined bt sock addr ih id exts =
-  let p = Peer.create sock id in
+  let p = Peer.create sock addr id in
   Peer.start p (push_peer_event bt p);
   if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake p;
   Hashtbl.add bt.peers addr p;
@@ -161,9 +161,8 @@ let rec peer_connection_failed bt addr =
     let addr = List.hd bt.saved in
     bt.saved <- List.tl bt.saved;
     let doit () =
-      let sock = Tcp.create_socket () in
-      Tcp.connect sock addr >>= fun () ->
-      Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
+      IO.connect addr >>= fun sock ->
+      sock#write_bitstring (handshake_message bt.id bt.ih) >>= fun () ->
       read_handshake sock >|= fun (ih, id, exts) ->
       Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
         (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
@@ -189,9 +188,8 @@ let peer_finished bt p =
     bt.saved <- List.tl bt.saved;
     Log.info "contacting saved peer (addr=%s)" (Addr.to_string addr);
     let doit () =
-      let sock = Tcp.create_socket () in
-      Tcp.connect sock addr >>= fun () ->
-      Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
+      IO.connect addr >>= fun sock ->
+      sock#write_bitstring (handshake_message bt.id bt.ih) >>= fun () ->
       read_handshake sock >|= fun (ih, id, exts) ->
       Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
         (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
@@ -206,14 +204,14 @@ let handle_incoming_peer bt sock addr =
       Log.info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
       let doit () =
         read_handshake sock >>= fun (ih, id, exts) ->
-        Tcp.write_bitstring sock (handshake_message bt.id ih) >|= fun () ->
+        sock#write_bitstring (handshake_message bt.id ih) >|= fun () ->
         peer_joined bt sock addr ih id exts
       in
       Lwt.async (fun () -> try_connect bt addr doit)
     end else begin
       Log.warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
       bt.saved <- addr :: bt.saved;
-      Lwt.async (fun () -> Tcp.close sock)
+      Lwt.async (fun () -> sock#close)
     end
 
 let handle_received_peer bt addr =
@@ -221,9 +219,8 @@ let handle_received_peer bt addr =
     if need_more_peers bt then begin
       Log.info "contacting outgoing peer (addr=%s)" (Addr.to_string addr);
       let doit () =
-        let sock = Tcp.create_socket () in
-        Tcp.connect sock addr >>= fun () ->
-        Tcp.write_bitstring sock (handshake_message bt.id bt.ih) >>= fun () ->
+        IO.connect addr >>= fun sock ->
+        sock#write_bitstring (handshake_message bt.id bt.ih) >>= fun () ->
         read_handshake sock >|= fun (ih, id, exts) ->
         Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
           (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
@@ -548,7 +545,8 @@ let event_loop bt =
   loop ()
 
 let start bt =
-  let port, _ = create_server (push_incoming_peer bt) in
+  (* let port, _ = create_server (push_incoming_peer bt) in *)
+  let port = 5000 in
   bt.port <- port;
   Log.info "starting";
   List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;

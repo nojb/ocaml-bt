@@ -37,7 +37,7 @@ type event =
   | GotMetaPiece of int * string
   | RejectMetaPiece of int
 
-val create : Tcp.socket -> SHA1.t -> t
+val create : IO.socket -> Addr.t -> SHA1.t -> t
 
 val start : t -> (event -> unit) -> unit
 
