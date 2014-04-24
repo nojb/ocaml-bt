@@ -6,6 +6,7 @@ class type socket =
 
     method read : string -> int -> int -> int Lwt.t
     method really_read : string -> int -> int -> unit Lwt.t
+    method read_char : char Lwt.t
     method read_string : int -> string Lwt.t
     method read_int16 : int Lwt.t
     method read_int32 : int32 Lwt.t
@@ -32,6 +33,10 @@ class virtual basic_socket =
           | n -> loop (pos + n) (len - n)
       in
       loop pos len
+    method read_char =
+      let buf = String.create 1 in
+      self#really_read buf 0 1 >>= fun () ->
+      Lwt.return buf.[0]
     method read_string len =
       let str = String.create len in
       self#really_read str 0 len >>= fun () ->
@@ -65,7 +70,7 @@ class virtual basic_socket =
       self#write_bitstring (BITSTRING { n : 32 })
   end
 
-let of_fd fd =
+let of_fd fd : socket =
   object
     inherit basic_socket
     method read = Lwt_unix.read fd
@@ -78,20 +83,45 @@ let connect addr =
   Lwt_unix.connect fd (Addr.to_sockaddr addr) >>= fun () ->
   Lwt.return (of_fd fd)
 
-let encrypt sock cipher =
+class type encrypted_socket =
+  object
+    inherit socket
+    method enable_encryption : Cryptokit.Stream.stream_cipher -> unit
+    method disable_encryption : unit
+    method enable_decryption : Cryptokit.Stream.stream_cipher -> unit
+    method disable_decryption : unit
+  end
+
+let encrypt sock =
   object
     inherit basic_socket
+    val mutable enc = None
+    val mutable dec = None
+    method enable_encryption cipher = enc <- Some cipher
+    method disable_encryption = enc <- None
+    method enable_decryption cipher = dec <- Some cipher
+    method disable_decryption = dec <- None        
     method read str pos len =
-      sock#read str pos len >>= fun n ->
-      cipher#transform str pos str pos n;
-      Lwt.return n
+      match dec with
+      | None ->
+        sock#read str pos len
+      | Some cipher ->
+        let buf = String.create len in
+        sock#read buf 0 len >>= fun n ->
+        cipher#transform buf 0 str pos n;
+        Lwt.return n
     method write str pos len =
-      let buf = String.create len in
-      cipher#transform str pos buf 0 len;
-      sock#really_write buf 0 len >>= fun () ->
-      Lwt.return len
+      match enc with
+      | None ->
+        sock#write str pos len
+      | Some cipher ->
+        let buf = String.create len in
+        cipher#transform str pos buf 0 len;
+        sock#really_write buf 0 len >>= fun () ->
+        Lwt.return len
     method close =
-      cipher#wipe;
+      begin match enc with Some enc -> enc#wipe | _ -> () end;
+      begin match dec with Some dec -> dec#wipe | _ -> () end;
       sock#close
   end
 

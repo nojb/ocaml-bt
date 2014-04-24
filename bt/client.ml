@@ -156,19 +156,26 @@ let peer_joined bt sock addr ih id exts =
   | Seeding (_, t) -> Peer.send_have_bitfield p (Torrent.have t)
   | _ -> ()
 
+let rec connect_peer ?(retry = false) bt addr =
+  IO.connect addr >>= fun sock ->
+  let hs = Handshake.create ~incoming:false ~id:bt.id ~ih:bt.ih in
+  Handshake.run hs (if retry then false else true) sock >>= function
+  | Handshake.Success (id, exts, sock) ->
+    Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
+      (Addr.to_string addr) (SHA1.to_hex_short bt.ih) (SHA1.to_hex_short id);
+    peer_joined bt sock addr bt.ih id exts;
+    Lwt.return ()
+  | Handshake.Retry ->
+    Log.info "encrypted handshake failed; retrying with plain...";
+    connect_peer ~retry:true bt addr
+  | _ ->
+    Lwt.fail (Failure "error")
+
 let rec peer_connection_failed bt addr =
   if need_more_peers bt && List.length bt.saved > 0 then begin
     let addr = List.hd bt.saved in
     bt.saved <- List.tl bt.saved;
-    let doit () =
-      IO.connect addr >>= fun sock ->
-      sock#write_bitstring (handshake_message bt.id bt.ih) >>= fun () ->
-      read_handshake sock >|= fun (ih, id, exts) ->
-      Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
-        (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
-      peer_joined bt sock addr ih id exts
-    in
-    Lwt.async (fun () -> try_connect bt addr doit)
+    Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
   end
 
 and try_connect bt addr f =
@@ -187,15 +194,7 @@ let peer_finished bt p =
     let addr = List.hd bt.saved in
     bt.saved <- List.tl bt.saved;
     Log.info "contacting saved peer (addr=%s)" (Addr.to_string addr);
-    let doit () =
-      IO.connect addr >>= fun sock ->
-      sock#write_bitstring (handshake_message bt.id bt.ih) >>= fun () ->
-      read_handshake sock >|= fun (ih, id, exts) ->
-      Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
-        (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
-      peer_joined bt sock addr ih id exts
-    in
-    Lwt.async (fun () -> try_connect bt addr doit)
+    Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
   end
 
 let handle_incoming_peer bt sock addr =
@@ -218,15 +217,7 @@ let handle_received_peer bt addr =
   if not (know_peer bt addr) then
     if need_more_peers bt then begin
       Log.info "contacting outgoing peer (addr=%s)" (Addr.to_string addr);
-      let doit () =
-        IO.connect addr >>= fun sock ->
-        sock#write_bitstring (handshake_message bt.id bt.ih) >>= fun () ->
-        read_handshake sock >|= fun (ih, id, exts) ->
-        Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
-          (Addr.to_string addr) (SHA1.to_hex_short ih) (SHA1.to_hex_short id);
-        peer_joined bt sock addr ih id exts
-      in
-      Lwt.async (fun () -> try_connect bt addr doit)
+      Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
     end
     else begin
       Log.warning "too many peers; saving outgoing peer for later (addr=%s)" (Addr.to_string addr);

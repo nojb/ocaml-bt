@@ -1,2 +1,3 @@
 strict_with=auto
 syntax=bitstring
+syntax=lwt

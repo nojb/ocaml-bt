@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: f4cfecc86f2bb36496c4601903a7c937)
+# DO NOT EDIT (digest: e3f2e77bd90cdef7590846b65a19ca63)
 Bcode
 SHA1
 Bits
@@ -18,4 +18,5 @@ Log
 Udp
 Wire
 IO
+Handshake
 # OASIS_STOP

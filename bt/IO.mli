@@ -4,6 +4,7 @@ class type socket =
 
     method read : string -> int -> int -> int Lwt.t
     method really_read : string -> int -> int -> unit Lwt.t
+    method read_char : char Lwt.t
     method read_string : int -> string Lwt.t
     method read_int16 : int Lwt.t
     method read_int32 : int32 Lwt.t
@@ -20,7 +21,17 @@ val connect : Addr.t -> socket Lwt.t
 
 val of_fd : Lwt_unix.file_descr -> socket
 
-val encrypt : socket -> Cryptokit.Stream.stream_cipher -> socket
+class type encrypted_socket =
+  object
+    inherit socket
+    method enable_encryption : Cryptokit.Stream.stream_cipher -> unit
+    method disable_encryption : unit
+    method enable_decryption : Cryptokit.Stream.stream_cipher -> unit
+    method disable_decryption : unit
+  end
+
+val encrypt : socket -> encrypted_socket
+    (* read:Cryptokit.Stream.stream_cipher -> write:Cryptokit.Stream.stream_cipher -> socket *)
 
 (* class type buffered_output = *)
 (*   object *)
