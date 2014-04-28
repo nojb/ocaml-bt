@@ -21,13 +21,3 @@ val piece_offset : t -> int -> int64
 val block_count : t -> int -> int
 val pp : Format.formatter -> t -> unit
 val block_offset : t -> int -> int -> int64
-
-type partial
-
-val create_partial : SHA1.t -> int -> partial
-val partial_length : partial -> int
-val add_piece : partial -> int -> string -> bool
-val pick_missing : partial -> int option
-val verify : partial -> t option
-val is_complete : partial -> bool
-  

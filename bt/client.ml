@@ -44,7 +44,7 @@ type event =
 
 type stage =
   | NoMeta
-  | PartialMeta of Meta.partial
+  | PartialMeta of IncompleteMetadata.t
   | Loading of Meta.t * Torrent.t
   | Leeching of Meta.t * Torrent.t
   | Seeding of Meta.t * Torrent.t
@@ -332,7 +332,7 @@ let has_partial_metadata bt =
 let request_meta_piece bt (p : Peer.t) =
   match bt.stage with
   | PartialMeta meta ->
-    begin match Meta.pick_missing meta with
+    begin match IncompleteMetadata.pick_missing meta with
     | None -> ()
     | Some i -> Peer.request_meta_piece p i
     end
@@ -344,14 +344,14 @@ let handle_available_metadata bt p len =
   Log.success "metadata available (len=%d,npieces=%d)" len npieces;
   match bt.stage with
   | NoMeta ->
-    bt.stage <- PartialMeta (Meta.create_partial bt.ih len);
+    bt.stage <- PartialMeta (IncompleteMetadata.create bt.ih len);
     request_meta_piece bt p
   | PartialMeta m ->
-    if Meta.partial_length m = len then
+    if IncompleteMetadata.length m = len then
       request_meta_piece bt p
     else
       Log.warning "metadata size mismatch (expected=%d,received=%d)"
-        (Meta.partial_length m) len
+        (IncompleteMetadata.length m) len
   | _ ->
     ()
 
@@ -412,11 +412,11 @@ let handle_peer_event bt p = function
     begin match bt.stage with
     | PartialMeta meta ->
       Log.success "got meta piece (i=%d)" i;
-      if Meta.add_piece meta i s then
-        match Meta.verify meta with
+      if IncompleteMetadata.add_piece meta i s then
+        match IncompleteMetadata.verify meta with
         | Some meta ->
           Log.success "got complete metadata";
-          push_metadata bt meta
+          push_metadata bt (Meta.create (Bcode.decode meta))
         | None ->
           Log.error "metadata hash check failed";
           bt.stage <- NoMeta
