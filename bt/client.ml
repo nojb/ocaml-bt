@@ -299,11 +299,28 @@ let unchoke_peers bt optimistic =
 let reset_peer_rates bt =
   Hashtbl.iter (fun _ p -> Peer.reset_rates p) bt.peers
 
+let rechoke_downloads bt =
+  match bt.stage with
+  | Leeching (_, t) ->
+    let h = Torrent.have t in
+    let doit p =
+      let ph = Peer.have p in
+      let rec loop i =
+        if i >= Bits.length h then false
+        else if Bits.is_set ph i then true else loop (i+1)
+      in
+      if loop 0 then Peer.send_interested p else Peer.send_not_interested p
+    in
+    Hashtbl.iter (fun _ p -> doit p) bt.peers
+  | _ ->
+    ()
+
 let rec rechoke_pulse bt optimistic rateiter =
   Log.info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter;
   let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
   let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
   unchoke_peers bt (optimistic = 0);
+  rechoke_downloads bt;
   print_info bt;
   if rateiter = 0 then reset_peer_rates bt;
   Lwt_unix.sleep (float unchoking_frequency) >>= fun () ->
@@ -386,18 +403,20 @@ let handle_peer_event bt p = function
     for i = 1 to max_requests do
       request_block bt p
     done
-  | Peer.Have i ->
-    begin match bt.stage with
-    | Leeching (_, dl) ->
-      if Torrent.got_have dl i then Peer.send_interested p
-    | _ -> ()
-    end
+  | Peer.Have _ ->
+    ()
+    (* begin match bt.stage with *)
+    (* | Leeching (_, dl) -> *)
+    (*   if Torrent.got_have dl i then Peer.send_interested p *)
+    (* | _ -> () *)
+    (* end *)
   | Peer.HaveBitfield b ->
-    begin match bt.stage with
-    | Leeching (_, dl) ->
-      if Torrent.got_bitfield dl b then Peer.send_interested p
-    | _ -> ()
-    end
+    ()
+    (* begin match bt.stage with *)
+    (* | Leeching (_, dl) -> *)
+    (*   if Torrent.got_bitfield dl b then Peer.send_interested p *)
+    (* | _ -> () *)
+    (* end *)
   | Peer.MetaRequested i ->
     begin match bt.stage with
     | NoMeta
@@ -497,14 +516,14 @@ let handle_event bt = function
       Log.success "torrent loaded (good=%d,total=%d)" good total;
       bt.stage <- if Torrent.is_complete t then Seeding (meta, t) else Leeching (meta, t);
       let wakeup_peer _ p =
-        Peer.send_have_bitfield p bits;
-        if Torrent.got_bitfield t (Peer.have p) then begin
-          (* Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p)); *)
-          Peer.send_interested p;
-          if not (Peer.peer_choking p) then
-            for i = 1 to max_requests do request_block bt p done
-        end else
-          Peer.send_not_interested p
+        Peer.send_have_bitfield p bits
+        (* if Torrent.got_bitfield t (Peer.have p) then begin *)
+        (*   (\* Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p)); *\) *)
+        (*   Peer.send_interested p; *)
+        (*   if not (Peer.peer_choking p) then *)
+        (*     for i = 1 to max_requests do request_block bt p done *)
+        (* end else *)
+        (*   Peer.send_not_interested p *)
       in
       Hashtbl.iter wakeup_peer bt.peers
       (* bt.push (Rechoke (1, 1)) *)
