@@ -25,8 +25,8 @@ let (>|=) = Lwt.(>|=)
 type event =
   | Choked of (int * int * int) list
   | Unchoked
-  | Interested
-  | NotInterested
+  (* | Interested *)
+  (* | NotInterested *)
   | Have of int
   | HaveBitfield of Bits.t
   | BlockRequested of int * int * int

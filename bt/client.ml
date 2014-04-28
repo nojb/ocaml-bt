@@ -39,7 +39,7 @@ type event =
   | TorrentLoaded of int * int * Bits.t
   | PieceVerified of int
   | TorrentCompleted
-  | Rechoke of int * int
+  (* | Rechoke of int * int *)
   | Announce of Tracker.Tier.t * Tracker.event option
 
 type stage =
@@ -171,12 +171,12 @@ let rec connect_peer ?(retry = false) bt addr =
   | _ ->
     Lwt.fail (Failure "error")
 
-let rec peer_connection_failed bt addr =
-  if need_more_peers bt && List.length bt.saved > 0 then begin
-    let addr = List.hd bt.saved in
-    bt.saved <- List.tl bt.saved;
-    Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
-  end
+(* let rec peer_connection_failed bt addr = *)
+(*   if need_more_peers bt && List.length bt.saved > 0 then begin *)
+(*     let addr = List.hd bt.saved in *)
+(*     bt.saved <- List.tl bt.saved; *)
+(*     Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr)) *)
+(*   end *)
 
 and try_connect bt addr f =
   Hashtbl.add bt.connecting addr ();
@@ -184,18 +184,18 @@ and try_connect bt addr f =
   Lwt.catch doit
     (fun e ->
        Log.error ~exn:e "try_connect";
-       peer_connection_failed bt addr;
+       (* peer_connection_failed bt addr; *)
        Lwt.return ())
 
 let peer_finished bt p =
   Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
-  Hashtbl.remove bt.peers (Peer.addr p);
-  if need_more_peers bt && List.length bt.saved > 0 then begin
-    let addr = List.hd bt.saved in
-    bt.saved <- List.tl bt.saved;
-    Log.info "contacting saved peer (addr=%s)" (Addr.to_string addr);
-    Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
-  end
+  Hashtbl.remove bt.peers (Peer.addr p)
+  (* if need_more_peers bt && List.length bt.saved > 0 then begin *)
+  (*   let addr = List.hd bt.saved in *)
+  (*   bt.saved <- List.tl bt.saved; *)
+  (*   Log.info "contacting saved peer (addr=%s)" (Addr.to_string addr); *)
+  (*   Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr)) *)
+  (* end *)
 
 let handle_incoming_peer bt sock addr =
   if not (know_peer bt addr) then
@@ -214,16 +214,54 @@ let handle_incoming_peer bt sock addr =
     end
 
 let handle_received_peer bt addr =
-  if not (know_peer bt addr) then
-    if need_more_peers bt then begin
-      Log.info "contacting outgoing peer (addr=%s)" (Addr.to_string addr);
-      Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
-    end
-    else begin
-      Log.warning "too many peers; saving outgoing peer for later (addr=%s)" (Addr.to_string addr);
-      bt.saved <- addr :: bt.saved
-    end
-    
+  if not (know_peer bt addr) then begin
+    Log.warning "saving outgoing peer for later (addr=%s)" (Addr.to_string addr);
+    bt.saved <- addr :: bt.saved
+  end
+
+let reconnect_pulse_delay = 0.5
+
+let rec reconnect_pulse bt =
+  while need_more_peers bt && List.length bt.saved > 0 do
+    let addr = List.hd bt.saved in
+    bt.saved <- List.tl bt.saved;
+    Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr))
+  done;
+  Lwt_unix.sleep reconnect_pulse_delay >>= fun () -> reconnect_pulse bt
+
+let print_info bt =
+  match bt.stage with
+  | Leeching (_, t)
+  | Seeding (_, t) ->
+    let dl, ul =
+      Hashtbl.fold
+        (fun _ p (dl, ul) -> (dl +. Peer.download_rate p, ul +. Peer.upload_rate p))
+        bt.peers (0.0, 0.0)
+    in
+    let eta =
+      let left = Torrent.amount_left t in
+      if dl = 0.0 then "Inf"
+      else
+        let eta = Int64.to_float left /. dl in
+        let tm = Unix.gmtime eta in
+        if tm.Unix.tm_mday > 1 || tm.Unix.tm_mon > 0 || tm.Unix.tm_year > 70 then "More than a day"
+        else
+          Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+    in
+
+    Printf.eprintf "Progress: %d/%d (%d%%) Peers: %d Downloaded: %s (%s/s) Uploaded: %s (%s/s) ETA: %s\n%!"
+      (Bits.count (Torrent.have t))
+      (Bits.length (Torrent.have t))
+      (truncate (100.0 *. (float (Bits.count (Torrent.have t))) /. (float (Bits.length (Torrent.have t)))))
+      (Hashtbl.length bt.peers)
+      (Util.string_of_file_size (Torrent.down t))
+      (Util.string_of_file_size (Int64.of_float dl))
+      (Util.string_of_file_size (Torrent.up t))
+      (Util.string_of_file_size (Int64.of_float ul))
+      eta
+  | _ ->
+    ()
+
 let unchoke_peers bt optimistic =
   let aux compare_peers =
     let peers = Hashtbl.fold (fun _ p l -> p :: l) bt.peers [] in
@@ -257,6 +295,19 @@ let unchoke_peers bt optimistic =
     aux (fun a b -> compare (Peer.upload_rate b) (Peer.upload_rate a))
   | _ ->
     ()
+
+let reset_peer_rates bt =
+  Hashtbl.iter (fun _ p -> Peer.reset_rates p) bt.peers
+
+let rec rechoke_pulse bt optimistic rateiter =
+  Log.info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter;
+  let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
+  let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
+  unchoke_peers bt (optimistic = 0);
+  print_info bt;
+  if rateiter = 0 then reset_peer_rates bt;
+  Lwt_unix.sleep (float unchoking_frequency) >>= fun () ->
+  rechoke_pulse bt optimistic rateiter
           
 let info_piece_size = 16 * 1024
 
@@ -409,47 +460,11 @@ let handle_peer_event bt p = function
     | _ ->
       ()
     end
-  | Peer.Interested ->
-    ()
-  | Peer.NotInterested ->
-    ()
+  (* | Peer.Interested -> *)
+  (*   () *)
+  (* | Peer.NotInterested -> *)
+  (*   () *)
   | Peer.Port _ ->
-    ()
-
-let reset_peer_rates bt =
-  Hashtbl.iter (fun _ p -> Peer.reset_rates p) bt.peers
-
-let print_info bt =
-  match bt.stage with
-  | Leeching (_, t)
-  | Seeding (_, t) ->
-    let dl, ul =
-      Hashtbl.fold
-        (fun _ p (dl, ul) -> (dl +. Peer.download_rate p, ul +. Peer.upload_rate p))
-        bt.peers (0.0, 0.0)
-    in
-    let eta =
-      let left = Torrent.amount_left t in
-      if dl = 0.0 then "Inf"
-      else
-        let eta = Int64.to_float left /. dl in
-        let tm = Unix.gmtime eta in
-        if tm.Unix.tm_mday > 1 || tm.Unix.tm_mon > 0 || tm.Unix.tm_year > 70 then "More than a day"
-        else
-          Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-    in
-
-    Printf.eprintf "Progress: %d/%d (%d%%) Peers: %d Downloaded: %s (%s/s) Uploaded: %s (%s/s) ETA: %s\n%!"
-      (Bits.count (Torrent.have t))
-      (Bits.length (Torrent.have t))
-      (truncate (100.0 *. (float (Bits.count (Torrent.have t))) /. (float (Bits.length (Torrent.have t)))))
-      (Hashtbl.length bt.peers)
-      (Util.string_of_file_size (Torrent.down t))
-      (Util.string_of_file_size (Int64.of_float dl))
-      (Util.string_of_file_size (Torrent.up t))
-      (Util.string_of_file_size (Int64.of_float ul))
-      eta
-  | _ ->
     ()
 
 let handle_event bt = function
@@ -491,8 +506,8 @@ let handle_event bt = function
         end else
           Peer.send_not_interested p
       in
-      Hashtbl.iter wakeup_peer bt.peers;
-      bt.push (Rechoke (1, 1))
+      Hashtbl.iter wakeup_peer bt.peers
+      (* bt.push (Rechoke (1, 1)) *)
     | _ ->
       ()
     end
@@ -504,17 +519,17 @@ let handle_event bt = function
     | Leeching (meta, t) -> bt.stage <- Seeding (meta, t)
     | _ -> ()
     end
-  | Rechoke (optimistic, rateiter) ->
-    Log.info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter;
-    let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
-    let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
-    unchoke_peers bt (optimistic = 0);
-    print_info bt;
-    if rateiter = 0 then reset_peer_rates bt;
-    Lwt.async
-      (fun () ->
-         Lwt_unix.sleep (float unchoking_frequency) >|= fun () ->
-         bt.push (Rechoke (optimistic, rateiter)))
+  (* | Rechoke (optimistic, rateiter) -> *)
+  (*   Log.info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter; *)
+  (*   let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in *)
+  (*   let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in *)
+  (*   unchoke_peers bt (optimistic = 0); *)
+  (*   print_info bt; *)
+  (*   if rateiter = 0 then reset_peer_rates bt; *)
+  (*   Lwt.async *)
+  (*     (fun () -> *)
+  (*        Lwt_unix.sleep (float unchoking_frequency) >|= fun () -> *)
+  (*        bt.push (Rechoke (optimistic, rateiter))) *)
   | Announce (tier, event) ->
     let doit () =
       Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:bt.port ~id:bt.id >>= fun resp ->
@@ -541,4 +556,6 @@ let start bt =
   bt.port <- port;
   Log.info "starting";
   List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
+  Lwt.async (fun () -> reconnect_pulse bt);
+  Lwt.async (fun () -> rechoke_pulse bt 1 1);
   event_loop bt
