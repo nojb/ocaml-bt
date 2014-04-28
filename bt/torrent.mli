@@ -26,7 +26,7 @@
                             
 type t
 
-val create : Meta.t -> t
+val create : Metadata.t -> t
 val update : t -> (int * int * Bits.t) Lwt.t
 val get_block : t -> int -> int -> int -> string Lwt.t
 val request_block : t -> (int -> bool) -> (int * int * int) option

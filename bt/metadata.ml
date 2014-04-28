@@ -9,10 +9,15 @@ type t = {
   name : string;
   info_hash : SHA1.t;
   hashes : SHA1.t array;
+  piece_count : int;
   piece_length : int;
+  block_size : int;
+  last_piece_size : int;
   total_length : int64;
   files : file_info list;
-  encoded : string
+  encoded : string;
+  block_count : int;
+  last_block_size : int
 }
 
 let length info =
@@ -130,10 +135,16 @@ let create bc =
   let hashes = hashes bc in
   let info_hash = info_hash bc in
   let piece_length = piece_length bc in
+  let block_size = 16 * 1024 in
   let total_length = total_length bc in
   let files = files bc in
-  { name; info_hash; piece_length; total_length;
-    hashes; files; encoded = Bcode.encode bc }
+  let last_piece_size = Util.safe_int64_to_int (Int64.rem total_length (Int64.of_int piece_length)) in
+  let block_count = Int64.(div (add total_length (of_int (block_size - 1))) (of_int block_size)) in
+  let block_count = Util.safe_int64_to_int block_count in
+  let last_block_size = Util.safe_int64_to_int (Int64.(div total_length (of_int block_size))) in
+  { name; info_hash; piece_length; total_length; block_size; block_count;
+    hashes; piece_count = Array.length hashes; files; encoded = Bcode.encode bc;
+    last_piece_size; last_block_size }
 
 let piece_length info i =
   assert (i >= 0 && i < Array.length info.hashes);
@@ -163,3 +174,32 @@ let block_count meta i =
 
 let block_offset meta idx off =
   Int64.add (piece_offset meta idx) (Int64.of_int off)
+
+(* let block_count_in_piece = *)
+
+(* let block_piece m b = *)
+(*   b / m.block_count_in_piece *)
+
+let piece_count_bytes m i =
+  if i + 1 = m.piece_count then m.last_piece_size else m.piece_length
+
+let block_count_bytes m b =
+  if b + 1 = m.block_count then m.last_block_size else m.block_size
+
+let piece_block_range m i =
+  let ofs = m.piece_length * i in
+  let l = ofs / m.block_size in
+  let r = (ofs + piece_count_bytes m i - 1) / m.block_size in
+  (l, r)
+
+let block_location m b =
+  let pos = Int64.mul (Int64.of_int b) (Int64.of_int m.block_size) in
+  let pl = Int64.of_int m.piece_length in
+  let i = Int64.div pos pl in
+  let ofs = Int64.sub pos (Int64.mul i pl) in
+  let len = block_count_bytes m b in
+  (Util.safe_int64_to_int i, Util.safe_int64_to_int ofs, len)
+
+let _block m i ofs =
+  let ret = i * (m.piece_length / m.block_size) in
+  ret + ofs / m.block_size

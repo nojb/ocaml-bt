@@ -35,7 +35,7 @@ type event =
   | IncomingPeer of IO.socket * Addr.t
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
-  | GotMetadata of Meta.t
+  | GotMetadata of Metadata.t
   | TorrentLoaded of int * int * Bits.t
   | PieceVerified of int
   | TorrentCompleted
@@ -45,9 +45,9 @@ type event =
 type stage =
   | NoMeta
   | PartialMeta of IncompleteMetadata.t
-  | Loading of Meta.t * Torrent.t
-  | Leeching of Meta.t * Torrent.t
-  | Seeding of Meta.t * Torrent.t
+  | Loading of Metadata.t * Torrent.t
+  | Leeching of Metadata.t * Torrent.t
+  | Seeding of Metadata.t * Torrent.t
 
 type t = {
   id : SHA1.t;
@@ -406,7 +406,7 @@ let handle_peer_event bt p = function
     | Loading (meta, _)
     | Leeching (meta, _)
     | Seeding (meta, _) ->
-      Peer.send_meta_piece p i (Meta.length meta, Meta.get_piece meta i)
+      Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i)
     end
   | Peer.GotMetaPiece (i, s) ->
     begin match bt.stage with
@@ -416,7 +416,7 @@ let handle_peer_event bt p = function
         match IncompleteMetadata.verify meta with
         | Some meta ->
           Log.success "got complete metadata";
-          push_metadata bt (Meta.create (Bcode.decode meta))
+          push_metadata bt (Metadata.create (Bcode.decode meta))
         | None ->
           Log.error "metadata hash check failed";
           bt.stage <- NoMeta

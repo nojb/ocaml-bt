@@ -34,7 +34,7 @@ type active_piece = {
 }
 
 type t = {
-  meta : Meta.t;
+  meta : Metadata.t;
   store : Store.t;
   mutable active : (int * active_piece) list;
   completed : Bits.t;
@@ -119,8 +119,8 @@ let request_block t have =
     | None ->
       loop ~endgame:true t.active
     | Some pc ->
-      let len = Meta.piece_length t.meta pc in
-      let nblocks = Meta.block_count t.meta pc in
+      let len = Metadata.piece_length t.meta pc in
+      let nblocks = Metadata.block_count t.meta pc in
       let a =
         {index = pc; blocks = Array.create nblocks (`InProgress 0); length = len; missing = nblocks}
       in
@@ -130,21 +130,21 @@ let request_block t have =
   | Some _ as b -> b
 
 let create meta =
-  let npieces = Array.length meta.Meta.hashes in
+  let npieces = Array.length meta.Metadata.hashes in
   { meta; store = Store.create ();
     active = [];
     completed = Bits.create npieces;
     up = 0L; down = 0L;
-    amount_left = meta.Meta.total_length;
+    amount_left = meta.Metadata.total_length;
     rarity = Histo.empty }
     
 let update dl =
   Lwt_list.iter_s
-    (fun fi -> Store.add_file dl.store fi.Meta.file_path fi.Meta.file_size)
-    dl.meta.Meta.files >>= fun () ->
-  let numpieces = Array.length dl.meta.Meta.hashes in
-  let piece_size = dl.meta.Meta.piece_length in
-  let total_length = dl.meta.Meta.total_length in
+    (fun fi -> Store.add_file dl.store fi.Metadata.file_path fi.Metadata.file_size)
+    dl.meta.Metadata.files >>= fun () ->
+  let numpieces = Array.length dl.meta.Metadata.hashes in
+  let piece_size = dl.meta.Metadata.piece_length in
+  let total_length = dl.meta.Metadata.total_length in
   let plen i =
     if i < numpieces - 1 then piece_size
     else
@@ -157,14 +157,14 @@ let update dl =
     else
       let off = Int64.(mul (of_int i) (of_int piece_size)) in
       Store.read dl.store off (plen i) >>= fun s ->
-        if SHA1.digest_of_string s |> SHA1.equal dl.meta.Meta.hashes.(i) then begin
+        if SHA1.digest_of_string s |> SHA1.equal dl.meta.Metadata.hashes.(i) then begin
           Bits.set dl.completed i;
           loop (Int64.(sub acc (of_int (plen i)))) (i+1)
         end else
           loop acc (i+1)
   in
   let start_time = Unix.gettimeofday () in
-  loop dl.meta.Meta.total_length 0 >>= fun amount_left ->
+  loop dl.meta.Metadata.total_length 0 >>= fun amount_left ->
   let end_time = Unix.gettimeofday () in
   Log.success
     "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
@@ -174,7 +174,7 @@ let update dl =
 
 let get_block t i ofs len =
   t.up <- Int64.add t.up (Int64.of_int len);
-  Store.read t.store (Meta.block_offset t.meta i ofs) len
+  Store.read t.store (Metadata.block_offset t.meta i ofs) len
   
 let got_have self piece =
   if not (Bits.is_set self.completed piece) then begin
@@ -217,12 +217,12 @@ let got_block t idx off s =
     let n = off / standard_block_length in
     match a.blocks.(n) with
     | `InProgress _ ->
-      Store.write t.store (Meta.block_offset t.meta idx off) s >>= fun () ->
+      Store.write t.store (Metadata.block_offset t.meta idx off) s >>= fun () ->
       a.blocks.(n) <- `Done;
       a.missing <- a.missing - 1;
       if a.missing <= 0 then begin
-        Store.read t.store (Meta.piece_offset t.meta idx) a.length >>= fun s ->
-        if SHA1.digest_of_string s = t.meta.Meta.hashes.(idx) then begin
+        Store.read t.store (Metadata.piece_offset t.meta idx) a.length >>= fun s ->
+        if SHA1.digest_of_string s = t.meta.Metadata.hashes.(idx) then begin
           Log.success "piece verified (idx=%d)" idx;
           t.active <- List.remove_assoc idx t.active;
           t.rarity <- Histo.remove_all idx t.rarity;
