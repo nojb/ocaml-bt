@@ -64,8 +64,8 @@ type t = {
   mutable act_reqs : (int * int * int) list;
   send_req : (int * int * int) -> unit;
   
-  msg_queue : Wire.message Lwt_stream.t;
-  send : Wire.message -> unit;
+  send_queue : Wire.message Lwt_sequence.t;
+  send_waiters : Wire.message Lwt.u Lwt_sequence.t;
   
   mutable handle : (event -> unit) option;
   mutable have : Bits.t;
@@ -74,16 +74,30 @@ type t = {
   mutable download : Rate.t
 }
 
+let next_to_send p =
+  if Lwt_sequence.length p.send_queue > 0 then
+    Lwt.return (Lwt_sequence.take_l p.send_queue)
+  else
+    Lwt.add_task_r p.send_waiters
+
+let send_message p m =
+  if Lwt_sequence.length p.send_waiters > 0 then begin
+    assert (Lwt_sequence.is_empty p.send_queue);
+    Lwt.wakeup (Lwt_sequence.take_l p.send_waiters) m
+  end
+  else
+    ignore (Lwt_sequence.add_r m p.send_queue)
+
 let signal p e =
   match p.handle with
   | None -> ()
   | Some h -> h e
-                
+
 let send_extended p id s =
-  p.send (Wire.EXTENDED (id, s))
+  send_message p (Wire.EXTENDED (id, s))
 
 let send_block p i o s =
-  p.send (Wire.PIECE (i, o, s))
+  send_message p (Wire.PIECE (i, o, s))
 
 let got_ut_metadata p data =
   let m, data_start = Bcode.decode_partial data in
@@ -150,7 +164,7 @@ let got_have_bitfield p b =
 
 let got_have p idx =
   if idx >= Bits.length p.have then begin
-    let bits = Bits.create (2 * (Bits.length p.have)) in
+    let bits = Bits.create (2 * (Bits.length p.have) + 1) in
     Bits.blit p.have 0 bits 0 (Bits.length p.have);
     p.have <- bits
   end;
@@ -225,14 +239,14 @@ let reader_loop p =
   loop (got_message p)
 
 let send_request p (i, ofs, len) =
-  p.send (Wire.REQUEST (i, ofs, len))
+  send_message p (Wire.REQUEST (i, ofs, len))
 
 let writer_loop p =
   let rec loop () =
     Lwt.pick [
       (Lwt_unix.sleep (float keepalive_delay) >>= fun () -> Lwt.return `Timeout);
       (p.should_stop >>= fun () -> Lwt.return `Stop);
-      (Lwt_stream.next p.msg_queue >|= fun msg -> `Ready msg)
+      (next_to_send p >|= fun msg -> `Ready msg)
     ]
     >>= function
     | `Timeout ->
@@ -251,8 +265,6 @@ let create sock addr id =
   let w, wake = Lwt.wait () in
   let requests, send_req = Lwt_stream.create () in
   let send_req x = send_req (Some x) in
-  let msg_queue, send = Lwt_stream.create () in
-  let send x = send (Some x) in
   let input, output = IO.in_channel sock, IO.out_channel sock in
   let p =
     { addr; input; output; id;
@@ -263,10 +275,10 @@ let create sock addr id =
       requests;
       act_reqs = [];
       send_req;
-      msg_queue;
-      send;
+      send_queue = Lwt_sequence.create ();
+      send_waiters = Lwt_sequence.create ();
       handle = None;
-      have = Bits.create 0;
+      have = Bits.create 1;
       download = Rate.create ();
       upload = Rate.create () }
   in
@@ -308,7 +320,9 @@ let peer_interested p =
   p.peer_interested
 
 let has_piece p idx =
-  Bits.is_set p.have idx
+  assert (0 <= idx);
+  if idx >= Bits.length p.have then false
+  else Bits.is_set p.have idx
 
 let have p =
   Bits.copy p.have
@@ -320,36 +334,37 @@ let send_choke p =
   if not p.am_choking then begin
     p.am_choking <- true;
     Log.info "choking peer (addr=%s)" (Addr.to_string p.addr);
-    p.send Wire.CHOKE
+    send_message p Wire.CHOKE
   end
 
 let send_unchoke p =
   if p.am_choking then begin
     p.am_choking <- false;
     Log.info "unchoking peer (addr=%s)" (Addr.to_string p.addr);
-    p.send Wire.UNCHOKE
+    send_message p Wire.UNCHOKE
   end
 
 let send_interested p =
   if not p.am_interested then begin
     p.am_interested <- true;
     Log.info "interested in peer (addr=%s)" (Addr.to_string p.addr);
-    p.send Wire.INTERESTED
+    send_message p Wire.INTERESTED
   end
 
 let send_not_interested p =
   if p.am_interested then begin
     p.am_interested <- false;
     Log.info "not interested in peer (addr=%s)" (Addr.to_string p.addr);
-    p.send Wire.NOT_INTERESTED
+    send_message p Wire.NOT_INTERESTED
   end
 
 let send_have p idx =
-  p.send (Wire.HAVE idx)
+  if not (Bits.is_set p.have idx) then
+    send_message p (Wire.HAVE idx)
 
 let send_have_bitfield p bits =
   for i = 0 to Bits.length bits - 1 do
-    if Bits.is_set bits i then p.send (Wire.HAVE i)
+    if Bits.is_set bits i then send_have p i
   done
   
 let request_meta_piece p idx =

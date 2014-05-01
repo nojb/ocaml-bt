@@ -177,19 +177,22 @@ let get_block t i ofs len =
   Store.read t.store (Metadata.block_offset t.meta i ofs) len
   
 let got_have self piece =
-  if not (Bits.is_set self.completed piece) then begin
-    self.rarity <- Histo.add piece self.rarity;
-    true
-  end else
-    false
+  if not (Bits.is_set self.completed piece) then (* begin *)
+    self.rarity <- Histo.add piece self.rarity
+  (* true *)
+  (* end else *)
+  (* false *)
 
 let got_bitfield self b =
-  let rec loop interested i =
-    if i >= Bits.length b then interested
-    else if Bits.is_set b i then loop (got_have self i) (i+1)
-    else loop interested (i+1)
-  in
-  loop false 0
+  for i = 0 to Bits.length b - 1 do
+    if Bits.is_set b i then got_have self i
+  done
+  (* let rec loop interested i = *)
+  (*   if i >= Bits.length b then interested *)
+  (*   else if Bits.is_set b i then loop (got_have self i) (i+1) *)
+  (*   else loop interested (i+1) *)
+  (* in *)
+  (* loop false 0 *)
  
 let lost_have self piece =
   if not (Bits.is_set self.completed piece) then

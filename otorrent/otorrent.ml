@@ -15,7 +15,7 @@ let download magnet =
     (fun e -> Bt.Log.error ~exn:e "fatal error during download"; Lwt.return ())
 
 let download_all debug magnets =
-  if debug then Bt.Log.current_level := Bt.Log.INFO;
+  if debug then Bt.Log.current_level := Bt.Log.DEBUG;
   Lwt_main.run (Lwt_list.iter_p download magnets)
 
 let download_t =

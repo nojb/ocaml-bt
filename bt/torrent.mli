@@ -39,7 +39,7 @@ val amount_left : t -> int64
 val numgot : t -> int
 val have : t -> Bits.t
 val has_piece : t -> int -> bool
-val got_have : t -> int -> bool
-val got_bitfield : t -> Bits.t -> bool
+val got_have : t -> int -> unit
+val got_bitfield : t -> Bits.t -> unit
 val lost_have : t -> int -> unit
 val lost_bitfield : t -> Bits.t -> unit

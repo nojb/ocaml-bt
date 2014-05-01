@@ -92,14 +92,20 @@ module UdpTracker = struct
       let peers = loop peers in
       `Ok {peers; leechers = Some leechers; seeders = Some seeders; interval}
 
+  type udp_stage =
+    | Connect_request of int
+    | Connect_response of int32
+    | Announce_request of int64 * int
+    | Announce_response of int32
+
   let do_announce fd addr ih ?up ?down ?left ?event port id : response Lwt.t =
     let rec loop = function
-      | `Connect_request n ->
+      | Connect_request n ->
         let trans_id = fresh_transaction_id () in
         Udp.send_bitstring fd (connect_request trans_id) addr >>= fun () ->
         Udp.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
-          (fun () -> loop (`Connect_response trans_id))
+          (fun () -> loop (Connect_response trans_id))
           (function
             | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
               if n >= 8 then
@@ -107,33 +113,33 @@ module UdpTracker = struct
               else begin
                 Log.info "UDP connect request timeout after %d s; retrying..."
                   (truncate (15.0 *. 2.0 ** float n));
-                loop (`Connect_request (n+1))
+                loop (Connect_request (n+1))
               end
             | exn -> Lwt.fail exn)
-      | `Connect_response trans_id ->
+      | Connect_response trans_id ->
         Udp.recv fd >>= fun (s, _) ->
         begin match connect_response trans_id s with
         | `Error msg -> Lwt.fail (Error msg)
-        | `Ok conn_id -> loop (`Announce_request (conn_id, 0))
+        | `Ok conn_id -> loop (Announce_request (conn_id, 0))
         end
-      | `Announce_request (conn_id, n) ->
+      | Announce_request (conn_id, n) ->
         let trans_id = fresh_transaction_id () in
         let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event port id in
         Udp.send_bitstring fd create_packet addr >>= fun () ->
         Udp.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
-          (fun () -> loop (`Announce_response trans_id))
+          (fun () -> loop (Announce_response trans_id))
           (function
             | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
               Log.info "ANNOUNCE UDP announce request timeout after %d s; retrying..."
                 (truncate (15.0 *. 2.0 ** float n));
               if n >= 2 then
-                loop (`Connect_request (n+1))
+                loop (Connect_request (n+1))
               else
-                loop (`Announce_request (conn_id, n+1))
+                loop (Announce_request (conn_id, n+1))
             | exn ->
               Lwt.fail exn)
-      | `Announce_response trans_id ->
+      | Announce_response trans_id ->
         let doit () =
           Udp.recv fd >>= fun (s, _) ->
           match announce_response trans_id s with
@@ -142,7 +148,7 @@ module UdpTracker = struct
         in
         Lwt.catch doit Lwt.fail
     in
-    loop (`Connect_request 0)
+    loop (Connect_request 0)
 
   let announce tr ih ?up ?down ?left ?event port id =
     let url = tr in

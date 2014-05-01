@@ -304,10 +304,9 @@ let rechoke_downloads bt =
   | Leeching (_, t) ->
     let h = Torrent.have t in
     let doit p =
-      let ph = Peer.have p in
       let rec loop i =
         if i >= Bits.length h then false
-        else if Bits.is_set ph i then true else loop (i+1)
+        else if not (Bits.is_set h i) && Peer.has_piece p i then true else loop (i+1)
       in
       if loop 0 then Peer.send_interested p else Peer.send_not_interested p
     in
@@ -377,7 +376,8 @@ let request_block bt p =
   | Leeching (_, t) ->
     begin match Torrent.request_block t (Peer.has_piece p) with
     | None ->
-      Peer.send_not_interested p
+      ()
+      (* Peer.send_not_interested p *)
     | Some pc ->
       Peer.send_request p pc
     end
@@ -403,20 +403,18 @@ let handle_peer_event bt p = function
     for i = 1 to max_requests do
       request_block bt p
     done
-  | Peer.Have _ ->
-    ()
-    (* begin match bt.stage with *)
-    (* | Leeching (_, dl) -> *)
-    (*   if Torrent.got_have dl i then Peer.send_interested p *)
-    (* | _ -> () *)
-    (* end *)
+  | Peer.Have i ->
+    begin match bt.stage with
+    | Leeching (_, dl) ->
+      Torrent.got_have dl i
+    | _ -> ()
+    end
   | Peer.HaveBitfield b ->
-    ()
-    (* begin match bt.stage with *)
-    (* | Leeching (_, dl) -> *)
-    (*   if Torrent.got_bitfield dl b then Peer.send_interested p *)
-    (* | _ -> () *)
-    (* end *)
+    begin match bt.stage with
+    | Leeching (_, dl) ->
+      Torrent.got_bitfield dl b
+    | _ -> ()
+    end
   | Peer.MetaRequested i ->
     begin match bt.stage with
     | NoMeta
