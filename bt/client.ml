@@ -36,7 +36,7 @@ type event =
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
   | GotMetadata of Metadata.t
-  | TorrentLoaded of int * int * Bits.t
+  | TorrentLoaded of Torrent.t
   | PieceVerified of int
   | TorrentCompleted
   (* | Rechoke of int * int *)
@@ -45,7 +45,7 @@ type event =
 type stage =
   | NoMeta
   | PartialMeta of IncompleteMetadata.t
-  | Loading of Metadata.t * Torrent.t
+  | Loading of Metadata.t
   | Leeching of Metadata.t * Torrent.t
   | Seeding of Metadata.t * Torrent.t
 
@@ -420,7 +420,7 @@ let handle_peer_event bt p = function
     | NoMeta
     | PartialMeta _ ->
       Peer.send_reject_meta p i
-    | Loading (meta, _)
+    | Loading meta
     | Leeching (meta, _)
     | Seeding (meta, _) ->
       Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i)
@@ -503,19 +503,20 @@ let handle_event bt = function
   | PeerEvent (p, e) ->
     handle_peer_event bt p e
   | GotMetadata meta ->
-    let t = Torrent.create meta in
-    bt.stage <- Loading (meta, t);
+    (* let t = Torrent.create meta in *)
+    bt.stage <- Loading meta; (* , t); *)
     let aux () =
-      Torrent.update t >|= fun (good, tot, bits) -> bt.push (TorrentLoaded (good, tot, bits))
+      Torrent.create meta >|= fun dl -> bt.push (TorrentLoaded dl) (* (good, tot, bits))*)
     in
     Lwt.async aux
-  | TorrentLoaded (good, total, bits) ->
+  | TorrentLoaded dl -> (* (good, total, bits) -> *)
     begin match bt.stage with
-    | Loading (meta, t) ->
-      Log.success "torrent loaded (good=%d,total=%d)" good total;
-      bt.stage <- if Torrent.is_complete t then Seeding (meta, t) else Leeching (meta, t);
+    | Loading (meta) ->
+      Log.success "torrent loaded (good=%d,total=%d)"
+        (Torrent.numgot dl) (meta.Metadata.piece_count - Torrent.numgot dl);
+      bt.stage <- if Torrent.is_complete dl then Seeding (meta, dl) else Leeching (meta, dl);
       let wakeup_peer _ p =
-        Peer.send_have_bitfield p bits
+        Peer.send_have_bitfield p (Torrent.have dl)
         (* if Torrent.got_bitfield t (Peer.have p) then begin *)
         (*   (\* Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p)); *\) *)
         (*   Peer.send_interested p; *)

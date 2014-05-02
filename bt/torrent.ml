@@ -130,19 +130,19 @@ let request_block t have =
   | Some _ as b -> b
 
 let create meta =
-  let npieces = Array.length meta.Metadata.hashes in
-  { meta; store = Store.create ();
+  let numpieces = Array.length meta.Metadata.hashes in
+  let dl = {
+    meta; store = Store.create ();
     active = [];
-    completed = Bits.create npieces;
+    completed = Bits.create numpieces;
     up = 0L; down = 0L;
     amount_left = meta.Metadata.total_length;
-    rarity = Histo.empty }
-    
-let update dl =
+    rarity = Histo.empty
+  } in
   Lwt_list.iter_s
     (fun fi -> Store.add_file dl.store fi.Metadata.file_path fi.Metadata.file_size)
     dl.meta.Metadata.files >>= fun () ->
-  let numpieces = Array.length dl.meta.Metadata.hashes in
+  (* let numpieces = Array.length dl.meta.Metadata.hashes in *)
   let piece_size = dl.meta.Metadata.piece_length in
   let total_length = dl.meta.Metadata.total_length in
   let plen i =
@@ -157,11 +157,11 @@ let update dl =
     else
       let off = Int64.(mul (of_int i) (of_int piece_size)) in
       Store.read dl.store off (plen i) >>= fun s ->
-        if SHA1.digest_of_string s |> SHA1.equal dl.meta.Metadata.hashes.(i) then begin
-          Bits.set dl.completed i;
-          loop (Int64.(sub acc (of_int (plen i)))) (i+1)
-        end else
-          loop acc (i+1)
+      if SHA1.digest_of_string s |> SHA1.equal dl.meta.Metadata.hashes.(i) then begin
+        Bits.set dl.completed i;
+        loop (Int64.(sub acc (of_int (plen i)))) (i+1)
+      end else
+        loop acc (i+1)
   in
   let start_time = Unix.gettimeofday () in
   loop dl.meta.Metadata.total_length 0 >>= fun amount_left ->
@@ -170,7 +170,8 @@ let update dl =
     "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
     (Bits.count dl.completed) numpieces amount_left (end_time -. start_time);
   dl.amount_left <- amount_left;
-  Lwt.return (Bits.count dl.completed, numpieces, dl.completed)
+  Lwt.return dl
+  (* Lwt.return (Bits.count dl.completed, numpieces, dl.completed) *)
 
 let get_block t i ofs len =
   t.up <- Int64.add t.up (Int64.of_int len);
