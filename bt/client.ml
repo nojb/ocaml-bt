@@ -489,16 +489,17 @@ let handle_event bt = function
     handle_incoming_peer bt sock addr
   | PeersReceived addrs ->
     Log.success "received %d peers" (List.length addrs);
-    let aux () =
-      let rec loop = function
-        | [] -> Lwt.return ()
-        | addr :: addrs ->
-          handle_received_peer bt addr;
-          Lwt_unix.sleep 0.1 >>= fun () -> loop addrs
-      in
-      loop addrs
-    in
-    Lwt.async aux
+    List.iter (handle_received_peer bt) addrs
+    (* let aux () = *)
+    (*   let rec loop = function *)
+    (*     | [] -> Lwt.return () *)
+    (*     | addr :: addrs -> *)
+    (*       handle_received_peer bt addr; *)
+    (*       Lwt_unix.sleep 0.1 >>= fun () -> loop addrs *)
+    (*   in *)
+    (*   loop addrs *)
+    (* in *)
+    (* Lwt.async aux *)
   | PeerEvent (p, e) ->
     handle_peer_event bt p e
   | GotMetadata meta ->
