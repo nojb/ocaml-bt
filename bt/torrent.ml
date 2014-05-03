@@ -24,8 +24,6 @@ let (>|=) = Lwt.(>|=)
 
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
-let rarest_first_cutoff = 1
-
 type active_block = {
   a_piece : int;
   a_block : int
@@ -74,6 +72,9 @@ let compare_by_weight t p1 p2 =
   
 let request_block t have =
   Array.sort (compare_by_weight t) t.pending;
+  (* for i = 0 to (Array.length t.pending) - 2 do *)
+    (* assert (compare_by_weight t t.pending.(i) t.pending.(i+1) <= 0) *)
+  (* done; *)
   let rec loop i =
     if i >= Array.length t.pending then None
     else match t.pending.(i) with
@@ -91,41 +92,34 @@ let request_block t have =
   in
   match loop 0 with
   | Some (p, j) ->
+    Log.debug "chosen block %d:%d" p j;
     t.active <- { a_piece = p; a_block = j } :: t.active;
-    Some (p, j * t.meta.Metadata.block_size, Metadata.block_size t.meta p j)
+    Some (Metadata.block t.meta p j)
+    (* Some (p, j * t.meta.Metadata.block_size, Metadata.block_size t.meta p j) *)
   | None ->
     None
 
 let create meta =
-  let numpieces = Array.length meta.Metadata.hashes in
+  let numpieces = Metadata.piece_count meta in
   let dl = {
     meta; store = Store.create ();
     active = [];
-    pending = Array.mapi (fun i _ -> Some { p_index = i; p_reqs = 0 }) meta.Metadata.hashes;
-    completed =
-      Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
+    pending = Array.init numpieces (fun i -> Some { p_index = i; p_reqs = 0 });
+    completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
     up = 0L; down = 0L;
-    amount_left = meta.Metadata.total_length;
+    amount_left = Metadata.total_length meta;
     rarity = Array.create numpieces 0
   } in
-  Lwt_list.iter_s
-    (fun fi -> Store.add_file dl.store fi.Metadata.file_path fi.Metadata.file_size)
-    dl.meta.Metadata.files >>= fun () ->
-  let piece_size = dl.meta.Metadata.piece_length in
-  let total_length = dl.meta.Metadata.total_length in
-  let plen i =
-    if i < numpieces - 1 then piece_size
-    else
-      Int64.(mul (of_int i) (of_int piece_size) |>
-             sub total_length |> Util.safe_int64_to_int)
-  in
+  Metadata.iter_files meta
+    (fun fi -> Store.add_file dl.store fi.Metadata.file_path fi.Metadata.file_size) >>= fun () ->
+  let plen = Metadata.piece_length dl.meta in
   let rec loop good acc i =
     if i >= numpieces then
       Lwt.return (good, acc)
     else
-      let off = Int64.(mul (of_int i) (of_int piece_size)) in
+      let off = Metadata.piece_offset dl.meta i in
       Store.read dl.store off (plen i) >>= fun s ->
-      if SHA1.digest_of_string s |> SHA1.equal dl.meta.Metadata.hashes.(i) then begin
+      if SHA1.digest_of_string s |> SHA1.equal (Metadata.hash dl.meta i) then begin
         Bits.set_all dl.completed.(i);
         dl.pending.(i) <- None;
         loop (good+1) (Int64.(sub acc (of_int (plen i)))) (i+1)
@@ -133,7 +127,7 @@ let create meta =
         loop good acc (i+1)
   in
   let start_time = Unix.gettimeofday () in
-  loop 0 dl.meta.Metadata.total_length 0 >>= fun (good, amount_left) ->
+  loop 0 (Metadata.total_length dl.meta) 0 >>= fun (good, amount_left) ->
   let end_time = Unix.gettimeofday () in
   Log.success
     "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
@@ -146,8 +140,8 @@ let get_block t i ofs len =
   Store.read t.store (Metadata.block_offset t.meta i ofs) len
   
 let got_have self piece =
-  if not (Bits.has_all self.completed.(piece)) then
-    self.rarity.(piece) <- self.rarity.(piece) + 1
+  (* if not (Bits.has_all self.completed.(piece)) then *)
+  self.rarity.(piece) <- self.rarity.(piece) + 1
 
 let got_bitfield self b =
   for i = 0 to Bits.length b - 1 do
@@ -155,8 +149,8 @@ let got_bitfield self b =
   done
  
 let lost_have self piece =
-  if not (Bits.has_all self.completed.(piece)) then
-    self.rarity.(piece) <- self.rarity.(piece) - 1
+  (* if not (Bits.has_all self.completed.(piece)) then *)
+  self.rarity.(piece) <- self.rarity.(piece) - 1
 
 let lost_bitfield self b =
   for i = 0 to Bits.length b - 1 do
@@ -164,41 +158,42 @@ let lost_bitfield self b =
   done
 
 let lost_request t (i, ofs, len) =
-  let b = ofs / t.meta.Metadata.block_size in
+  let b = Metadata.block_number t.meta ofs in
   t.active <- List.filter (fun a -> a.a_piece <> i || a.a_block <> b) t.active
 
 let got_block t idx off s =
-  t.down <- Int64.add t.down (Int64.of_int (String.length s));
-  if not (Bits.has_all t.completed.(idx)) then begin
-    let b = off / t.meta.Metadata.block_size in
-    if not (Bits.is_set t.completed.(idx) b) then begin
-      Store.write t.store (Metadata.block_offset t.meta idx off) s >>= fun () ->
-      Bits.set t.completed.(idx) b;
-      t.active <- List.filter (fun r -> r.a_piece <> idx || r.a_block <> b) t.active;
-      if Bits.has_all t.completed.(idx) then begin
-        Log.success "piece %d tentatively completed" idx;
-        Store.read t.store (Metadata.piece_offset t.meta idx)
-          (Metadata.piece_length t.meta idx) >>= fun s ->
-        if SHA1.digest_of_string s = t.meta.Metadata.hashes.(idx) then begin
-          Log.success "piece verified (idx=%d)" idx;
-          t.pending.(idx) <- None;
-          t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx)));
-          Lwt.return `Verified
-        end else begin
-          Bits.clear t.completed.(idx);
-          Log.error "piece failed hashcheck (idx=%d)" idx;
-          Lwt.return `Failed
-        end
+  (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
+  (* if not (Bits.has_all t.completed.(idx)) then begin *)
+  let b = Metadata.block_number t.meta off in
+  if not (Bits.is_set t.completed.(idx) b) then begin
+    Store.write t.store (Metadata.block_offset t.meta idx off) s >>= fun () ->
+    Bits.set t.completed.(idx) b;
+    Log.debug "got block %d:%d (%d remaining)" idx b
+      (Bits.length t.completed.(idx) - Bits.count t.completed.(idx));
+    t.active <- List.filter (fun r -> r.a_piece <> idx || r.a_block <> b) t.active;
+    if Bits.has_all t.completed.(idx) then begin
+      Store.read t.store (Metadata.piece_offset t.meta idx)
+        (Metadata.piece_length t.meta idx) >>= fun s ->
+      if SHA1.digest_of_string s = Metadata.hash t.meta idx then begin
+        Log.success "piece verified (idx=%d)" idx;
+        t.pending.(idx) <- None;
+        (* t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx))); *)
+        Lwt.return `Verified
       end else begin
-        Lwt.return `Continue
+        Bits.clear t.completed.(idx);
+        Log.error "piece failed hashcheck (idx=%d)" idx;
+        Lwt.return `Failed
       end
-    end
-    else begin
-      Log.info "received a block that we already have";
+    end else begin
       Lwt.return `Continue
     end
-  end else
-    Lwt.return `Verified
+  end
+  else begin
+    Log.info "received a block that we already have";
+    Lwt.return (if Bits.has_all t.completed.(idx) then `Verified else `Continue)
+  end
+  (* end else *)
+    (* Lwt.return `Verified *)
   
 let is_complete self =
   let rec loop i =

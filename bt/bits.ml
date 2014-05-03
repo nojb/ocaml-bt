@@ -218,7 +218,7 @@ let of_list l =
 let has_all b =
   let rec loop i =
     if i >= String.length b then true else
-    if b.[i] = '\000' then false
-    else loop (i+1)
+    if is_set b i then loop (i+1)
+    else false
   in
   loop 0

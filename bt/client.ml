@@ -377,7 +377,6 @@ let request_block bt p =
     begin match Torrent.request_block t (Peer.has_piece p) with
     | None ->
       ()
-      (* Peer.send_not_interested p *)
     | Some pc ->
       Peer.send_request p pc
     end
@@ -477,10 +476,6 @@ let handle_peer_event bt p = function
     | _ ->
       ()
     end
-  (* | Peer.Interested -> *)
-  (*   () *)
-  (* | Peer.NotInterested -> *)
-  (*   () *)
   | Peer.Port _ ->
     ()
 
@@ -490,43 +485,22 @@ let handle_event bt = function
   | PeersReceived addrs ->
     Log.success "received %d peers" (List.length addrs);
     List.iter (handle_received_peer bt) addrs
-    (* let aux () = *)
-    (*   let rec loop = function *)
-    (*     | [] -> Lwt.return () *)
-    (*     | addr :: addrs -> *)
-    (*       handle_received_peer bt addr; *)
-    (*       Lwt_unix.sleep 0.1 >>= fun () -> loop addrs *)
-    (*   in *)
-    (*   loop addrs *)
-    (* in *)
-    (* Lwt.async aux *)
   | PeerEvent (p, e) ->
     handle_peer_event bt p e
   | GotMetadata meta ->
-    (* let t = Torrent.create meta in *)
-    bt.stage <- Loading meta; (* , t); *)
+    bt.stage <- Loading meta;
     let aux () =
-      Torrent.create meta >|= fun dl -> bt.push (TorrentLoaded dl) (* (good, tot, bits))*)
+      Torrent.create meta >|= fun dl -> bt.push (TorrentLoaded dl)
     in
     Lwt.async aux
-  | TorrentLoaded dl -> (* (good, total, bits) -> *)
+  | TorrentLoaded dl ->
     begin match bt.stage with
     | Loading (meta) ->
       Log.success "torrent loaded (good=%d,total=%d)"
-        (Torrent.numgot dl) (meta.Metadata.piece_count - Torrent.numgot dl);
+        (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl);
       bt.stage <- if Torrent.is_complete dl then Seeding (meta, dl) else Leeching (meta, dl);
-      let wakeup_peer _ p =
-        Peer.send_have_bitfield p (Torrent.have dl)
-        (* if Torrent.got_bitfield t (Peer.have p) then begin *)
-        (*   (\* Log.success "we should be interested in %s" (Addr.to_string (Peer.addr p)); *\) *)
-        (*   Peer.send_interested p; *)
-        (*   if not (Peer.peer_choking p) then *)
-        (*     for i = 1 to max_requests do request_block bt p done *)
-        (* end else *)
-        (*   Peer.send_not_interested p *)
-      in
+      let wakeup_peer _ p = Peer.send_have_bitfield p (Torrent.have dl) in
       Hashtbl.iter wakeup_peer bt.peers
-      (* bt.push (Rechoke (1, 1)) *)
     | _ ->
       ()
     end
@@ -538,17 +512,6 @@ let handle_event bt = function
     | Leeching (meta, t) -> bt.stage <- Seeding (meta, t)
     | _ -> ()
     end
-  (* | Rechoke (optimistic, rateiter) -> *)
-  (*   Log.info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter; *)
-  (*   let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in *)
-  (*   let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in *)
-  (*   unchoke_peers bt (optimistic = 0); *)
-  (*   print_info bt; *)
-  (*   if rateiter = 0 then reset_peer_rates bt; *)
-  (*   Lwt.async *)
-  (*     (fun () -> *)
-  (*        Lwt_unix.sleep (float unchoking_frequency) >|= fun () -> *)
-  (*        bt.push (Rechoke (optimistic, rateiter))) *)
   | Announce (tier, event) ->
     let doit () =
       Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:bt.port ~id:bt.id >>= fun resp ->

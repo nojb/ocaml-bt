@@ -19,15 +19,9 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(* type event = *)
-(*   | PieceVerified of int *)
-(*   | Loaded of int * int * Bits.t *)
-(*   | Completed *)
-                            
 type t
 
 val create : Metadata.t -> t Lwt.t
-(* val update : t -> (int * int * Bits.t) Lwt.t *)
 val get_block : t -> int -> int -> int -> string Lwt.t
 val request_block : t -> (int -> bool) -> (int * int * int) option
 val lost_request : t -> int * int * int -> unit

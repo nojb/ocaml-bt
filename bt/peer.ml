@@ -60,9 +60,7 @@ type t = {
   extbits : Bits.t;
   extensions : (string, int) Hashtbl.t;
   
-  requests : (int * int * int) Lwt_stream.t;
   mutable act_reqs : (int * int * int) list;
-  send_req : (int * int * int) -> unit;
   
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
@@ -139,7 +137,9 @@ let supported_extensions =
 let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
-    signal p (Choked p.act_reqs)
+    let reqs = p.act_reqs in
+    p.act_reqs <- [];
+    signal p (Choked reqs)
   end
 
 let got_unchoke p =
@@ -239,6 +239,7 @@ let reader_loop p =
   loop (got_message p)
 
 let send_request p (i, ofs, len) =
+  p.act_reqs <- (i, ofs, len) :: p.act_reqs;
   send_message p (Wire.REQUEST (i, ofs, len))
 
 let writer_loop p =
@@ -263,8 +264,8 @@ let writer_loop p =
 
 let create sock addr id =
   let w, wake = Lwt.wait () in
-  let requests, send_req = Lwt_stream.create () in
-  let send_req x = send_req (Some x) in
+  (* let requests, send_req = Lwt_stream.create () in *)
+  (* let send_req x = send_req (Some x) in *)
   let input, output = IO.in_channel sock, IO.out_channel sock in
   let p =
     { addr; input; output; id;
@@ -272,9 +273,9 @@ let create sock addr id =
       peer_choking = true; peer_interested = false;
       should_stop = w; extbits = Bits.create (8 * 8);
       extensions = Hashtbl.create 17;
-      requests;
+      (* requests; *)
       act_reqs = [];
-      send_req;
+      (* send_req; *)
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
       handle = None;
