@@ -172,6 +172,13 @@ let block_size = 16 * 1024
 let block_count meta i =
   roundup (piece_length meta i) block_size / block_size
 
+let block_size info i j =
+  assert (0 <= i && i < info.piece_count);
+  assert (0 <= j && j < block_count info i);
+  if i < info.piece_count - 1 then info.block_size else
+  if j < block_count info i - 1 then info.block_size
+  else piece_length info i mod info.block_size
+  
 let block_offset meta idx off =
   Int64.add (piece_offset meta idx) (Int64.of_int off)
 

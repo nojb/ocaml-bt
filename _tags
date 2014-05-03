@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: ba8392b74febdbc0e55bedcaabd93b2b)
+# DO NOT EDIT (digest: 5ea8dab63be552f2cac0faeec7970def)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -18,7 +18,6 @@
 "bt/bcode.cmx": for-pack(Bt)
 "bt/SHA1.cmx": for-pack(Bt)
 "bt/bits.cmx": for-pack(Bt)
-"bt/histo.cmx": for-pack(Bt)
 "bt/incompleteMetadata.cmx": for-pack(Bt)
 "bt/metadata.cmx": for-pack(Bt)
 "bt/magnet.cmx": for-pack(Bt)
@@ -42,6 +41,8 @@
 <bt/*.ml{,i}>: pkg_cryptokit
 <bt/*.ml{,i}>: pkg_lwt
 <bt/*.ml{,i}>: pkg_lwt.unix
+<bt/*.ml{,i}>: pkg_pa_ounit
+<bt/*.ml{,i}>: pkg_pa_ounit.syntax
 <bt/*.ml{,i}>: pkg_qcheck
 <bt/*.ml{,i}>: pkg_uri
 <bt/*.ml{,i}>: pkg_zarith
@@ -54,6 +55,8 @@
 <otorrent/otorrent.{native,byte}>: pkg_cryptokit
 <otorrent/otorrent.{native,byte}>: pkg_lwt
 <otorrent/otorrent.{native,byte}>: pkg_lwt.unix
+<otorrent/otorrent.{native,byte}>: pkg_pa_ounit
+<otorrent/otorrent.{native,byte}>: pkg_pa_ounit.syntax
 <otorrent/otorrent.{native,byte}>: pkg_qcheck
 <otorrent/otorrent.{native,byte}>: pkg_uri
 <otorrent/otorrent.{native,byte}>: pkg_zarith
@@ -66,6 +69,8 @@
 <otorrent/*.ml{,i}>: pkg_cryptokit
 <otorrent/*.ml{,i}>: pkg_lwt
 <otorrent/*.ml{,i}>: pkg_lwt.unix
+<otorrent/*.ml{,i}>: pkg_pa_ounit
+<otorrent/*.ml{,i}>: pkg_pa_ounit.syntax
 <otorrent/*.ml{,i}>: pkg_qcheck
 <otorrent/*.ml{,i}>: pkg_uri
 <otorrent/*.ml{,i}>: pkg_zarith

@@ -31,6 +31,12 @@ let create len =
 let length v =
   String.length v
 
+let clear v =
+  String.fill v 0 (String.length v) '\000'
+
+let set_all v =
+  String.fill v 0 (String.length v) '\001'
+
 let copy v =
   String.copy v
 
@@ -196,11 +202,11 @@ let of_list l =
   List.iter (fun i -> if i >= 0 then v.[i] <- '\001' else invalid_arg "Bits.of_list") l;
   v
   
-let arbitrary len =
-  let int_multiples m n =
-    QCheck.Arbitrary.(map (map n (fun x -> x / m)) (fun x -> x * m))
-  in
-  QCheck.Arbitrary.(string_len (int_multiples 8 len))
+(* let arbitrary len = *)
+(*   let int_multiples m n = *)
+(*     QCheck.Arbitrary.(map (map n (fun x -> x / m)) (fun x -> x * m)) *)
+(*   in *)
+(*   QCheck.Arbitrary.(string_len (int_multiples 8 len)) *)
 
 (* let _ = *)
 (*   let test = QCheck.mk_test ~n:100 ~name:"Binary encoding/decoding" *)
@@ -208,3 +214,11 @@ let arbitrary len =
 (*     (arbitrary QCheck.Arbitrary.(int_range ~start:0 ~stop:100)) *)
 (*     (fun b -> equal (of_bin (to_bin b)) b && equal (to_bin (of_bin b)) b) in *)
 (*   QCheck.run test *)
+
+let has_all b =
+  let rec loop i =
+    if i >= String.length b then true else
+    if b.[i] = '\000' then false
+    else loop (i+1)
+  in
+  loop 0

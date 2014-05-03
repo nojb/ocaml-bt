@@ -26,7 +26,8 @@ val piece_offset : t -> int -> int64
 val block_count : t -> int -> int
 val pp : Format.formatter -> t -> unit
 val block_offset : t -> int -> int -> int64
-
+val block_size : t -> int -> int -> int
+  
 val piece_count_bytes : t -> int -> int
 val piece_block_range : t -> int -> int * int
 val block_location : t -> int -> int * int * int

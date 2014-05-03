@@ -23,6 +23,8 @@ type t
 
 val create : int -> t
 val length : t -> int
+val clear : t -> unit
+val set_all : t -> unit
 val copy : t -> t
 val count : t -> int
 val equal : t -> t -> bool
@@ -46,3 +48,4 @@ val to_array : t -> bool array
 val of_array : bool array -> t
 val to_list : t -> int list
 val of_list : int list -> t
+val has_all : t -> bool
