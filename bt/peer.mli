@@ -39,9 +39,7 @@ type event =
 
 val create : IO.socket -> Addr.t -> SHA1.t -> (event -> unit) -> t
 
-val start : t -> (* (event -> unit) -> *)
-  (int -> (int * int * int) list) ->
-  (unit -> int option) -> unit
+val start : t -> (int -> (int * int * int) list) -> (unit -> int option) -> unit
 
 val id : t -> SHA1.t
 

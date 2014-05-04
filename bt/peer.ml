@@ -175,8 +175,13 @@ let got_have p idx =
   Bits.set p.have idx;
   signal p (Have idx)
 
-let got_cancel p _ _ _ =
-  ()
+let got_cancel p i ofs len =
+  Lwt_sequence.iter_node_l (fun n ->
+      match Lwt_sequence.get n with
+      | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && String.length s = len ->
+        Lwt_sequence.remove n
+      | _ ->
+        ()) p.send_queue
 
 let got_piece p idx off s =
   p.act_reqs <- List.filter (fun (i, o, l) -> (i, o, l) <> (idx, off, String.length s)) p.act_reqs;
@@ -282,16 +287,6 @@ let create sock addr id handle_event =
     download = Rate.create ();
     upload = Rate.create () }
 
-(* let get_next_requests p n = *)
-(*   match p.get_next_requests with *)
-(*   | None -> [] *)
-(*   | Some f -> f n *)
-
-(* let get_next_metadata_request p = *)
-(*   match p.get_next_metadata_request with *)
-(*   | None -> None *)
-(*   | Some f -> f () *)
-
 let id p =
   p.id
 
@@ -395,9 +390,6 @@ let request_loop p get_next_requests get_next_metadata_request =
   loop ()
 
 let start p get_next_requests get_next_metadata_request =
-  (* p.handle <- Some h; *)
-  (* p.get_next_requests <- Some get_next_requests; *)
-  (* p.get_next_metadata_request <- Some get_next_metadata_request; *)
   let run_loop () =
     Lwt.catch
       (fun () -> Lwt.join [reader_loop p; writer_loop p;
