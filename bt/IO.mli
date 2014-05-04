@@ -15,6 +15,8 @@ class type socket =
     method write_bitstring : Bitstring.bitstring -> unit Lwt.t
     method write_int16 : int -> unit Lwt.t
     method write_int32 : int32 -> unit Lwt.t
+
+    method on_write : unit Lwt.t
   end
 
 val connect : Addr.t -> socket Lwt.t

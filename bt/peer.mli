@@ -23,7 +23,7 @@ type t
 
 type event =
   | Choked of (int * int * int) list
-  | Unchoked
+  (* | Unchoked *)
   (* | Interested *)
   (* | NotInterested *)
   | Have of int
@@ -37,9 +37,11 @@ type event =
   | GotMetaPiece of int * string
   | RejectMetaPiece of int
 
-val create : IO.socket -> Addr.t -> SHA1.t -> t
+val create : IO.socket -> Addr.t -> SHA1.t -> (event -> unit) -> t
 
-val start : t -> (event -> unit) -> unit
+val start : t -> (* (event -> unit) -> *)
+  (int -> (int * int * int) list) ->
+  (unit -> int option) -> unit
 
 val id : t -> SHA1.t
 
@@ -50,6 +52,7 @@ val send_extended_handshake : t -> unit
 val peer_choking : t -> bool
 val peer_interested : t -> bool
 val am_choking : t -> bool
+val client_interested : t -> bool
 val has_piece : t -> int -> bool
 val have : t -> Bits.t
                   
@@ -59,14 +62,14 @@ val send_interested : t -> unit
 val send_not_interested : t -> unit
 val send_have : t -> int -> unit
 val send_have_bitfield : t -> Bits.t -> unit
-val send_request : t -> int * int * int -> unit
+(* val send_request : t -> int * int * int -> unit *)
   
 val send_reject_meta : t -> int -> unit
 val send_meta_piece : t -> int -> int * string -> unit
 
 val send_block : t -> int -> int -> string -> unit
   
-val request_meta_piece : t -> int -> unit
+(* val request_meta_piece : t -> int -> unit *)
 
 val upload_rate : t -> float
 val download_rate : t -> float

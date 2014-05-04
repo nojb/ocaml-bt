@@ -17,6 +17,8 @@ class type socket =
     method write_bitstring : Bitstring.bitstring -> unit Lwt.t
     method write_int16 : int -> unit Lwt.t
     method write_int32 : int32 -> unit Lwt.t
+
+    method on_write : unit Lwt.t
   end
 
 class virtual basic_socket =
@@ -50,12 +52,16 @@ class virtual basic_socket =
       bitmatch Bitstring.bitstring_of_string s with
       | { n : 32 } -> Lwt.return n
     method virtual write : string -> int -> int -> int Lwt.t
+    method private write0 str pos len =
+      self#write str pos len >>= fun n ->
+      self#did_write;
+      Lwt.return n
     method really_write str pos len =
       let rec loop pos len =
         if len <= 0 then
           Lwt.return ()
         else
-          self#write str pos len >>= fun n ->
+          self#write0 str pos len >>= fun n ->
           loop (pos + n) (len - n)
       in
       loop pos len
@@ -68,6 +74,14 @@ class virtual basic_socket =
       self#write_bitstring (BITSTRING { n :  16 })
     method write_int32 n =
       self#write_bitstring (BITSTRING { n : 32 })
+        
+    val on_write_waiters : unit Lwt.u Lwt_sequence.t = Lwt_sequence.create ()
+
+    method on_write =
+      Lwt.add_task_r on_write_waiters
+    method private did_write =
+      if not (Lwt_sequence.is_empty on_write_waiters) then
+        Lwt.wakeup (Lwt_sequence.take_l on_write_waiters) ()
   end
 
 let of_fd fd : socket =

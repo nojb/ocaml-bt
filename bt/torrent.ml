@@ -26,12 +26,15 @@ let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
 type active_block = {
   a_piece : int;
-  a_block : int
+  a_block : int;
+  a_peer : Peer.t;
+  a_sent_at : float
 }
 
 type pending_piece = {
   p_index : int;
-  mutable p_reqs : int
+  mutable p_reqs : int;
+  p_salt : int
 }
 
 type t = {
@@ -46,65 +49,90 @@ type t = {
   rarity : int array
 }
 
-(* number of missing blocks in piece [i] *)
-let missing_blocks_in_piece t i =
-  let rec loop n j =
-    if j >= Bits.length t.completed.(i) then n else
-    if Bits.is_set t.completed.(i) j then loop n (j+1)
-    else loop (n+1) (j+1)
-  in
-  loop 0 0
-
 let compare_by_weight t p1 p2 =
   match p1, p2 with
   | None, None -> 0
   | Some _, None -> -1
   | None, Some _ -> 1
   | Some p1, Some p2 ->
-    let w p = (missing_blocks_in_piece t p.p_index, t.rarity.(p.p_index)) in
-    let (m1, h1) = w p1 in
-    let (m2, h2) = w p2 in
-    if m2 < m1 then 1 else
-    if m1 < m2 then -1 else
+    let w p =
+      let m = Bits.missing t.completed.(p.p_index) in
+      let r = p.p_reqs in
+      let a = if m > r then m - r else Metadata.block_count t.meta p.p_index + r in
+      (a, t.rarity.(p.p_index), p.p_salt)
+    in
+    let (a1, h1, s1) = w p1 in
+    let (a2, h2, s2) = w p2 in
+    if a2 < a1 then 1 else
+    if a1 < a2 then -1 else
     if h1 < h2 then -1 else
-    if h2 < h1 then 1
+    if h2 < h1 then 1 else
+    if s1 < s2 then 1 else
+    if s2 < s1 then -1
     else 0
   
-let request_block t have =
+let get_next_requests t peer n =
   Array.sort (compare_by_weight t) t.pending;
   (* for i = 0 to (Array.length t.pending) - 2 do *)
     (* assert (compare_by_weight t t.pending.(i) t.pending.(i+1) <= 0) *)
   (* done; *)
-  let rec loop i =
-    if i >= Array.length t.pending then None
+  let rec loop acc i =
+    if i >= Array.length t.pending || List.length acc >= n then List.rev acc
     else match t.pending.(i) with
-      | None -> None
+      | None -> List.rev acc
       | Some p ->
-        if not (have p.p_index) then loop (i+1)
+        if not (Peer.has_piece peer p.p_index) then loop acc (i+1)
         else
-          let rec loop' j =
-            if j >= Bits.length t.completed.(p.p_index) then loop (i+1) else
-            if List.exists (fun r -> r.a_piece = p.p_index && r.a_block = j) t.active then loop' (j+1) else
-            if not (Bits.is_set t.completed.(p.p_index) j) then Some (p.p_index, j)
-            else loop' (j+1)
+          let rec loop' acc j =
+            if List.length acc >= n then List.rev acc else
+            if j >= Bits.length t.completed.(p.p_index) then loop acc (i+1) else
+            if List.exists (fun r -> r.a_piece = p.p_index && r.a_block = j) t.active then loop' acc (j+1) else
+            if not (Bits.is_set t.completed.(p.p_index) j) then loop' ((p, j) :: acc) (j+1)
+            else loop' acc (j+1)
           in
-          loop' 0
+          loop' acc 0
   in
-  match loop 0 with
-  | Some (p, j) ->
-    Log.debug "chosen block %d:%d" p j;
-    t.active <- { a_piece = p; a_block = j } :: t.active;
-    Some (Metadata.block t.meta p j)
-    (* Some (p, j * t.meta.Metadata.block_size, Metadata.block_size t.meta p j) *)
-  | None ->
-    None
+  let reqs = loop [] 0 in
+  (* let ax = List.map (fun (p, j) -> { a_piece = p.p_index; a_block = j; a_id = uid; a_sent_at = Unix.time () }) *)
+      (* reqs in *)
+  (* t.active <- List.concat ax t.active; *)
+  List.iter (fun (p, j) ->
+      t.active <- {a_piece = p.p_index; a_block = j; a_peer = peer; a_sent_at = Unix.time ()} :: t.active;
+      p.p_reqs <- p.p_reqs + 1) reqs;
+  List.map (fun (p, j) -> Metadata.block t.meta p.p_index j) reqs
+  (* match loop [] 0 with *)
+  (* | Some (p, j) -> *)
+  (*   Log.debug "chosen block %d:%d" p.p_index j; *)
+  (*   t.active <- { a_piece = p.p_index; a_block = j; a_id = uid; a_sent_at = Unix.time () } :: t.active; *)
+  (*   p.p_reqs <- p.p_reqs + 1; *)
+  (*   Some (Metadata.block t.meta p.p_index j) *)
+  (* | None -> *)
+  (*   None *)
+
+let decr_request_count t i =
+  match t.pending.(i) with
+  | Some p -> p.p_reqs <- p.p_reqs - 1
+  | None -> ()
+
+(* let request_ttl_secs = 90 *)
+
+(* let rec upkeep_pulse t = *)
+(*   let now = Unix.time () in *)
+(*   let too_old = now -. float request_ttl_secs in  *)
+(*   let old, keep = List.partition (fun r -> r.a_sent_at <= too_old) t.active in *)
+(*   t.active <- keep; *)
+(*   List.iter (fun r -> *)
+(*       Peer.send_cancel r.a_peer r.a_piece r.a_block; *)
+(*       decr_request_count t r.a_piece) old; *)
+(*   Lwt_unix.sleep refill_upkeep_period_msec >>= fun () -> upkeep_pulse t *)
 
 let create meta =
   let numpieces = Metadata.piece_count meta in
+  let create_pending_piece i = { p_index = i; p_reqs = 0; p_salt = Random.bits () } in
   let dl = {
     meta; store = Store.create ();
     active = [];
-    pending = Array.init numpieces (fun i -> Some { p_index = i; p_reqs = 0 });
+    pending = Array.init numpieces (fun i -> Some (create_pending_piece i));
     completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
     up = 0L; down = 0L;
     amount_left = Metadata.total_length meta;
@@ -140,7 +168,6 @@ let get_block t i ofs len =
   Store.read t.store (Metadata.block_offset t.meta i ofs) len
   
 let got_have self piece =
-  (* if not (Bits.has_all self.completed.(piece)) then *)
   self.rarity.(piece) <- self.rarity.(piece) + 1
 
 let got_bitfield self b =
@@ -149,7 +176,6 @@ let got_bitfield self b =
   done
  
 let lost_have self piece =
-  (* if not (Bits.has_all self.completed.(piece)) then *)
   self.rarity.(piece) <- self.rarity.(piece) - 1
 
 let lost_bitfield self b =
@@ -157,9 +183,21 @@ let lost_bitfield self b =
     if Bits.is_set b i then lost_have self i
   done
 
-let lost_request t (i, ofs, len) =
+let lost_request t (i, ofs, len) = (* FIXME which peer cancelled ? *)
   let b = Metadata.block_number t.meta ofs in
-  t.active <- List.filter (fun a -> a.a_piece <> i || a.a_block <> b) t.active
+  (* let rec loop = function *)
+  (*   | [] -> () *)
+  (*   | a :: ax -> *)
+  (*     if a.a_piece = i && a.a_block = b then begin *)
+  (*       decr_request_count t i; *)
+  (*       ax *)
+  (*     end *)
+  (*     else *)
+  (*       a :: loop ax *)
+  (* in *)
+  (* t.active <- loop t.active *)
+  t.active <- List.filter (fun a -> a.a_piece <> i || a.a_block <> b) t.active;
+  decr_request_count t i
 
 let got_block t idx off s =
   (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)

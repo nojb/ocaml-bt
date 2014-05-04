@@ -24,7 +24,7 @@ let (>|=) = Lwt.(>|=)
 
 type event =
   | Choked of (int * int * int) list
-  | Unchoked
+  (* | Unchoked *)
   (* | Interested *)
   (* | NotInterested *)
   | Have of int
@@ -48,7 +48,7 @@ exception Timeout
 
 type t = {
   addr : Addr.t;
-  (* sock : Tcp.socket; *)
+  sock : IO.socket;
   output : Lwt_io.output_channel;
   input : Lwt_io.input_channel;
   mutable id : SHA1.t;
@@ -65,11 +65,14 @@ type t = {
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
   
-  mutable handle : (event -> unit) option;
+  handle : event -> unit;
   mutable have : Bits.t;
 
   mutable upload : Rate.t;
-  mutable download : Rate.t
+  mutable download : Rate.t;
+
+  (* mutable get_next_requests : (int -> (int * int * int) list) option; *)
+  (* mutable get_next_metadata_request : (unit -> int option) option *)
 }
 
 let next_to_send p =
@@ -87,9 +90,10 @@ let send_message p m =
     ignore (Lwt_sequence.add_r m p.send_queue)
 
 let signal p e =
-  match p.handle with
-  | None -> ()
-  | Some h -> h e
+  p.handle e
+  (* match p.handle with *)
+  (* | None -> () *)
+  (* | Some h -> h e *)
 
 let send_extended p id s =
   send_message p (Wire.EXTENDED (id, s))
@@ -144,8 +148,8 @@ let got_choke p =
 
 let got_unchoke p =
   if p.peer_choking then begin
-    p.peer_choking <- false;
-    signal p Unchoked
+    p.peer_choking <- false
+    (* signal p Unchoked *)
   end
 
 let got_interested p =
@@ -262,43 +266,31 @@ let writer_loop p =
   in
   loop ()
 
-let create sock addr id =
+let create sock addr id handle_event =
   let w, wake = Lwt.wait () in
-  (* let requests, send_req = Lwt_stream.create () in *)
-  (* let send_req x = send_req (Some x) in *)
   let input, output = IO.in_channel sock, IO.out_channel sock in
-  let p =
-    { addr; input; output; id;
-      am_choking = true; am_interested = false;
-      peer_choking = true; peer_interested = false;
-      should_stop = w; extbits = Bits.create (8 * 8);
-      extensions = Hashtbl.create 17;
-      (* requests; *)
-      act_reqs = [];
-      (* send_req; *)
-      send_queue = Lwt_sequence.create ();
-      send_waiters = Lwt_sequence.create ();
-      handle = None;
-      have = Bits.create 1;
-      download = Rate.create ();
-      upload = Rate.create () }
-  in
-  p
+  { sock; addr; input; output; id;
+    am_choking = true; am_interested = false;
+    peer_choking = true; peer_interested = false;
+    should_stop = w; extbits = Bits.create (8 * 8);
+    extensions = Hashtbl.create 17;
+    act_reqs = [];
+    send_queue = Lwt_sequence.create ();
+    send_waiters = Lwt_sequence.create ();
+    handle = handle_event;
+    have = Bits.create 1;
+    download = Rate.create ();
+    upload = Rate.create () }
 
-let start p h =
-  p.handle <- Some h;
-  let run_loop () =
-    Lwt.catch
-      (fun () -> Lwt.join [reader_loop p; writer_loop p])
-      (fun e ->
-         Log.error ~exn:e "peer input/output error (addr=%s,id=%s)"
-           (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
-         Lwt.return ())
-    >>= fun () ->
-    signal p (Finished p.act_reqs);
-    Lwt.return ()
-  in
-  Lwt.async run_loop
+(* let get_next_requests p n = *)
+(*   match p.get_next_requests with *)
+(*   | None -> [] *)
+(*   | Some f -> f n *)
+
+(* let get_next_metadata_request p = *)
+(*   match p.get_next_metadata_request with *)
+(*   | None -> None *)
+(*   | Some f -> f () *)
 
 let id p =
   p.id
@@ -330,6 +322,9 @@ let have p =
 
 let am_choking p =
   p.am_choking
+
+let client_interested p =
+  p.am_interested
 
 let send_choke p =
   if not p.am_choking then begin
@@ -367,6 +362,9 @@ let send_have_bitfield p bits =
   for i = 0 to Bits.length bits - 1 do
     if Bits.is_set bits i then send_have p i
   done
+
+let supports_ut_metadata p =
+  Hashtbl.mem p.extensions "ut_metadata"
   
 let request_meta_piece p idx =
   assert (idx >= 0);
@@ -382,3 +380,35 @@ let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download
 
 let reset_rates p = Rate.reset p.upload; Rate.reset p.download
+
+let request_loop p get_next_requests get_next_metadata_request =
+  let rec loop () =
+    if supports_ut_metadata p then
+      begin match get_next_metadata_request () with
+      | Some i -> request_meta_piece p i
+      | None -> ()
+      end;
+    let ps = get_next_requests (request_pipeline_max - List.length p.act_reqs) in
+    List.iter (send_request p) ps;
+    p.sock#on_write >>= loop
+  in
+  loop ()
+
+let start p get_next_requests get_next_metadata_request =
+  (* p.handle <- Some h; *)
+  (* p.get_next_requests <- Some get_next_requests; *)
+  (* p.get_next_metadata_request <- Some get_next_metadata_request; *)
+  let run_loop () =
+    Lwt.catch
+      (fun () -> Lwt.join [reader_loop p; writer_loop p;
+                           request_loop p get_next_requests get_next_metadata_request])
+      (fun e ->
+         Log.error ~exn:e "peer input/output error (addr=%s,id=%s)"
+           (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
+         Lwt.return ())
+    >>= fun () ->
+    signal p (Finished p.act_reqs);
+    Lwt.return ()
+  in
+  Lwt.async run_loop
+

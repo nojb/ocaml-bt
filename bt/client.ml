@@ -39,7 +39,6 @@ type event =
   | TorrentLoaded of Torrent.t
   | PieceVerified of int
   | TorrentCompleted
-  (* | Rechoke of int * int *)
   | Announce of Tracker.Tier.t * Tracker.event option
 
 type stage =
@@ -145,15 +144,31 @@ let is_seeding bt =
 let need_more_peers bt =
   (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_num_peers) &&
   not (is_seeding bt)
-  
+
+let get_next_requests bt p n =
+  match bt.stage with
+  | Leeching (_, t) ->
+    if not (Peer.peer_choking p) then Torrent.get_next_requests t p n
+    else []
+  | _ -> []
+
+let get_next_metadata_request bt p () =
+  match bt.stage with
+  | PartialMeta m ->
+    IncompleteMetadata.get_next_metadata_request m
+  | _ ->
+    None
+
+let (!!) = Lazy.force
+
 let peer_joined bt sock addr ih id exts =
-  let p = Peer.create sock addr id in
-  Peer.start p (push_peer_event bt p);
-  if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake p;
-  Hashtbl.add bt.peers addr p;
+  let rec p = lazy (Peer.create sock addr id (fun e -> push_peer_event bt !!p e)) in
+  Peer.start !!p (get_next_requests bt !!p) (get_next_metadata_request bt !!p);
+  if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake !!p;
+  Hashtbl.add bt.peers addr !!p;
   match bt.stage with
   | Leeching (_, t)
-  | Seeding (_, t) -> Peer.send_have_bitfield p (Torrent.have t)
+  | Seeding (_, t) -> Peer.send_have_bitfield !!p (Torrent.have t)
   | _ -> ()
 
 let rec connect_peer ?(retry = false) bt addr =
@@ -171,31 +186,17 @@ let rec connect_peer ?(retry = false) bt addr =
   | _ ->
     Lwt.fail (Failure "error")
 
-(* let rec peer_connection_failed bt addr = *)
-(*   if need_more_peers bt && List.length bt.saved > 0 then begin *)
-(*     let addr = List.hd bt.saved in *)
-(*     bt.saved <- List.tl bt.saved; *)
-(*     Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr)) *)
-(*   end *)
-
 and try_connect bt addr f =
   Hashtbl.add bt.connecting addr ();
   let doit () = Lwt.finalize f (fun () -> Hashtbl.remove bt.connecting addr; Lwt.return ()) in
   Lwt.catch doit
     (fun e ->
        Log.error ~exn:e "try_connect";
-       (* peer_connection_failed bt addr; *)
        Lwt.return ())
 
 let peer_finished bt p =
   Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
   Hashtbl.remove bt.peers (Peer.addr p)
-  (* if need_more_peers bt && List.length bt.saved > 0 then begin *)
-  (*   let addr = List.hd bt.saved in *)
-  (*   bt.saved <- List.tl bt.saved; *)
-  (*   Log.info "contacting saved peer (addr=%s)" (Addr.to_string addr); *)
-  (*   Lwt.async (fun () -> try_connect bt addr (fun () -> connect_peer bt addr)) *)
-  (* end *)
 
 let handle_incoming_peer bt sock addr =
   if not (know_peer bt addr) then
@@ -345,43 +346,15 @@ let has_partial_metadata bt =
   | Leeching _
   | Seeding _ -> true
 
-let request_meta_piece bt (p : Peer.t) =
-  match bt.stage with
-  | PartialMeta meta ->
-    begin match IncompleteMetadata.pick_missing meta with
-    | None -> ()
-    | Some i -> Peer.request_meta_piece p i
-    end
-  | _ ->
-    ()
-
 let handle_available_metadata bt p len =
   let npieces = roundup len info_piece_size / info_piece_size in
   Log.success "metadata available (len=%d,npieces=%d)" len npieces;
   match bt.stage with
   | NoMeta ->
-    bt.stage <- PartialMeta (IncompleteMetadata.create bt.ih len);
-    request_meta_piece bt p
-  | PartialMeta m ->
-    if IncompleteMetadata.length m = len then
-      request_meta_piece bt p
-    else
-      Log.warning "metadata size mismatch (expected=%d,received=%d)"
-        (IncompleteMetadata.length m) len
+    bt.stage <- PartialMeta (IncompleteMetadata.create bt.ih len)
   | _ ->
     ()
 
-let request_block bt p =
-  match bt.stage with
-  | Leeching (_, t) ->
-    begin match Torrent.request_block t (Peer.has_piece p) with
-    | None ->
-      ()
-    | Some pc ->
-      Peer.send_request p pc
-    end
-  | _ -> ()
-  
 let handle_peer_event bt p = function
   | Peer.Finished reqs ->
     peer_finished bt p;
@@ -397,11 +370,6 @@ let handle_peer_event bt p = function
     | Leeching (_, t) -> List.iter (Torrent.lost_request t) reqs
     | _ -> ()
     end
-  | Peer.Unchoked ->
-    Log.info "peer just unchoked us (addr=%s)" (Addr.to_string (Peer.addr p));
-    for i = 1 to max_requests do
-      request_block bt p
-    done
   | Peer.Have i ->
     begin match bt.stage with
     | Leeching (_, dl) ->
@@ -427,7 +395,7 @@ let handle_peer_event bt p = function
   | Peer.GotMetaPiece (i, s) ->
     begin match bt.stage with
     | PartialMeta meta ->
-      Log.success "got meta piece (i=%d)" i;
+      begin Log.success "got meta piece (i=%d)" i;
       if IncompleteMetadata.add_piece meta i s then
         match IncompleteMetadata.verify meta with
         | Some meta ->
@@ -436,14 +404,12 @@ let handle_peer_event bt p = function
         | None ->
           Log.error "metadata hash check failed";
           bt.stage <- NoMeta
-      else
-        request_meta_piece bt p
+      end
     | _ ->
       ()
     end
   | Peer.RejectMetaPiece i ->
-    Log.warning "meta piece rejected (i=%d)" i;
-    request_meta_piece bt p
+    Log.warning "meta piece rejected (i=%d)" i
   | Peer.BlockRequested (idx, off, len) ->
     begin match bt.stage with
     | Leeching (_, dl)
@@ -471,8 +437,7 @@ let handle_peer_event bt p = function
         | `Failed
         | `Continue -> ()
       in
-      Lwt.async aux;
-      request_block bt p
+      Lwt.async aux
     | _ ->
       ()
     end

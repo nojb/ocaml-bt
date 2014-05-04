@@ -215,10 +215,13 @@ let of_list l =
 (*     (fun b -> equal (of_bin (to_bin b)) b && equal (to_bin (of_bin b)) b) in *)
 (*   QCheck.run test *)
 
-let has_all b =
-  let rec loop i =
-    if i >= String.length b then true else
-    if is_set b i then loop (i+1)
-    else false
+let missing b =
+  let rec loop n i =
+    if i >= String.length b then n else
+    if b.[i] = '\000' then loop (n+1) (i+1)
+    else loop n (i+1)
   in
-  loop 0
+  loop 0 0
+
+let has_all b =
+  missing b = 0

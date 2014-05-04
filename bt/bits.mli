@@ -49,3 +49,4 @@ val of_array : bool array -> t
 val to_list : t -> int list
 val of_list : int list -> t
 val has_all : t -> bool
+val missing : t -> int

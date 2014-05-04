@@ -23,7 +23,7 @@ type t
 
 val create : Metadata.t -> t Lwt.t
 val get_block : t -> int -> int -> int -> string Lwt.t
-val request_block : t -> (int -> bool) -> (int * int * int) option
+val get_next_requests : t -> Peer.t -> int -> (int * int * int) list
 val lost_request : t -> int * int * int -> unit
 val is_complete : t -> bool
 val got_block : t -> int -> int -> string -> [ `Verified | `Failed | `Continue ] Lwt.t
