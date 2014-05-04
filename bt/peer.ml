@@ -66,7 +66,7 @@ type t = {
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
   
   handle : event -> unit;
-  mutable have : Bits.t;
+  have : Bits.t;
 
   mutable upload : Rate.t;
   mutable download : Rate.t;

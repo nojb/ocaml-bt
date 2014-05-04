@@ -256,7 +256,3 @@ let have self =
 
 let has_piece self i =
   Bits.has_all self.completed.(i)
-
-let set_rarity self a =
-  assert (Array.length a = Array.length self.rarity);
-  Array.blit a 0 self.rarity 0 (Array.length a)

@@ -31,43 +31,43 @@ let unchoking_frequency = 10
 let optimistic_unchoke_iterations = 3
 let rate_computation_iterations = 2
   
-module FH : sig
-  type t
-  val create : unit -> t
-  val add : t -> int -> unit
-  val add_bitfield : t -> Bits.t -> unit
-  val iter : t -> (int -> int -> unit) -> unit
-  val to_array : t -> int -> int array
-end = struct
-  type t = (int, int) Hashtbl.t
-  let create () = Hashtbl.create 3
-  let add h i =
-    let n = try Hashtbl.find h i with Not_found -> 0 in
-    Hashtbl.replace h i (n+1)
-  let add_bitfield h b =
-    for i = 0 to Bits.length b - 1 do
-      if Bits.is_set b i then add h i
-    done
-  let iter h f =
-    Hashtbl.iter (fun i n -> if n > 0 then f i n) h
-  let to_array h n =
-    Array.init n (fun i -> try Hashtbl.find h i with Not_found -> 0)
-end
+(* module FH : sig *)
+(*   type t *)
+(*   val create : unit -> t *)
+(*   val add : t -> int -> unit *)
+(*   val add_bitfield : t -> Bits.t -> unit *)
+(*   val iter : t -> (int -> int -> unit) -> unit *)
+(*   val to_array : t -> int -> int array *)
+(* end = struct *)
+(*   type t = (int, int) Hashtbl.t *)
+(*   let create () = Hashtbl.create 3 *)
+(*   let add h i = *)
+(*     let n = try Hashtbl.find h i with Not_found -> 0 in *)
+(*     Hashtbl.replace h i (n+1) *)
+(*   let add_bitfield h b = *)
+(*     for i = 0 to Bits.length b - 1 do *)
+(*       if Bits.is_set b i then add h i *)
+(*     done *)
+(*   let iter h f = *)
+(*     Hashtbl.iter (fun i n -> if n > 0 then f i n) h *)
+(*   let to_array h n = *)
+(*     Array.init n (fun i -> try Hashtbl.find h i with Not_found -> 0) *)
+(* end *)
 
 type event =
   | IncomingPeer of IO.socket * Addr.t
   | PeersReceived of Addr.t list
   | PeerEvent of Peer.t * Peer.event
-  | GotMetadata of FH.t * Metadata.t
+  | GotMetadata of Metadata.t
   | TorrentLoaded of Torrent.t
   | PieceVerified of int
   | TorrentCompleted
   | Announce of Tracker.Tier.t * Tracker.event option
 
 type stage =
-  | NoMeta of FH.t
-  | PartialMeta of FH.t * IncompleteMetadata.t
-  | Loading of FH.t * Metadata.t
+  | NoMeta
+  | PartialMeta of IncompleteMetadata.t
+  | Loading of Metadata.t
   | Leeching of Metadata.t * Torrent.t
   | Seeding of Metadata.t * Torrent.t
 
@@ -101,7 +101,7 @@ let create mg =
     saved = [];
     chan;
     push;
-    stage = NoMeta (FH.create ());
+    stage = NoMeta;
     port = -1}
 
 exception Cant_listen
@@ -129,8 +129,8 @@ let push_peers_received bt xs =
 let push_peer_event bt p ev =
   bt.push (PeerEvent (p, ev))
 
-let push_metadata bt h info =
-  bt.push (GotMetadata (h, info))
+let push_metadata bt info =
+  bt.push (GotMetadata info)
 
 let proto = "BitTorrent protocol"
 
@@ -177,7 +177,7 @@ let get_next_requests bt p n =
 
 let get_next_metadata_request bt p () =
   match bt.stage with
-  | PartialMeta (_, m) ->
+  | PartialMeta m ->
     IncompleteMetadata.get_next_metadata_request m
   | _ ->
     None
@@ -373,8 +373,8 @@ let handle_available_metadata bt p len =
   let npieces = roundup len info_piece_size / info_piece_size in
   Log.success "metadata available (len=%d,npieces=%d)" len npieces;
   match bt.stage with
-  | NoMeta h ->
-    bt.stage <- PartialMeta (h, IncompleteMetadata.create bt.ih len)
+  | NoMeta ->
+    bt.stage <- PartialMeta (IncompleteMetadata.create bt.ih len)
   | _ ->
     ()
 
@@ -395,46 +395,38 @@ let handle_peer_event bt p = function
     end
   | Peer.Have i ->
     begin match bt.stage with
-    | NoMeta h
-    | PartialMeta (h, _)
-    | Loading (h, _) ->
-      FH.add h i
     | Leeching (_, dl) ->
       Torrent.got_have dl i
     | _ -> ()
     end
   | Peer.HaveBitfield b ->
     begin match bt.stage with
-    | NoMeta h
-    | PartialMeta (h, _)
-    | Loading (h, _) ->
-      FH.add_bitfield h b
     | Leeching (_, dl) ->
       Torrent.got_bitfield dl b
     | _ -> ()
     end
   | Peer.MetaRequested i ->
     begin match bt.stage with
-    | NoMeta _
+    | NoMeta
     | PartialMeta _ ->
       Peer.send_reject_meta p i
-    | Loading (_, meta)
+    | Loading meta
     | Leeching (meta, _)
     | Seeding (meta, _) ->
       Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i)
     end
   | Peer.GotMetaPiece (i, s) ->
     begin match bt.stage with
-    | PartialMeta (h, meta) ->
+    | PartialMeta meta ->
       begin Log.success "got meta piece (i=%d)" i;
       if IncompleteMetadata.add_piece meta i s then
         match IncompleteMetadata.verify meta with
         | Some meta ->
           Log.success "got complete metadata";
-          push_metadata bt h (Metadata.create (Bcode.decode meta))
+          push_metadata bt (Metadata.create (Bcode.decode meta))
         | None ->
           Log.error "metadata hash check failed";
-          bt.stage <- NoMeta h
+          bt.stage <- NoMeta
       end
     | _ ->
       ()
@@ -483,20 +475,22 @@ let handle_event bt = function
     List.iter (handle_received_peer bt) addrs
   | PeerEvent (p, e) ->
     handle_peer_event bt p e
-  | GotMetadata (h, meta) ->
-    bt.stage <- Loading (h, meta);
+  | GotMetadata meta ->
+    bt.stage <- Loading meta;
     let aux () =
       Torrent.create meta >|= fun dl -> bt.push (TorrentLoaded dl)
     in
     Lwt.async aux
   | TorrentLoaded dl ->
     begin match bt.stage with
-    | Loading (h, meta) ->
-      Torrent.set_rarity dl (FH.to_array h (Metadata.piece_count meta));
+    | Loading meta ->
       Log.success "torrent loaded (good=%d,total=%d)"
         (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl);
       bt.stage <- if Torrent.is_complete dl then Seeding (meta, dl) else Leeching (meta, dl);
-      let wakeup_peer _ p = Peer.send_have_bitfield p (Torrent.have dl) in
+      let wakeup_peer _ p =
+        Torrent.got_bitfield dl (Peer.have p);
+        Peer.send_have_bitfield p (Torrent.have dl)
+      in
       Hashtbl.iter wakeup_peer bt.peers
     | _ ->
       ()
