@@ -37,3 +37,4 @@ val got_have : t -> int -> unit
 val got_bitfield : t -> Bits.t -> unit
 val lost_have : t -> int -> unit
 val lost_bitfield : t -> Bits.t -> unit
+val set_rarity : t -> int array -> unit

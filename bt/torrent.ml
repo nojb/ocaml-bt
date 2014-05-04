@@ -93,23 +93,12 @@ let get_next_requests t peer n =
           loop' acc 0
   in
   let reqs = loop [] 0 in
-  (* let ax = List.map (fun (p, j) -> { a_piece = p.p_index; a_block = j; a_id = uid; a_sent_at = Unix.time () }) *)
-      (* reqs in *)
-  (* t.active <- List.concat ax t.active; *)
   List.iter (fun (p, j) ->
       t.active <- {a_piece = p.p_index; a_block = j; a_peer = peer; a_sent_at = Unix.time ()} :: t.active;
       p.p_reqs <- p.p_reqs + 1) reqs;
   List.map (fun (p, j) -> Metadata.block t.meta p.p_index j) reqs
-  (* match loop [] 0 with *)
-  (* | Some (p, j) -> *)
-  (*   Log.debug "chosen block %d:%d" p.p_index j; *)
-  (*   t.active <- { a_piece = p.p_index; a_block = j; a_id = uid; a_sent_at = Unix.time () } :: t.active; *)
-  (*   p.p_reqs <- p.p_reqs + 1; *)
-  (*   Some (Metadata.block t.meta p.p_index j) *)
-  (* | None -> *)
-  (*   None *)
 
-let decr_request_count t i =
+let decrease_request_count t i =
   match t.pending.(i) with
   | Some p -> p.p_reqs <- p.p_reqs - 1
   | None -> ()
@@ -197,7 +186,7 @@ let lost_request t (i, ofs, len) = (* FIXME which peer cancelled ? *)
   (* in *)
   (* t.active <- loop t.active *)
   t.active <- List.filter (fun a -> a.a_piece <> i || a.a_block <> b) t.active;
-  decr_request_count t i
+  decrease_request_count t i
 
 let got_block t idx off s =
   (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
@@ -267,3 +256,7 @@ let have self =
 
 let has_piece self i =
   Bits.has_all self.completed.(i)
+
+let set_rarity self a =
+  assert (Array.length a = Array.length self.rarity);
+  Array.blit a 0 self.rarity 0 (Array.length a)
