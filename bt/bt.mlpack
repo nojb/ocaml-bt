@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: bff71d7c2cc58f48471c88fb96879adc)
+# DO NOT EDIT (digest: 072057b4638739c2fad1228392480a6d)
 Bcode
 SHA1
 Bits
@@ -11,6 +11,8 @@ Store
 Tracker
 Util
 Torrent
+PeerMgr
+Choker
 Client
 Rate
 Addr
