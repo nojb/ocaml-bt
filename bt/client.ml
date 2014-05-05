@@ -379,19 +379,22 @@ let handle_available_metadata bt p len =
     ()
 
 let handle_peer_event bt p = function
-  | Peer.Finished reqs ->
+  | Peer.Finished ->
     peer_finished bt p;
     begin match bt.stage with
     | Leeching (_, dl) ->
+      Torrent.peer_declined_all_requests dl p;
       Torrent.lost_bitfield dl (Peer.have p)
     | _ -> ()
     end
   | Peer.AvailableMetadata len ->
     handle_available_metadata bt p len
-  | Peer.Choked reqs ->
+  | Peer.Choked ->
     begin match bt.stage with
-    | Leeching (_, t) -> List.iter (Torrent.lost_request t) reqs
-    | _ -> ()
+    | Leeching (_, t)
+    | Seeding (_, t) -> Torrent.peer_declined_all_requests t p
+    | _ ->
+      ()
     end
   | Peer.Have i ->
     begin match bt.stage with
@@ -453,7 +456,7 @@ let handle_peer_event bt p = function
         idx off (String.length s) (Addr.to_string (Peer.addr p))
         (Util.string_of_file_size (Int64.of_float (Peer.download_rate p)));
       let aux () =
-        Torrent.got_block t idx off s >|= function
+        Torrent.got_block t p idx off s >|= function
         | `Verified ->
           bt.push (PieceVerified idx);
           if Torrent.is_complete t then bt.push TorrentCompleted

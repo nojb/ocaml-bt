@@ -22,7 +22,7 @@
 type t
 
 type event =
-  | Choked of (int * int * int) list
+  | Choked
   (* | Unchoked *)
   (* | Interested *)
   (* | NotInterested *)
@@ -31,7 +31,7 @@ type event =
   | BlockRequested of int * int * int
   | BlockReceived of int * int * string
   | Port of int
-  | Finished of (int * int * int) list
+  | Finished
   | AvailableMetadata of int
   | MetaRequested of int
   | GotMetaPiece of int * string
@@ -60,6 +60,7 @@ val send_interested : t -> unit
 val send_not_interested : t -> unit
 val send_have : t -> int -> unit
 val send_have_bitfield : t -> Bits.t -> unit
+val send_cancel : t -> int * int * int -> unit
 (* val send_request : t -> int * int * int -> unit *)
   
 val send_reject_meta : t -> int -> unit

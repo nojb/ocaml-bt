@@ -23,7 +23,7 @@ let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
 type event =
-  | Choked of (int * int * int) list
+  | Choked
   (* | Unchoked *)
   (* | Interested *)
   (* | NotInterested *)
@@ -32,7 +32,7 @@ type event =
   | BlockRequested of int * int * int
   | BlockReceived of int * int * string
   | Port of int
-  | Finished of (int * int * int) list
+  | Finished
   | AvailableMetadata of int
   | MetaRequested of int
   | GotMetaPiece of int * string
@@ -66,7 +66,8 @@ type t = {
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
   
   handle : event -> unit;
-  have : Bits.t;
+  mutable have : Bits.t;
+  (* blame : Bits.t; *)
 
   mutable upload : Rate.t;
   mutable download : Rate.t;
@@ -141,9 +142,8 @@ let supported_extensions =
 let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
-    let reqs = p.act_reqs in
     p.act_reqs <- [];
-    signal p (Choked reqs)
+    signal p Choked
   end
 
 let got_unchoke p =
@@ -260,11 +260,13 @@ let writer_loop p =
     ]
     >>= function
     | `Timeout ->
-      Wire.write p.output Wire.KEEP_ALIVE >>= loop
+      Wire.write p.output Wire.KEEP_ALIVE >>= fun () ->
+      Lwt_io.flush p.output >>= loop
     | `Stop ->
       Lwt.return_unit
     | `Ready m ->
       Wire.write p.output m >>= fun () ->
+      Lwt_io.flush p.output >>= fun () ->
       Log.debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
       (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
       loop ()
@@ -358,6 +360,9 @@ let send_have_bitfield p bits =
     if Bits.is_set bits i then send_have p i
   done
 
+let send_cancel p (i, ofs, len) =
+  send_message p (Wire.CANCEL (i, ofs, len))
+
 let supports_ut_metadata p =
   Hashtbl.mem p.extensions "ut_metadata"
   
@@ -385,7 +390,8 @@ let request_loop p get_next_requests get_next_metadata_request =
       end;
     let ps = get_next_requests (request_pipeline_max - List.length p.act_reqs) in
     List.iter (send_request p) ps;
-    p.sock#on_write >>= loop
+    (* p.sock#on_write >>= loop *)
+    Lwt_unix.sleep 1.0 >>= loop
   in
   loop ()
 
@@ -399,7 +405,8 @@ let start p get_next_requests get_next_metadata_request =
            (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
-    signal p (Finished p.act_reqs);
+    p.act_reqs <- [];
+    signal p Finished;
     Lwt.return ()
   in
   Lwt.async run_loop

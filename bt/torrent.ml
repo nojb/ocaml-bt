@@ -34,14 +34,15 @@ type active_block = {
 type pending_piece = {
   p_index : int;
   mutable p_reqs : int;
-  p_salt : int
+  p_salt : int;
+  mutable p_complete : bool
 }
 
 type t = {
   meta : Metadata.t;
   store : Store.t;
   mutable active : active_block list;
-  pending : pending_piece option array;
+  pending : pending_piece array;
   completed : Bits.t array;
   mutable up : int64;
   mutable down : int64;
@@ -49,38 +50,43 @@ type t = {
   rarity : int array
 }
 
+let w t p =
+  let m = Bits.missing t.completed.(p.p_index) in
+  let r = p.p_reqs in
+  let a = if m > r then m - r else Metadata.block_count t.meta p.p_index + r in
+  (a, t.rarity.(p.p_index))
+
 let compare_by_weight t p1 p2 =
-  match p1, p2 with
-  | None, None -> 0
-  | Some _, None -> -1
-  | None, Some _ -> 1
-  | Some p1, Some p2 ->
-    let w p =
-      let m = Bits.missing t.completed.(p.p_index) in
-      let r = p.p_reqs in
-      let a = if m > r then m - r else Metadata.block_count t.meta p.p_index + r in
-      (a, t.rarity.(p.p_index), p.p_salt)
-    in
-    let (a1, h1, s1) = w p1 in
-    let (a2, h2, s2) = w p2 in
+  match p1.p_complete, p2.p_complete with
+  | true, true -> 0
+  | true, false -> 1
+  | false, true -> -1
+  | false, false ->
+    let (a1, h1) = w t p1 in
+    let (a2, h2) = w t p2 in
     if a2 < a1 then 1 else
     if a1 < a2 then -1 else
     if h1 < h2 then -1 else
     if h2 < h1 then 1 else
-    if s1 < s2 then 1 else
-    if s2 < s1 then -1
+    if p1.p_salt < p2.p_salt then 1 else
+    if p2.p_salt < p1.p_salt then -1
     else 0
-  
+
+let show_pending_piece t p =
+  let a, h = w t p in
+  Printf.sprintf "(idx:%d a:%d h:%d compl:%B)" p.p_index a h p.p_complete
+      
 let get_next_requests t peer n =
   Array.sort (compare_by_weight t) t.pending;
-  (* for i = 0 to (Array.length t.pending) - 2 do *)
-    (* assert (compare_by_weight t t.pending.(i) t.pending.(i+1) <= 0) *)
-  (* done; *)
+  for i = 0 to 4 do
+    Log.debug "  %s" (show_pending_piece t t.pending.(i))
+  done;
   let rec loop acc i =
     if i >= Array.length t.pending || List.length acc >= n then List.rev acc
-    else match t.pending.(i) with
-      | None -> List.rev acc
-      | Some p ->
+    else
+      let p = t.pending.(i) in
+      if p.p_complete then List.rev acc
+      else 
         if not (Peer.has_piece peer p.p_index) then loop acc (i+1)
         else
           let rec loop' acc j =
@@ -98,30 +104,42 @@ let get_next_requests t peer n =
       p.p_reqs <- p.p_reqs + 1) reqs;
   List.map (fun (p, j) -> Metadata.block t.meta p.p_index j) reqs
 
+let lookup t i =
+  let rec loop j =
+    if j >= Array.length t.pending then raise Not_found
+    else if t.pending.(j).p_index = i then t.pending.(j) else loop (j+1)
+  in
+  loop 0
+
 let decrease_request_count t i =
-  match t.pending.(i) with
-  | Some p -> p.p_reqs <- p.p_reqs - 1
-  | None -> ()
+  let p = lookup t i in
+  p.p_reqs <- p.p_reqs - 1
 
-(* let request_ttl_secs = 90 *)
+let request_ttl_secs = 90
 
-(* let rec upkeep_pulse t = *)
-(*   let now = Unix.time () in *)
-(*   let too_old = now -. float request_ttl_secs in  *)
-(*   let old, keep = List.partition (fun r -> r.a_sent_at <= too_old) t.active in *)
-(*   t.active <- keep; *)
-(*   List.iter (fun r -> *)
-(*       Peer.send_cancel r.a_peer r.a_piece r.a_block; *)
-(*       decr_request_count t r.a_piece) old; *)
-(*   Lwt_unix.sleep refill_upkeep_period_msec >>= fun () -> upkeep_pulse t *)
+let refill_upkeep_period_msec = 10.0
+
+let rec upkeep_pulse t =
+  let now = Unix.time () in
+  let too_old = now -. float request_ttl_secs in
+  let old, keep = List.partition (fun r -> r.a_sent_at <= too_old) t.active in
+  t.active <- keep;
+  List.iter (fun r ->
+      Log.debug "cancelling piece:%d block:%d because request is too old"
+        r.a_piece r.a_block;
+      Peer.send_cancel r.a_peer (Metadata.block t.meta r.a_piece r.a_block);
+      decrease_request_count t r.a_piece) old;
+  Lwt_unix.sleep refill_upkeep_period_msec >>= fun () -> upkeep_pulse t
 
 let create meta =
   let numpieces = Metadata.piece_count meta in
-  let create_pending_piece i = { p_index = i; p_reqs = 0; p_salt = Random.bits () } in
+  let create_pending_piece i =
+    { p_index = i; p_reqs = 0; p_salt = Random.bits (); p_complete = false }
+  in
   let dl = {
     meta; store = Store.create ();
     active = [];
-    pending = Array.init numpieces (fun i -> Some (create_pending_piece i));
+    pending = Array.init numpieces create_pending_piece;
     completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
     up = 0L; down = 0L;
     amount_left = Metadata.total_length meta;
@@ -138,7 +156,7 @@ let create meta =
       Store.read dl.store off (plen i) >>= fun s ->
       if SHA1.digest_of_string s |> SHA1.equal (Metadata.hash dl.meta i) then begin
         Bits.set_all dl.completed.(i);
-        dl.pending.(i) <- None;
+        dl.pending.(i).p_complete <- true;
         loop (good+1) (Int64.(sub acc (of_int (plen i)))) (i+1)
       end else
         loop good acc (i+1)
@@ -150,6 +168,7 @@ let create meta =
     "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
     good numpieces amount_left (end_time -. start_time);
   dl.amount_left <- amount_left;
+  Lwt.async (fun () -> upkeep_pulse dl);
   Lwt.return dl
 
 let get_block t i ofs len =
@@ -172,38 +191,34 @@ let lost_bitfield self b =
     if Bits.is_set b i then lost_have self i
   done
 
-let lost_request t (i, ofs, len) = (* FIXME which peer cancelled ? *)
-  let b = Metadata.block_number t.meta ofs in
-  (* let rec loop = function *)
-  (*   | [] -> () *)
-  (*   | a :: ax -> *)
-  (*     if a.a_piece = i && a.a_block = b then begin *)
-  (*       decr_request_count t i; *)
-  (*       ax *)
-  (*     end *)
-  (*     else *)
-  (*       a :: loop ax *)
-  (* in *)
-  (* t.active <- loop t.active *)
-  t.active <- List.filter (fun a -> a.a_piece <> i || a.a_block <> b) t.active;
-  decrease_request_count t i
+let peer_declined_all_requests tor peer =
+  List.iter (fun r -> if r.a_peer == peer then decrease_request_count tor r.a_piece) tor.active;
+  tor.active <- List.filter (fun r -> r.a_peer != peer) tor.active
 
-let got_block t idx off s =
+let cancel_all_requests_for_block tor peer i b =
+  List.iter (fun r ->
+      if r.a_piece = i && r.a_block = b then begin
+        decrease_request_count tor i;
+        if r.a_peer != peer then
+          Peer.send_cancel r.a_peer (Metadata.block tor.meta i b)
+      end) tor.active;
+  tor.active <- List.filter (fun r -> r.a_piece <> i || r.a_block <> b) tor.active
+
+let got_block t peer idx off s =
   (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
-  (* if not (Bits.has_all t.completed.(idx)) then begin *)
   let b = Metadata.block_number t.meta off in
   if not (Bits.is_set t.completed.(idx) b) then begin
     Store.write t.store (Metadata.block_offset t.meta idx off) s >>= fun () ->
     Bits.set t.completed.(idx) b;
     Log.debug "got block %d:%d (%d remaining)" idx b
       (Bits.length t.completed.(idx) - Bits.count t.completed.(idx));
-    t.active <- List.filter (fun r -> r.a_piece <> idx || r.a_block <> b) t.active;
+    cancel_all_requests_for_block t peer idx b;
     if Bits.has_all t.completed.(idx) then begin
       Store.read t.store (Metadata.piece_offset t.meta idx)
         (Metadata.piece_length t.meta idx) >>= fun s ->
       if SHA1.digest_of_string s = Metadata.hash t.meta idx then begin
         Log.success "piece verified (idx=%d)" idx;
-        t.pending.(idx) <- None;
+        (lookup t idx).p_complete <- true;
         (* t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx))); *)
         Lwt.return `Verified
       end else begin
@@ -219,8 +234,6 @@ let got_block t idx off s =
     Log.info "received a block that we already have";
     Lwt.return (if Bits.has_all t.completed.(idx) then `Verified else `Continue)
   end
-  (* end else *)
-    (* Lwt.return `Verified *)
   
 let is_complete self =
   let rec loop i =
