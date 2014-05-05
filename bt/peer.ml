@@ -60,7 +60,7 @@ type t = {
   extbits : Bits.t;
   extensions : (string, int) Hashtbl.t;
   
-  mutable act_reqs : (int * int * int) list;
+  mutable act_reqs : int;
   
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
@@ -142,7 +142,7 @@ let supported_extensions =
 let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
-    p.act_reqs <- [];
+    p.act_reqs <- 0;
     signal p Choked
   end
 
@@ -184,7 +184,8 @@ let got_cancel p i ofs len =
         ()) p.send_queue
 
 let got_piece p idx off s =
-  p.act_reqs <- List.filter (fun (i, o, l) -> (i, o, l) <> (idx, off, String.length s)) p.act_reqs;
+  p.act_reqs <- p.act_reqs - 1;
+  (* p.act_reqs <- List.filter (fun (i, o, l) -> (i, o, l) <> (idx, off, String.length s)) p.act_reqs; *)
   Rate.add p.download (String.length s);
   signal p (BlockReceived (idx, off, s))
 
@@ -248,7 +249,8 @@ let reader_loop p =
   loop (got_message p)
 
 let send_request p (i, ofs, len) =
-  p.act_reqs <- (i, ofs, len) :: p.act_reqs;
+  (* p.act_reqs <- (i, ofs, len) :: p.act_reqs; *)
+  p.act_reqs <- p.act_reqs + 1;
   send_message p (Wire.REQUEST (i, ofs, len))
 
 let writer_loop p =
@@ -281,7 +283,7 @@ let create sock addr id handle_event =
     peer_choking = true; peer_interested = false;
     should_stop = w; extbits = Bits.create (8 * 8);
     extensions = Hashtbl.create 17;
-    act_reqs = [];
+    act_reqs = 0; 
     send_queue = Lwt_sequence.create ();
     send_waiters = Lwt_sequence.create ();
     handle = handle_event;
@@ -388,7 +390,7 @@ let request_loop p get_next_requests get_next_metadata_request =
       | Some i -> request_meta_piece p i
       | None -> ()
       end;
-    let ps = get_next_requests (request_pipeline_max - List.length p.act_reqs) in
+    let ps = get_next_requests (request_pipeline_max - p.act_reqs) in
     List.iter (send_request p) ps;
     (* p.sock#on_write >>= loop *)
     Lwt_unix.sleep 1.0 >>= loop
@@ -405,7 +407,7 @@ let start p get_next_requests get_next_metadata_request =
            (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
-    p.act_reqs <- [];
+    p.act_reqs <- 0;
     signal p Finished;
     Lwt.return ()
   in
