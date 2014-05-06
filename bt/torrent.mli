@@ -23,8 +23,6 @@ type t
 
 val create : Metadata.t -> t Lwt.t
 val get_block : t -> int -> int -> int -> string Lwt.t
-val get_next_requests : t -> Peer.t -> int -> (int * int) list
-val peer_declined_all_requests : t -> Peer.t -> unit
 val is_complete : t -> bool
 val got_block : t -> Peer.t -> int -> int -> string -> [ `Verified | `Failed | `Continue ] Lwt.t
 val down : t -> int64
@@ -33,7 +31,5 @@ val amount_left : t -> int64
 val numgot : t -> int
 val have : t -> Bits.t
 val has_piece : t -> int -> bool
-val got_have : t -> int -> unit
-val got_bitfield : t -> Bits.t -> unit
-val lost_have : t -> int -> unit
-val lost_bitfield : t -> Bits.t -> unit
+val has_block : t -> int -> int -> bool
+val missing_blocks_in_piece : t -> int -> int

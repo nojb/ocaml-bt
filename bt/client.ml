@@ -41,7 +41,7 @@ type no_meta_stage =
 
 type has_meta_stage =
   | Loading
-  | Leeching of Torrent.t * Choker.t
+  | Leeching of Torrent.t * Choker.t * Requester.t
   | Seeding of Torrent.t * Choker.t
                              
 type stage =
@@ -56,7 +56,6 @@ type t = {
   chan : event Lwt_stream.t;
   push : event -> unit;
   mutable stage : stage;
-  (* mutable status : status; *)
   mutable port : int
 }
 
@@ -87,8 +86,8 @@ let push_metadata bt info =
 
 let get_next_requests bt p n =
   match bt.stage with
-  | HasMeta (_, Leeching (t, _)) ->
-    if not (Peer.peer_choking p) then Torrent.get_next_requests t p n
+  | HasMeta (_, Leeching (_, _, r)) ->
+    if not (Peer.peer_choking p) then Requester.get_next_requests r p n
     else []
   | HasMeta _ -> []
   | NoMeta _ -> []
@@ -139,9 +138,9 @@ let handle_peer_event bt p e =
   | Peer.Finished ->
     PeerMgr.peer_finished bt.peer_mgr p;
     begin match bt.stage with
-    | HasMeta (_, Leeching (dl, _)) ->
-      Torrent.peer_declined_all_requests dl p;
-      Torrent.lost_bitfield dl (Peer.have p)
+    | HasMeta (_, Leeching (_, _, r)) ->
+      Requester.peer_declined_all_requests r p;
+      Requester.lost_bitfield r (Peer.have p)
     | _ -> ()
     end
   | Peer.AvailableMetadata len ->
@@ -154,22 +153,21 @@ let handle_peer_event bt p e =
     end
   | Peer.Choked ->
     begin match bt.stage with
-    | HasMeta (_, Leeching (t, _))
-    | HasMeta (_, Seeding (t, _)) ->
-      Torrent.peer_declined_all_requests t p
+    | HasMeta (_, Leeching (_, _, r)) ->
+      Requester.peer_declined_all_requests r p
     | _ ->
       ()
     end
   | Peer.Have i ->
     begin match bt.stage with
-    | HasMeta (_, Leeching (dl, _)) ->
-      Torrent.got_have dl i
+    | HasMeta (_, Leeching (_, _, r)) ->
+      Requester.got_have r i
     | _ -> ()
     end
   | Peer.HaveBitfield b ->
     begin match bt.stage with
-    | HasMeta (_, Leeching (dl, _)) ->
-      Torrent.got_bitfield dl b
+    | HasMeta (_, Leeching (_, _, r)) ->
+      Requester.got_bitfield r b
     | _ -> ()
     end
   | Peer.MetaRequested i ->
@@ -199,7 +197,7 @@ let handle_peer_event bt p e =
     Log.warning "meta piece rejected (i=%d)" i
   | Peer.BlockRequested (idx, off, len) ->
     begin match bt.stage with
-    | HasMeta (_, Leeching (dl, _))
+    | HasMeta (_, Leeching (dl, _, _))
     | HasMeta (_, Seeding (dl, _)) ->
       if Torrent.has_piece dl idx then
         let aux _ = Torrent.get_block dl idx off len >|= Peer.send_block p idx off in
@@ -209,13 +207,16 @@ let handle_peer_event bt p e =
     end
   | Peer.BlockReceived (idx, off, s) ->
     begin match bt.stage with
-    | HasMeta (meta, Leeching (t, _)) ->
+    | HasMeta (meta, Leeching (t, _, r)) ->
       Log.success "received block (idx=%d,off=%d,len=%d) from %s (%s/s)"
         idx off (String.length s) (Addr.to_string (Peer.addr p))
         (Util.string_of_file_size (Int64.of_float (Peer.download_rate p)));
+      let b = Metadata.block_number meta off in
+      Requester.got_block r p idx b;
       let aux () =
         Torrent.got_block t p idx off s >|= function
         | `Verified ->
+          Requester.got_piece r idx;
           bt.push (PieceVerified idx);
           if Torrent.is_complete t then bt.push TorrentCompleted
         | `Failed
@@ -256,10 +257,15 @@ let handle_event bt = function
       Log.success "torrent loaded (good=%d,total=%d)"
         (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl);
       let ch = Choker.create bt.peer_mgr dl in
-      bt.stage <- HasMeta (meta, if Torrent.is_complete dl then Seeding (dl, ch) else Leeching (dl, ch));
+      if Torrent.is_complete dl then
+        bt.stage <- HasMeta (meta, Seeding (dl, ch))
+      else begin
+        let r = Requester.create meta dl in
+        bt.stage <- HasMeta (meta, Leeching (dl, ch, r));
+        PeerMgr.iter_peers (fun p -> Requester.got_bitfield r (Peer.have p)) bt.peer_mgr
+      end;
       Choker.start ch;
       let wakeup_peer p =
-        Torrent.got_bitfield dl (Peer.have p);
         Peer.send_have_bitfield p (Torrent.have dl)
       in
       PeerMgr.iter_peers wakeup_peer bt.peer_mgr
@@ -271,7 +277,8 @@ let handle_event bt = function
   | TorrentCompleted ->
     Log.success "torrent completed!";
     begin match bt.stage with
-    | HasMeta (meta, Leeching (t, ch)) ->
+    | HasMeta (meta, Leeching (t, ch, _)) ->
+      (* FIXME stop requester ? *)
       bt.stage <- HasMeta (meta, Seeding (t, ch))
     | _ ->
       ()

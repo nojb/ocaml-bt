@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: aff45e6c33875330d66bbb0aff6c7322)
+# DO NOT EDIT (digest: c51359184c844a9b42093d2092ffb76d)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -36,6 +36,7 @@
 "bt/wire.cmx": for-pack(Bt)
 "bt/IO.cmx": for-pack(Bt)
 "bt/handshake.cmx": for-pack(Bt)
+"bt/requester.cmx": for-pack(Bt)
 <bt/*.ml{,i}>: pkg_bitstring
 <bt/*.ml{,i}>: pkg_bitstring.syntax
 <bt/*.ml{,i}>: pkg_cohttp
