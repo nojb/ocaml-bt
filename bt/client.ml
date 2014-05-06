@@ -29,8 +29,8 @@ type event =
   | PeersReceived of Addr.t list
   | GotMetadata of Metadata.t
   | TorrentLoaded of Torrent.t
-  | PieceVerified of int
-  | TorrentCompleted
+  (* | PieceVerified of int *)
+  (* | TorrentCompleted *)
   | Announce of Tracker.Tier.t * Tracker.event option
   | GotMetaLength of IncompleteMetadata.t
   | GotBadMeta
@@ -205,29 +205,59 @@ let handle_peer_event bt p e =
     | _ ->
       ()
     end
-  | Peer.BlockReceived (idx, off, s) ->
+  | Peer.BlockReceived (idx, b, s) ->
     begin match bt.stage with
     | HasMeta (meta, Leeching (t, _, r)) ->
-      Log.success "received block (idx=%d,off=%d,len=%d) from %s (%s/s)"
-        idx off (String.length s) (Addr.to_string (Peer.addr p))
+      Log.success "received block (idx=%d,blk=%d,len=%d) from %s (%s/s)"
+        idx b (String.length s) (Addr.to_string (Peer.addr p))
         (Util.string_of_file_size (Int64.of_float (Peer.download_rate p)));
-      let b = Metadata.block_number meta off in
+      (* let b = Metadata.block_number meta off in *)
       Requester.got_block r p idx b;
-      let aux () =
-        Torrent.got_block t p idx off s >|= function
-        | `Verified ->
-          Requester.got_piece r idx;
-          bt.push (PieceVerified idx);
-          if Torrent.is_complete t then bt.push TorrentCompleted
-        | `Failed
-        | `Continue -> ()
-      in
-      Lwt.async aux
+      Torrent.got_block t p idx b s
+      (* let aux () = *)
+      (*   Torrent.got_block t p idx off s >|= function *)
+      (*   | `Verified -> *)
+      (*     Requester.got_piece r idx; *)
+      (*     (\* Torrent.got_piece r idx *\) *)
+      (*     bt.push (PieceVerified idx); *)
+      (*     if Torrent.is_complete t then bt.push TorrentCompleted *)
+      (*   | `Failed *)
+      (*   | `Continue -> () *)
+      (* in *)
+      (* Lwt.async aux *)
     | _ ->
       ()
     end
   | Peer.Port _ ->
     ()
+
+let handle_torrent_event bt = function
+  | Torrent.PieceVerified i ->
+    Log.success "piece verified and written to disk (idx=%d)" i;
+    begin match bt.stage with
+    | HasMeta (_, Leeching (_, _, r)) ->
+      Requester.got_piece r i
+    | _ ->
+      ()
+    end
+  | Torrent.PieceFailed i ->
+    begin match bt.stage with
+    | HasMeta (_, Leeching (_, _, r)) ->
+      (* Announcer.add_bytes *)
+      Requester.got_bad_piece r i;
+      PeerMgr.got_bad_piece bt.peer_mgr i
+    | _ ->
+      ()
+    end
+  | Torrent.TorrentComplete ->
+    Log.success "torrent completed!";
+    begin match bt.stage with
+    | HasMeta (meta, Leeching (t, ch, _)) ->
+      (* FIXME stop requester ? *)
+      bt.stage <- HasMeta (meta, Seeding (t, ch))
+    | _ ->
+      ()
+    end
 
 let (!!) = Lazy.force
 
@@ -246,7 +276,10 @@ let handle_event bt = function
     | NoMeta _ ->
       bt.stage <- HasMeta (meta, Loading);
       PeerMgr.got_metadata bt.peer_mgr meta (get_next_requests bt);
-      let aux () = Torrent.create meta >|= fun dl -> bt.push (TorrentLoaded dl) in
+      let aux () =
+        Torrent.create meta (handle_torrent_event bt) >|= fun dl ->
+        bt.push (TorrentLoaded dl)
+      in
       Lwt.async aux
     | HasMeta _ ->
       ()
@@ -269,17 +302,6 @@ let handle_event bt = function
         Peer.send_have_bitfield p (Torrent.have dl)
       in
       PeerMgr.iter_peers wakeup_peer bt.peer_mgr
-    | _ ->
-      ()
-    end
-  | PieceVerified i ->
-    Log.success "piece verified and written to disk (idx=%d)" i
-  | TorrentCompleted ->
-    Log.success "torrent completed!";
-    begin match bt.stage with
-    | HasMeta (meta, Leeching (t, ch, _)) ->
-      (* FIXME stop requester ? *)
-      bt.stage <- HasMeta (meta, Seeding (t, ch))
     | _ ->
       ()
     end

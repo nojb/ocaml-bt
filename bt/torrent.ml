@@ -22,7 +22,14 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
+type event =
+  | PieceVerified of int
+  | PieceFailed of int
+  | TorrentComplete
+
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
+
+type event_callback = event -> unit
 
 type t = {
   meta : Metadata.t;
@@ -31,15 +38,17 @@ type t = {
   mutable up : int64;
   mutable down : int64;
   mutable amount_left : int64;
+  handle : event_callback
 }
 
-let create meta =
+let create meta handle =
   let numpieces = Metadata.piece_count meta in
   let dl = {
     meta; store = Store.create ();
     completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
     up = 0L; down = 0L;
-    amount_left = Metadata.total_length meta
+    amount_left = Metadata.total_length meta;
+    handle
   } in
   Metadata.iter_files meta
     (fun fi -> Store.add_file dl.store fi.Metadata.file_path fi.Metadata.file_size) >>= fun () ->
@@ -69,38 +78,7 @@ let create meta =
 let get_block t i ofs len =
   t.up <- Int64.add t.up (Int64.of_int len);
   Store.read t.store (Metadata.block_offset t.meta i ofs) len
-  
-let got_block t peer idx off s =
-  (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
-  let b = Metadata.block_number t.meta off in
-  if not (Bits.is_set t.completed.(idx) b) then begin
-    Store.write t.store (Metadata.block_offset t.meta idx off) s >>= fun () ->
-    Bits.set t.completed.(idx) b;
-    Log.debug "got block %d:%d (%d remaining)" idx b
-      (Bits.length t.completed.(idx) - Bits.count t.completed.(idx));
-    (* cancel_all_requests_for_block t peer idx b; *)
-    if Bits.has_all t.completed.(idx) then begin
-      Store.read t.store (Metadata.piece_offset t.meta idx)
-        (Metadata.piece_length t.meta idx) >>= fun s ->
-      if SHA1.digest_of_string s = Metadata.hash t.meta idx then begin
-        Log.success "piece verified (idx=%d)" idx;
-        (* (lookup t idx).p_complete <- true; *)
-        (* t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx))); *)
-        Lwt.return `Verified
-      end else begin
-        Bits.clear t.completed.(idx);
-        Log.error "piece failed hashcheck (idx=%d)" idx;
-        Lwt.return `Failed
-      end
-    end else begin
-      Lwt.return `Continue
-    end
-  end
-  else begin
-    Log.info "received a block that we already have";
-    Lwt.return (if Bits.has_all t.completed.(idx) then `Verified else `Continue)
-  end
-  
+
 let is_complete self =
   let rec loop i =
     if i >= Array.length self.completed then true else
@@ -108,7 +86,39 @@ let is_complete self =
     else false
   in
   loop 0
-    
+  
+let got_block t peer idx b s =
+  (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
+  if not (Bits.is_set t.completed.(idx) b) then begin
+    Log.debug "got block %d:%d (%d remaining)" idx b
+      (Bits.length t.completed.(idx) - Bits.count t.completed.(idx));
+    Bits.set t.completed.(idx) b;
+    let doit () =
+      let off = -1 in (* FIXME FIXME *)
+      Store.write t.store (Metadata.block_offset t.meta idx off) s >|= fun () ->
+      if Bits.has_all t.completed.(idx) then begin
+        Store.read t.store (Metadata.piece_offset t.meta idx)
+          (Metadata.piece_length t.meta idx) >|= fun s ->
+        if SHA1.digest_of_string s = Metadata.hash t.meta idx then begin
+          t.handle (PieceVerified idx);
+          if is_complete t then t.handle TorrentComplete
+        end
+        (* t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx))); *)
+        (* Lwt.return `Verified *)
+        else begin
+          Bits.clear t.completed.(idx);
+          Log.error "piece failed hashcheck (idx=%d)" idx;
+          t.handle (PieceFailed idx)
+        end
+      end
+      else
+        Lwt.return ()
+    in
+    Lwt.async doit
+  end
+  else
+    Log.info "received a block that we already have"
+  
 let down self =
   self.down
 

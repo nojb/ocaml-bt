@@ -174,7 +174,7 @@ let iter_peers f pm =
 
 let got_metadata pm m get_next_requests =
   Hashtbl.iter (fun a p -> Peer.got_metadata p m (get_next_requests p)) pm.peers;
-  pm.info <- HasMeta (m, get_next_requests);
+  pm.info <- HasMeta (m, get_next_requests)
   (* { id = pm.id; *)
   (*   ih = pm.ih; *)
   (*   peers; *)
@@ -184,4 +184,16 @@ let got_metadata pm m get_next_requests =
   (*   info = HasMeta (m, handle) } *)
     (* meta = Peer.HasMetaMeta m } *)
   (* get_next_requests : Peer.t -> int -> (int * int * int) list; *)
-  (* get_next_metadata_request : Peer.t -> unit -> int option *)
+(* get_next_metadata_request : Peer.t -> unit -> int option *)
+
+let close_peer pm p =
+  (* close and ban *)
+  ()
+
+let max_bad_pieces_per_peer = 5
+
+let got_bad_piece pm i =
+  iter_peers (fun p ->
+      if Peer.worked_on_piece p i then
+        if Peer.strike p >= max_bad_pieces_per_peer then
+          close_peer pm p) pm

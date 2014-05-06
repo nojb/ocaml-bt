@@ -19,12 +19,19 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+type event =
+  | PieceVerified of int
+  | PieceFailed of int
+  | TorrentComplete
+
+type event_callback = event -> unit
+
 type t
 
-val create : Metadata.t -> t Lwt.t
+val create : Metadata.t -> event_callback -> t Lwt.t
 val get_block : t -> int -> int -> int -> string Lwt.t
 val is_complete : t -> bool
-val got_block : t -> Peer.t -> int -> int -> string -> [ `Verified | `Failed | `Continue ] Lwt.t
+val got_block : t -> Peer.t -> int -> int -> string -> unit
 val down : t -> int64
 val up : t -> int64
 val amount_left : t -> int64

@@ -130,6 +130,10 @@ let got_piece r i =
   let p = lookup r i in
   p.p_complete <- true
 
+let got_bad_piece r i =
+  (* FIXME *)
+  ()
+  
 let create m t =
   let numpieces = Metadata.piece_count m in
   let create_pending_piece i =

@@ -79,6 +79,7 @@ type t = {
   extensions : (string, int) Hashtbl.t;
   
   mutable act_reqs : int;
+  mutable strikes : int;
   
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
@@ -223,7 +224,12 @@ let got_cancel p i ofs len =
 let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
   Rate.add p.download (String.length s);
-  signal p (BlockReceived (idx, off, s))
+  match p.info with
+  | HasMeta info ->
+    Bits.set info.blame idx;
+    signal p (BlockReceived (idx, Metadata.block_number info.meta off, s))
+  | NoMeta _ ->
+    failwith "Peer.got_piece: no meta info"
 
 let got_extended_handshake p bc =
   let m =
@@ -285,7 +291,6 @@ let reader_loop p =
   loop (got_message p)
 
 let send_request p (i, ofs, len) =
-  (* p.act_reqs <- (i, ofs, len) :: p.act_reqs; *)
   p.act_reqs <- p.act_reqs + 1;
   send_message p (Wire.REQUEST (i, ofs, len))
 
@@ -493,7 +498,8 @@ let create_no_meta sock addr id handle_event get_next_metadata_request =
       handle = handle_event;
       info = NoMeta { have = []; has_all = false; request = get_next_metadata_request };
       download = Rate.create ();
-      upload = Rate.create () }
+      upload = Rate.create ();
+      strikes = 0 }
   in
   Lwt.async (fun () -> request_metadata_loop p);
   p
@@ -517,7 +523,19 @@ let create_has_meta sock addr id handle_event m get_next_requests =
           { have = Bits.create npieces;
             blame = Bits.create npieces; request = get_next_requests; meta = m };
       download = Rate.create ();
-      upload = Rate.create () }
+      upload = Rate.create ();
+      strikes = 0 }
   in
   Lwt.async (fun () -> request_loop p);
   p
+
+let worked_on_piece p i =
+  match p.info with
+  | HasMeta info ->
+    Bits.is_set info.blame i
+  | NoMeta _ ->
+    false
+
+let strike p =
+  p.strikes <- p.strikes + 1;
+  p.strikes

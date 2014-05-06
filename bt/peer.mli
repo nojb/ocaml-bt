@@ -77,3 +77,6 @@ val download_rate : t -> float
 val reset_rates : t -> unit
 
 val got_metadata : t -> Metadata.t -> get_block_func -> unit
+
+val worked_on_piece : t -> int -> bool
+val strike : t -> int

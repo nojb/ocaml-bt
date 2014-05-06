@@ -13,3 +13,4 @@ val peer_finished : t -> Peer.t -> unit
 val handle_incoming_peer : t -> IO.socket -> Addr.t -> unit
 val handle_received_peer : t -> Addr.t -> unit
 val got_metadata : t -> Metadata.t -> (Peer.t -> Peer.get_block_func) -> unit
+val got_bad_piece : t -> int -> unit
