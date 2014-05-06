@@ -23,9 +23,6 @@ type t
 
 type event =
   | Choked
-  (* | Unchoked *)
-  (* | Interested *)
-  (* | NotInterested *)
   | Have of int
   | HaveBitfield of Bits.t
   | BlockRequested of int * int * int
@@ -37,9 +34,17 @@ type event =
   | GotMetaPiece of int * string
   | RejectMetaPiece of int
 
-val create : IO.socket -> Addr.t -> SHA1.t -> (event -> unit) -> t
+type event_callback = event -> unit
+type get_metadata_func = unit -> int option
+type get_block_func = int -> (int * int) list
 
-val start : t -> (int -> (int * int * int) list) -> (unit -> int option) -> unit
+val create_has_meta : IO.socket -> Addr.t -> SHA1.t -> event_callback -> Metadata.t
+  -> get_block_func -> t
+
+val create_no_meta : IO.socket -> Addr.t -> SHA1.t -> event_callback -> get_metadata_func ->
+  t
+
+val start : t -> unit
 
 val id : t -> SHA1.t
 
@@ -60,16 +65,15 @@ val send_interested : t -> unit
 val send_not_interested : t -> unit
 val send_have : t -> int -> unit
 val send_have_bitfield : t -> Bits.t -> unit
-val send_cancel : t -> int * int * int -> unit
-(* val send_request : t -> int * int * int -> unit *)
+val send_cancel : t -> int * int -> unit
   
 val send_reject_meta : t -> int -> unit
 val send_meta_piece : t -> int -> int * string -> unit
 
 val send_block : t -> int -> int -> string -> unit
   
-(* val request_meta_piece : t -> int -> unit *)
-
 val upload_rate : t -> float
 val download_rate : t -> float
 val reset_rates : t -> unit
+
+val got_metadata : t -> Metadata.t -> get_block_func -> unit

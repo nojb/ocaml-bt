@@ -1,22 +1,42 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+type meta_info =
+  | HasMeta of Metadata.t * (Peer.t -> Peer.get_block_func)
+  | NoMeta of (Peer.t -> Peer.get_metadata_func)
+
+(* type 'a metadata = *)
+(*   | HasMetaMeta : Metadata.t -> Peer.has_meta metadata *)
+(*   | NoMetaMeta : Peer.no_meta metadata *)
               
-type t = {
+and t = {
   id : SHA1.t;
   ih : SHA1.t;
   peers : (Addr.t, Peer.t) Hashtbl.t;
   connecting : (Addr.t, unit) Hashtbl.t;
   mutable saved : Addr.t list;
-  handle_peer_event : Peer.t -> Peer.event -> unit;
-  get_next_requests : Peer.t -> int -> (int * int * int) list;
-  get_next_metadata_request : Peer.t -> unit -> int option
+  handle_peer_event : Peer.t -> Peer.event_callback;
+  mutable info : meta_info
+  (* request : request_func; *)
+  (* meta : Peer.metadata *)
+  (* get_next_requests : Peer.t -> int -> (int * int * int) list; *)
+  (* get_next_metadata_request : Peer.t -> unit -> int option *)
 }
 
-let create id ih handle_peer_event get_next_requests get_next_metadata_request =
+let handle_peer_event bt p e =
+  bt.handle_peer_event p e
+
+let create_has_meta id ih h m request =
   { id; ih; peers = Hashtbl.create 3;
     connecting = Hashtbl.create 3;
-    saved = []; handle_peer_event;
-    get_next_requests; get_next_metadata_request }
+    saved = []; handle_peer_event = h;
+    info = HasMeta (m, request) }
+
+let create_no_meta id ih h get_next_metadata_request =
+  { id; ih; peers = Hashtbl.create 3;
+    connecting = Hashtbl.create 3;
+    saved = []; handle_peer_event = h;
+    info = NoMeta get_next_metadata_request }
 
 let proto = "BitTorrent protocol"
 
@@ -50,12 +70,32 @@ let max_num_peers = 20
 let need_more_peers bt =
   Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_num_peers
 (* && not (is_seeding bt) *)
- 
+
 let (!!) = Lazy.force
 
+(* let request_func f p = *)
+(*   match f with *)
+(*   | HasMeta (_, f) -> q (fun n -> f !!p n) *)
+(*   | NoMeta f -> Peer.NoMetaReq (fun () -> f !!p ()) *)
+ 
 let peer_joined bt sock addr ih id exts =
-  let rec p = lazy (Peer.create sock addr id (fun e -> bt.handle_peer_event !!p e)) in
-  Peer.start !!p (bt.get_next_requests !!p) (bt.get_next_metadata_request !!p);
+  (* let p = *)
+  let p =
+    match bt.info with
+    | HasMeta (m, r) ->
+      let rec p =
+        lazy (Peer.create_has_meta sock addr id
+                (fun e -> handle_peer_event bt !!p e) m (fun n -> r !!p n))
+      in
+      p
+    | NoMeta r ->
+      let rec p =
+        lazy (Peer.create_no_meta sock addr id
+                (fun e -> handle_peer_event bt !!p e) (fun () -> r !!p ()))
+      in
+      p
+  in
+  Peer.start !!p;
   if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake !!p;
   Hashtbl.add bt.peers addr !!p
 (* FIXME *)
@@ -128,7 +168,20 @@ let fold_peers f pm x =
 
 let start pm =
   Lwt.async (fun () -> reconnect_pulse pm)
-  (* Lwt.async (fun () -> rechoke_pulse pm 1 1) *)
 
 let iter_peers f pm =
   Hashtbl.iter (fun _ p -> f p) pm.peers
+
+let got_metadata pm m get_next_requests =
+  Hashtbl.iter (fun a p -> Peer.got_metadata p m (get_next_requests p)) pm.peers;
+  pm.info <- HasMeta (m, get_next_requests);
+  (* { id = pm.id; *)
+  (*   ih = pm.ih; *)
+  (*   peers; *)
+  (*   connecting = pm.connecting; *)
+  (*   saved = pm.saved; *)
+  (*   handle_peer_event = handle_peer_event; (\* pm.handle_peer_event; *\) *)
+  (*   info = HasMeta (m, handle) } *)
+    (* meta = Peer.HasMetaMeta m } *)
+  (* get_next_requests : Peer.t -> int -> (int * int * int) list; *)
+  (* get_next_metadata_request : Peer.t -> unit -> int option *)

@@ -102,7 +102,7 @@ let get_next_requests t peer n =
   List.iter (fun (p, j) ->
       t.active <- {a_piece = p.p_index; a_block = j; a_peer = peer; a_sent_at = Unix.time ()} :: t.active;
       p.p_reqs <- p.p_reqs + 1) reqs;
-  List.map (fun (p, j) -> Metadata.block t.meta p.p_index j) reqs
+  List.map (fun (p, j) -> p.p_index, j) reqs
 
 let lookup t i =
   let rec loop j =
@@ -127,7 +127,7 @@ let rec upkeep_pulse t =
   List.iter (fun r ->
       Log.debug "cancelling piece:%d block:%d because request is too old"
         r.a_piece r.a_block;
-      Peer.send_cancel r.a_peer (Metadata.block t.meta r.a_piece r.a_block);
+      Peer.send_cancel r.a_peer (r.a_piece, r.a_block);
       decrease_request_count t r.a_piece) old;
   Lwt_unix.sleep refill_upkeep_period_msec >>= fun () -> upkeep_pulse t
 
@@ -196,12 +196,12 @@ let peer_declined_all_requests tor peer =
   tor.active <- List.filter (fun r -> r.a_peer != peer) tor.active
 
 let cancel_all_requests_for_block tor peer i b =
-  List.iter (fun r ->
-      if r.a_piece = i && r.a_block = b then begin
-        decrease_request_count tor i;
-        if r.a_peer != peer then
-          Peer.send_cancel r.a_peer (Metadata.block tor.meta i b)
-      end) tor.active;
+  List.iter begin fun r ->
+    if r.a_piece = i && r.a_block = b then begin
+      decrease_request_count tor i;
+      if r.a_peer != peer then Peer.send_cancel r.a_peer (i, b)
+    end
+  end tor.active;
   tor.active <- List.filter (fun r -> r.a_piece <> i || r.a_block <> b) tor.active
 
 let got_block t peer idx off s =
