@@ -83,20 +83,15 @@ type t = {
   
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
+
+  meta_waiters : unit Lwt.u Lwt_sequence.t;
   
   handle : event -> unit;
 
   mutable info : meta_info;
-  (* have : bits; *)
-  (* blame : Bits.t; *)
 
   mutable upload : Rate.t;
   mutable download : Rate.t;
-
-  (* request : request_func *)
-
-  (* mutable get_next_requests : (int -> (int * int * int) list) option; *)
-  (* mutable get_next_metadata_request : (unit -> int option) option *)
 }
 
 let next_to_send p =
@@ -115,9 +110,6 @@ let send_message p m =
 
 let signal p e =
   p.handle e
-  (* match p.handle with *)
-  (* | None -> () *)
-  (* | Some h -> h e *)
 
 let send_extended p id s =
   send_message p (Wire.EXTENDED (id, s))
@@ -437,7 +429,7 @@ let request_metadata_loop p =
   in
   loop ()
 
-let request_loop p =
+let request_blocks_loop p =
   let rec loop () =
     match p.info with
     | HasMeta nfo ->
@@ -450,20 +442,35 @@ let request_loop p =
   in
   loop ()
 
+let wait_meta p =
+  match p.info with
+  | HasMeta _ ->
+    assert (Lwt_sequence.is_empty p.meta_waiters);
+    Lwt.return ()
+  | NoMeta _ -> Lwt.add_task_l p.meta_waiters
+
+let request_loop p =
+  Lwt.join [request_metadata_loop p; wait_meta p >>= fun () -> request_blocks_loop p]
+
 let start p =
   let run_loop () =
     Lwt.catch
-      (fun () -> Lwt.join [reader_loop p; writer_loop p])
+      (fun () -> Lwt.join [reader_loop p; writer_loop p; request_loop p])
       (fun e ->
          Log.error ~exn:e "peer input/output error (addr=%s,id=%s)"
            (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
-    p.act_reqs <- 0;
     signal p Finished;
     Lwt.return ()
   in
   Lwt.async run_loop
+
+let fire_wait_meta p =
+  Lwt_sequence.iter_node_l begin fun n ->
+    Lwt.wakeup (Lwt_sequence.get n) ();
+    Lwt_sequence.remove n
+  end p.meta_waiters
 
 let got_metadata p m get_next_requests =
   match p.info with
@@ -478,11 +485,11 @@ let got_metadata p m get_next_requests =
         meta = m }
     in
     p.info <- HasMeta info;
-    Lwt.async (fun () -> request_loop p)
+    fire_wait_meta p
   | HasMeta _ ->
     failwith "Peer.got_metadata: already has meta"
 
-let create_no_meta sock addr id handle_event get_next_metadata_request =
+let create sock addr id handle_event info =
   let w, wake = Lwt.wait () in
   let input, output = IO.in_channel sock, IO.out_channel sock in
   let extensions = Hashtbl.create 17 in
@@ -496,37 +503,26 @@ let create_no_meta sock addr id handle_event get_next_metadata_request =
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
       handle = handle_event;
-      info = NoMeta { have = []; has_all = false; request = get_next_metadata_request };
+      meta_waiters = Lwt_sequence.create ();
+      info;
       download = Rate.create ();
       upload = Rate.create ();
       strikes = 0 }
   in
-  Lwt.async (fun () -> request_metadata_loop p);
+  p
+
+let create_no_meta sock addr id handle_event get_next_metadata_request =
+  let info = NoMeta { have = []; has_all = false; request = get_next_metadata_request } in
+  let p = create sock addr id handle_event info in
   p
   
 let create_has_meta sock addr id handle_event m get_next_requests =
-  let w, wake = Lwt.wait () in
-  let input, output = IO.in_channel sock, IO.out_channel sock in
-  let extensions = Hashtbl.create 17 in
   let npieces = Metadata.piece_count m in
-  let p =
-    { sock; addr; input; output; id;
-      am_choking = true; am_interested = false;
-      peer_choking = true; peer_interested = false;
-      should_stop = w; extbits = Bits.create (8 * 8);
-      extensions;
-      act_reqs = 0; 
-      send_queue = Lwt_sequence.create ();
-      send_waiters = Lwt_sequence.create ();
-      handle = handle_event;
-      info = HasMeta
-          { have = Bits.create npieces;
-            blame = Bits.create npieces; request = get_next_requests; meta = m };
-      download = Rate.create ();
-      upload = Rate.create ();
-      strikes = 0 }
+  let info = HasMeta
+      { have = Bits.create npieces;
+        blame = Bits.create npieces; request = get_next_requests; meta = m }
   in
-  Lwt.async (fun () -> request_loop p);
+  let p = create sock addr id handle_event info in
   p
 
 let worked_on_piece p i =
