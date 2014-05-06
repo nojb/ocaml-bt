@@ -179,8 +179,8 @@ let block_size info i j =
   if j < block_count info i - 1 then info.block_size
   else piece_length info i mod info.block_size
   
-let block_offset meta idx off =
-  Int64.add (piece_offset meta idx) (Int64.of_int off)
+let block_offset m i j =
+  Int64.add (piece_offset m i) (Int64.of_int (j * m.block_size))
 
 (* let piece_count_bytes m i = *)
 (*   if i + 1 = m.piece_count then m.last_piece_size else m.piece_length *)

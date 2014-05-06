@@ -233,9 +233,10 @@ let handle_peer_event bt p e =
 
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
-    Log.success "piece verified and written to disk (idx=%d)" i;
+    Log.success "piece %d verified and written to disk" i;
     begin match bt.stage with
     | HasMeta (_, Leeching (_, _, r)) ->
+      PeerMgr.got_piece bt.peer_mgr i;
       Requester.got_piece r i
     | _ ->
       ()
@@ -244,6 +245,7 @@ let handle_torrent_event bt = function
     begin match bt.stage with
     | HasMeta (_, Leeching (_, _, r)) ->
       (* Announcer.add_bytes *)
+      Log.error "piece %d failed hashcheck" i;
       Requester.got_bad_piece r i;
       PeerMgr.got_bad_piece bt.peer_mgr i
     | _ ->

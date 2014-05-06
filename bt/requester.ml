@@ -91,11 +91,12 @@ let rec upkeep_pulse t =
   let old, keep = List.partition (fun r -> r.a_sent_at <= too_old) t.active in
   t.active <- keep;
   List.iter (fun r ->
-      Log.debug "cancelling piece:%d block:%d because request is too old"
-        r.a_piece r.a_block;
+      Log.debug "cancelling %d(%d/%d) because request is too old"
+        r.a_piece r.a_block (Metadata.block_count t.meta r.a_piece);
       Peer.send_cancel r.a_peer (r.a_piece, r.a_block);
       decrease_request_count t r.a_piece) old;
-  Lwt_unix.sleep refill_upkeep_period_msec >>= fun () -> upkeep_pulse t
+  Lwt_unix.sleep refill_upkeep_period_msec >>= fun () ->
+  upkeep_pulse t
 
 let peer_declined_all_requests tor peer =
   List.iter (fun r -> if r.a_peer == peer then decrease_request_count tor r.a_piece) tor.active;

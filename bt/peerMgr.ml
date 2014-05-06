@@ -5,11 +5,7 @@ type meta_info =
   | HasMeta of Metadata.t * (Peer.t -> Peer.get_block_func)
   | NoMeta of (Peer.t -> Peer.get_metadata_func)
 
-(* type 'a metadata = *)
-(*   | HasMetaMeta : Metadata.t -> Peer.has_meta metadata *)
-(*   | NoMetaMeta : Peer.no_meta metadata *)
-              
-and t = {
+type t = {
   id : SHA1.t;
   ih : SHA1.t;
   peers : (Addr.t, Peer.t) Hashtbl.t;
@@ -17,10 +13,6 @@ and t = {
   mutable saved : Addr.t list;
   handle_peer_event : Peer.t -> Peer.event_callback;
   mutable info : meta_info
-  (* request : request_func; *)
-  (* meta : Peer.metadata *)
-  (* get_next_requests : Peer.t -> int -> (int * int * int) list; *)
-  (* get_next_metadata_request : Peer.t -> unit -> int option *)
 }
 
 let handle_peer_event bt p e =
@@ -73,13 +65,7 @@ let need_more_peers bt =
 
 let (!!) = Lazy.force
 
-(* let request_func f p = *)
-(*   match f with *)
-(*   | HasMeta (_, f) -> q (fun n -> f !!p n) *)
-(*   | NoMeta f -> Peer.NoMetaReq (fun () -> f !!p ()) *)
- 
 let peer_joined bt sock addr ih id exts =
-  (* let p = *)
   let p =
     match bt.info with
     | HasMeta (m, r) ->
@@ -175,16 +161,6 @@ let iter_peers f pm =
 let got_metadata pm m get_next_requests =
   Hashtbl.iter (fun a p -> Peer.got_metadata p m (get_next_requests p)) pm.peers;
   pm.info <- HasMeta (m, get_next_requests)
-  (* { id = pm.id; *)
-  (*   ih = pm.ih; *)
-  (*   peers; *)
-  (*   connecting = pm.connecting; *)
-  (*   saved = pm.saved; *)
-  (*   handle_peer_event = handle_peer_event; (\* pm.handle_peer_event; *\) *)
-  (*   info = HasMeta (m, handle) } *)
-    (* meta = Peer.HasMetaMeta m } *)
-  (* get_next_requests : Peer.t -> int -> (int * int * int) list; *)
-(* get_next_metadata_request : Peer.t -> unit -> int option *)
 
 let close_peer pm p =
   (* close and ban *)
@@ -197,3 +173,6 @@ let got_bad_piece pm i =
       if Peer.worked_on_piece p i then
         if Peer.strike p >= max_bad_pieces_per_peer then
           close_peer pm p) pm
+
+let got_piece pm i =
+  iter_peers (fun p -> Peer.send_have p i) pm

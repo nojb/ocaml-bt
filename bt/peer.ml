@@ -425,7 +425,7 @@ let request_metadata_loop p =
         Lwt_unix.sleep 1.0 >>= loop
       end
       else
-        Lwt_unix.sleep 5.0 >>= loop
+        Lwt_unix.sleep 1.0 >>= loop
   in
   loop ()
 

@@ -90,12 +90,11 @@ let is_complete self =
 let got_block t peer idx b s =
   (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
   if not (Bits.is_set t.completed.(idx) b) then begin
+    Bits.set t.completed.(idx) b;
     Log.debug "got block %d:%d (%d remaining)" idx b
       (Bits.length t.completed.(idx) - Bits.count t.completed.(idx));
-    Bits.set t.completed.(idx) b;
     let doit () =
-      let off = -1 in (* FIXME FIXME *)
-      Store.write t.store (Metadata.block_offset t.meta idx off) s >|= fun () ->
+      Store.write t.store (Metadata.block_offset t.meta idx b) s >|= fun () ->
       if Bits.has_all t.completed.(idx) then begin
         Store.read t.store (Metadata.piece_offset t.meta idx)
           (Metadata.piece_length t.meta idx) >|= fun s ->
@@ -107,7 +106,6 @@ let got_block t peer idx b s =
         (* Lwt.return `Verified *)
         else begin
           Bits.clear t.completed.(idx);
-          Log.error "piece failed hashcheck (idx=%d)" idx;
           t.handle (PieceFailed idx)
         end
       end
