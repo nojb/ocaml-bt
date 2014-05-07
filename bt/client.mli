@@ -23,3 +23,4 @@ type t
 
 val create : Magnet.t -> t
 val start : t -> unit Lwt.t
+(* val stats : t -> Stats.t *)

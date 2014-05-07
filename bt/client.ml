@@ -87,8 +87,8 @@ let push_metadata bt info =
 let get_next_requests bt p n =
   match bt.stage with
   | HasMeta (_, Leeching (_, _, r)) ->
-    if not (Peer.peer_choking p) then Requester.get_next_requests r p n
-    else []
+    (* if not (Peer.peer_choking p) then *)Requester.get_next_requests r p n
+    (* else [] *)
   | HasMeta _ -> []
   | NoMeta _ -> []
 

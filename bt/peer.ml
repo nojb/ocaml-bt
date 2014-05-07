@@ -86,7 +86,7 @@ type t = {
   on_meta : unit Lwt_condition.t;
   on_unchoke : unit Lwt_condition.t;
   on_choke : unit Lwt_condition.t;
-  on_got_block : unit Lwt_condition.t;
+  on_can_request : unit Lwt_condition.t;
   on_ltep_handshake : unit Lwt_condition.t;
   on_stop : unit Lwt_condition.t;
   
@@ -226,7 +226,7 @@ let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
   p.piece_data_time <- Unix.time ();
   Rate.add p.download (String.length s);
-  Lwt_condition.broadcast p.on_got_block ();
+  Lwt_condition.broadcast p.on_can_request ();
   match p.info with
   | HasMeta info ->
     Bits.set info.blame idx;
@@ -395,7 +395,8 @@ let send_cancel p (i, j) =
   match p.info with
   | HasMeta n ->
     let i, ofs, len = Metadata.block n.meta i j in
-    send_message p (Wire.CANCEL (i, ofs, len))
+    send_message p (Wire.CANCEL (i, ofs, len));
+    Lwt_condition.broadcast p.on_can_request ()
   | NoMeta _ ->
     failwith "send_cancel: no meta info"
 
@@ -439,10 +440,10 @@ let request_blocks_loop p =
       Log.debug "request_block_loop: %s" (Addr.to_string (addr p));
       let ps = nfo.request (request_pipeline_max - p.act_reqs) in
       List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
-      Lwt.pick [(Lwt_condition.wait p.on_got_block >|= fun () -> `GotBlock);
+      Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest);
                 (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>=
       function
-      | `GotBlock -> loop ()
+      | `CanRequest -> loop ()
       | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop
     in
     Lwt_condition.wait p.on_unchoke >>= loop
@@ -467,9 +468,13 @@ let start p =
          Lwt.return ())
     >>= fun () ->
     signal p Finished;
+    ignore p.sock#close; (* FIXME *)
     Lwt.return ()
   in
-  Lwt.async run_loop
+  Lwt.async run_loop;
+  match p.info with
+  | HasMeta _ -> Lwt_condition.broadcast p.on_meta ()
+  | NoMeta _ -> ()
 
 let got_metadata p m get_next_requests =
   match p.info with
@@ -504,7 +509,7 @@ let create sock addr id handle_event info =
       on_meta = Lwt_condition.create ();
       on_unchoke = Lwt_condition.create ();
       on_choke = Lwt_condition.create ();
-      on_got_block = Lwt_condition.create ();
+      on_can_request = Lwt_condition.create ();
       on_ltep_handshake = Lwt_condition.create ();
       on_stop = Lwt_condition.create ();
       info;
@@ -529,7 +534,7 @@ let create_has_meta sock addr id handle_event m get_next_requests =
         request = get_next_requests; meta = m }
   in
   let p = create sock addr id handle_event info in
-  Lwt_condition.broadcast p.on_meta ();
+  (* Lwt_condition.broadcast p.on_meta (); *)
   p
 
 let worked_on_piece p i =
