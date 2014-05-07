@@ -80,3 +80,10 @@ val got_metadata : t -> Metadata.t -> get_block_func -> unit
 
 val worked_on_piece : t -> int -> bool
 val strike : t -> int
+
+val is_seed : t -> bool
+
+val time : t -> float
+val piece_data_time : t -> float
+
+val close : t -> unit

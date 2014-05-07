@@ -74,7 +74,6 @@ type t = {
   mutable am_interested : bool;
   mutable peer_choking : bool;
   mutable peer_interested : bool;
-  should_stop : unit Lwt.t;
   extbits : Bits.t;
   extensions : (string, int) Hashtbl.t;
   
@@ -89,6 +88,7 @@ type t = {
   on_choke : unit Lwt_condition.t;
   on_got_block : unit Lwt_condition.t;
   on_ltep_handshake : unit Lwt_condition.t;
+  on_stop : unit Lwt_condition.t;
   
   handle : event -> unit;
 
@@ -96,6 +96,9 @@ type t = {
 
   mutable upload : Rate.t;
   mutable download : Rate.t;
+
+  mutable time : float;
+  mutable piece_data_time : float
 }
 
 let next_to_send p =
@@ -221,6 +224,7 @@ let got_cancel p i ofs len =
 
 let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
+  p.piece_data_time <- Unix.time ();
   Rate.add p.download (String.length s);
   Lwt_condition.broadcast p.on_got_block ();
   match p.info with
@@ -274,19 +278,14 @@ let reader_loop p =
         Lwt.return (Some msg))
   in
   let rec loop f =
-    Lwt.pick [
-      (Lwt_stream.next input >>= fun x -> Lwt.return (`Ok x));
-      (p.should_stop >>= fun () -> Lwt.return `Stop);
-      (Lwt_unix.sleep (float keepalive_delay) >>= fun () -> Lwt.return `Timeout)
-    ]
+    Lwt.pick
+      [(Lwt_stream.next input >|= fun x -> `Ok x);
+       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
+       (Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout)]
     >>= function
-    | `Ok x ->
-      f x;
-      loop f
-    | `Stop ->
-      Lwt.return ()
-    | `Timeout ->
-      Lwt.fail Timeout
+    | `Ok x -> f x; loop f
+    (* | `Stop -> Lwt.return () *)
+    | `Timeout -> Lwt.fail Timeout
   in
   loop (got_message p)
 
@@ -296,17 +295,16 @@ let send_request p (i, ofs, len) =
 
 let writer_loop p =
   let rec loop () =
-    Lwt.pick [
-      (Lwt_unix.sleep (float keepalive_delay) >>= fun () -> Lwt.return `Timeout);
-      (p.should_stop >>= fun () -> Lwt.return `Stop);
-      (next_to_send p >|= fun msg -> `Ready msg)
-    ]
+    Lwt.pick
+      [(Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout);
+       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
+       (next_to_send p >|= fun msg -> `Ready msg)]
     >>= function
     | `Timeout ->
       Wire.write p.output Wire.KEEP_ALIVE >>= fun () ->
       Lwt_io.flush p.output >>= loop
-    | `Stop ->
-      Lwt.return_unit
+    (* | `Stop -> *)
+      (* Lwt.return_unit *)
     | `Ready m ->
       Wire.write p.output m >>= fun () ->
       Lwt_io.flush p.output >>= fun () ->
@@ -451,14 +449,18 @@ let request_blocks_loop p =
   | NoMeta _ ->
     failwith "Peer.request_loop: no meta info"
 
-let request_loop p =
-  Lwt.join [(request_metadata_loop p);
-            (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)]
+(* let request_loop p = *)
+(*   Lwt.join [(request_metadata_loop p); *)
+(*             (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)] *)
 
 let start p =
   let run_loop () =
+    let wrap t = Lwt.pick [t; Lwt_condition.wait p.on_stop] in
     Lwt.catch
-      (fun () -> Lwt.join [reader_loop p; writer_loop p; request_loop p])
+      (fun () -> Lwt.join [wrap (reader_loop p);
+                           wrap (writer_loop p);
+                           wrap (request_metadata_loop p);
+                           wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
       (fun e ->
          Log.error ~exn:e "peer input/output error (addr=%s,id=%s)"
            (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
@@ -487,14 +489,13 @@ let got_metadata p m get_next_requests =
     failwith "Peer.got_metadata: already has meta"
 
 let create sock addr id handle_event info =
-  let w, wake = Lwt.wait () in
   let input, output = IO.in_channel sock, IO.out_channel sock in
   let extensions = Hashtbl.create 17 in
   let p =
     { sock; addr; input; output; id;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
-      should_stop = w; extbits = Bits.create (8 * 8);
+      extbits = Bits.create (8 * 8);
       extensions;
       act_reqs = 0; 
       send_queue = Lwt_sequence.create ();
@@ -505,10 +506,13 @@ let create sock addr id handle_event info =
       on_choke = Lwt_condition.create ();
       on_got_block = Lwt_condition.create ();
       on_ltep_handshake = Lwt_condition.create ();
+      on_stop = Lwt_condition.create ();
       info;
       download = Rate.create ();
       upload = Rate.create ();
-      strikes = 0 }
+      strikes = 0;
+      time = Unix.time ();
+      piece_data_time = 0.0 }
   in
   p
 
@@ -538,3 +542,17 @@ let worked_on_piece p i =
 let strike p =
   p.strikes <- p.strikes + 1;
   p.strikes
+
+let is_seed p =
+  match p.info with
+  | NoMeta _ -> false
+  | HasMeta info -> Bits.has_all info.have
+
+let time p =
+  p.time
+
+let piece_data_time p =
+  p.piece_data_time
+
+let close p =
+  Lwt_condition.broadcast p.on_stop ()

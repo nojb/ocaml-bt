@@ -57,10 +57,10 @@ let handshake_message id ih =
 let know_peer bt addr =
   Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr || List.mem addr bt.saved
 
-let max_num_peers = 20
+let max_peer_count = 20
 
 let need_more_peers bt =
-  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_num_peers)
+  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count)
 (* && not (is_seeding bt) *)
 
 let (!!) = Lazy.force
@@ -137,9 +137,56 @@ let handle_received_peer bt addr =
     bt.saved <- addr :: bt.saved
   end
 
+let fold_peers f pm x =
+  Hashtbl.fold (fun _ p l -> f p l) pm.peers x
+
+let iter_peers f pm =
+  Hashtbl.iter (fun _ p -> f p) pm.peers
+
+let close_peer pm p =
+  Peer.close p
+
+let is_seed pm =
+  match pm.info with
+  | HasMeta (_, tor, _) -> Torrent.is_complete tor
+  | NoMeta _ -> false
+
+let peer_count pm =
+  Hashtbl.length pm.peers
+
+let min_upload_idle_secs = 60.0
+let max_upload_idle_secs = 60.0 *. 5.0
+
+let is_bad_peer pm p =
+  if is_seed pm && Peer.is_seed p then begin
+    Log.debug "closing peer %s because we are both seeds" (Addr.to_string (Peer.addr p));
+    true (* FIXME pex *)
+  end
+  else
+    let relax_strictness_if_fewer_than_n = truncate ((float max_peer_count) *. 0.9 +. 0.5) in
+    let c = peer_count pm in
+    let strictness =
+      if c >= relax_strictness_if_fewer_than_n then 1.0
+      else float c /. float relax_strictness_if_fewer_than_n
+    in
+    let limit = max_upload_idle_secs -.
+                ((max_upload_idle_secs -. min_upload_idle_secs) *. strictness) in
+    let idle_time = Unix.time () -. max (Peer.time p) (Peer.piece_data_time p) in
+    if idle_time > limit then begin
+      Log.debug "closing peer %s because it's been %d secs since we shared anything"
+        (Addr.to_string (Peer.addr p)) (truncate idle_time);
+      true
+    end
+    else
+      false
+
+let close_bad_peers pm =
+  iter_peers (fun p -> if is_bad_peer pm p then close_peer pm p) pm
+
 let reconnect_pulse_delay = 0.5
 
 let rec reconnect_pulse bt =
+  close_bad_peers bt;
   while need_more_peers bt && List.length bt.saved > 0 do
     let addr = List.hd bt.saved in
     bt.saved <- List.tl bt.saved;
@@ -147,15 +194,9 @@ let rec reconnect_pulse bt =
   done;
   Lwt_unix.sleep reconnect_pulse_delay >>= fun () -> reconnect_pulse bt
 
-let fold_peers f pm x =
-  Hashtbl.fold (fun _ p l -> f p l) pm.peers x
-
 let start pm =
   Lwt.async (fun () -> reconnect_pulse pm)
-
-let iter_peers f pm =
-  Hashtbl.iter (fun _ p -> f p) pm.peers
-
+    
 let torrent_loaded pm m tor get_next_requests =
   Log.debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor);
   Hashtbl.iter (fun _ p -> Peer.got_metadata p m (get_next_requests p)) pm.peers;
@@ -166,39 +207,6 @@ let torrent_loaded pm m tor get_next_requests =
     done
   end pm.peers;
   pm.info <- HasMeta (m, tor, get_next_requests)
-
-let close_peer pm p =
-  (* close and ban *)
-  ()
-
-let is_seed pm =
-  match pm.info with
-  | HasMeta (_, tor, _) -> Torrent.is_complete tor
-  | NoMeta _ -> false
-
-let peer_count pm =
-  Hashtbl.length pm.peers
-
-(* let is_bad_peer pm p = *)
-(*   if is_seed pm && Peer.is_seed p then true (\* FIXME pex *\) else begin *)
-(*     let relax_strictness_if_fewer_than_n = float pm.max_peer_count *. 0.9 + 0.5 in *)
-(*     let strictness = *)
-(*       if peer_count pm >= relax_strictness_if_fewer_than_n then 1.0 *)
-(*       else (float (peer_count pm)) /. relax_strictness_if_fewer_than_n *)
-(*     in *)
-(*     let limit = hi - ((hi - lo) *. strictness) in *)
-(*     let idle_time = Lwt_unix.time () -. max (....) in *)
-(*     if idle_time > limit then *)
-(*       true *)
-(*     else *)
-(*       false *)
-(*   end *)
-
-let is_bad_peer pm p =
-  false
-
-let close_bad_peers pm =
-  iter_peers (fun p -> if is_bad_peer pm p then close_peer pm p) pm
 
 let max_bad_pieces_per_peer = 5
 
