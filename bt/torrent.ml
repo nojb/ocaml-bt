@@ -61,7 +61,6 @@ let create meta handle =
       Store.read dl.store off (plen i) >>= fun s ->
       if SHA1.digest_of_string s |> SHA1.equal (Metadata.hash dl.meta i) then begin
         Bits.set_all dl.completed.(i);
-        (* dl.pending.(i).p_complete <- true; FIXME *)
         loop (good+1) (Int64.(sub acc (of_int (plen i)))) (i+1)
       end else
         loop good acc (i+1)
@@ -127,19 +126,22 @@ let amount_left self =
   self.amount_left
 
 let numgot self =
-  let rec loop n i =
-    if i >= Array.length self.completed then n else
-    if Bits.has_all self.completed.(i) then loop (n+1) (i+1)
-    else loop n (i+1)
-  in
-  loop 0 0
+  Array.fold_left (fun n b -> if Bits.has_all b then n+1 else n) 0 self.completed
+  (* let rec loop n i = *)
+  (*   if i >= Array.length self.completed then n else *)
+  (*   if Bits.has_all self.completed.(i) then loop (n+1) (i+1) *)
+  (*   else loop n (i+1) *)
+  (* in *)
+  (* loop 0 0 *)
 
 let have self =
-  let b = Bits.create (Array.length self.completed) in
-  for i = 0 to (Array.length self.completed) - 1 do
-    if Bits.has_all self.completed.(i) then Bits.set b i
-  done;
-  b
+  let have = Bits.create (Array.length self.completed) in
+  Array.iteri (fun i b -> if Bits.has_all b then Bits.set have i) self.completed;
+  have
+  (* for i = 0 to (Array.length self.completed) - 1 do *)
+  (*   if Bits.has_all self.completed.(i) then Bits.set b i *)
+  (* done; *)
+  (* b *)
 
 let has_piece self i =
   Bits.has_all self.completed.(i)

@@ -99,40 +99,6 @@ let get_next_metadata_request bt p () =
   | _ ->
     None
 
-let print_info bt =
-  assert false
-  (* match bt.stage with *)
-  (* | Leeching (_, t, _) *)
-  (* | Seeding (_, t, _) -> *)
-  (*   let dl, ul = 0.0, 0.0 *)
-  (*     (\* Hashtbl.fold *\) *)
-  (*       (\* (fun _ p (dl, ul) -> (dl +. Peer.download_rate p, ul +. Peer.upload_rate p)) *\) *)
-  (*       (\* bt.peers (0.0, 0.0) *\) *)
-  (*   in *)
-  (*   let eta = *)
-  (*     let left = Torrent.amount_left t in *)
-  (*     if dl = 0.0 then "Inf" *)
-  (*     else *)
-  (*       let eta = Int64.to_float left /. dl in *)
-  (*       let tm = Unix.gmtime eta in *)
-  (*       if tm.Unix.tm_mday > 1 || tm.Unix.tm_mon > 0 || tm.Unix.tm_year > 70 then "More than a day" *)
-  (*       else *)
-  (*         Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec *)
-  (*   in *)
-
-  (*   Printf.eprintf "Progress: %d/%d (%d%%) Peers: %d Downloaded: %s (%s/s) Uploaded: %s (%s/s) ETA: %s\n%!" *)
-  (*     (Bits.count (Torrent.have t)) *)
-  (*     (Bits.length (Torrent.have t)) *)
-  (*     (truncate (100.0 *. (float (Bits.count (Torrent.have t))) /. (float (Bits.length (Torrent.have t))))) *)
-  (*     (\* (Hashtbl.length bt.peers) *\) 0 *)
-  (*     (Util.string_of_file_size (Torrent.down t)) *)
-  (*     (Util.string_of_file_size (Int64.of_float dl)) *)
-  (*     (Util.string_of_file_size (Torrent.up t)) *)
-  (*     (Util.string_of_file_size (Int64.of_float ul)) *)
-  (*     eta *)
-  (* | _ -> *)
-(*   () *)
-
 let handle_peer_event bt p e =
   match e with
   | Peer.Finished ->
@@ -211,20 +177,8 @@ let handle_peer_event bt p e =
       Log.success "received block (idx=%d,blk=%d,len=%d) from %s (%s/s)"
         idx b (String.length s) (Addr.to_string (Peer.addr p))
         (Util.string_of_file_size (Int64.of_float (Peer.download_rate p)));
-      (* let b = Metadata.block_number meta off in *)
       Requester.got_block r p idx b;
       Torrent.got_block t p idx b s
-      (* let aux () = *)
-      (*   Torrent.got_block t p idx off s >|= function *)
-      (*   | `Verified -> *)
-      (*     Requester.got_piece r idx; *)
-      (*     (\* Torrent.got_piece r idx *\) *)
-      (*     bt.push (PieceVerified idx); *)
-      (*     if Torrent.is_complete t then bt.push TorrentCompleted *)
-      (*   | `Failed *)
-      (*   | `Continue -> () *)
-      (* in *)
-      (* Lwt.async aux *)
     | _ ->
       ()
     end
@@ -277,7 +231,7 @@ let handle_event bt = function
     begin match bt.stage with
     | NoMeta _ ->
       bt.stage <- HasMeta (meta, Loading);
-      PeerMgr.got_metadata bt.peer_mgr meta (get_next_requests bt);
+      (* PeerMgr.got_metadata bt.peer_mgr meta (get_next_requests bt); *)
       let aux () =
         Torrent.create meta (handle_torrent_event bt) >|= fun dl ->
         bt.push (TorrentLoaded dl)
@@ -291,6 +245,7 @@ let handle_event bt = function
     | HasMeta (meta, Loading) ->
       Log.success "torrent loaded (good=%d,total=%d)"
         (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl);
+      PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt);
       let ch = Choker.create bt.peer_mgr dl in
       if Torrent.is_complete dl then
         bt.stage <- HasMeta (meta, Seeding (dl, ch))
@@ -299,11 +254,7 @@ let handle_event bt = function
         bt.stage <- HasMeta (meta, Leeching (dl, ch, r));
         PeerMgr.iter_peers (fun p -> Requester.got_bitfield r (Peer.have p)) bt.peer_mgr
       end;
-      Choker.start ch;
-      let wakeup_peer p =
-        Peer.send_have_bitfield p (Torrent.have dl)
-      in
-      PeerMgr.iter_peers wakeup_peer bt.peer_mgr
+      Choker.start ch
     | _ ->
       ()
     end

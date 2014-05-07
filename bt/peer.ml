@@ -84,7 +84,11 @@ type t = {
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
 
-  meta_waiters : unit Lwt.u Lwt_sequence.t;
+  on_meta : unit Lwt_condition.t;
+  on_unchoke : unit Lwt_condition.t;
+  on_choke : unit Lwt_condition.t;
+  on_got_block : unit Lwt_condition.t;
+  on_ltep_handshake : unit Lwt_condition.t;
   
   handle : event -> unit;
 
@@ -158,13 +162,15 @@ let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
     p.act_reqs <- 0;
-    signal p Choked
+    signal p Choked;
+    Lwt_condition.broadcast p.on_choke ()
   end
 
 let got_unchoke p =
   if p.peer_choking then begin
-    p.peer_choking <- false
-    (* signal p Unchoked *)
+    Log.debug "UNCHOKE %s" (Addr.to_string p.addr);
+    p.peer_choking <- false;
+    Lwt_condition.broadcast p.on_unchoke ()
   end
 
 let got_interested p =
@@ -216,6 +222,7 @@ let got_cancel p i ofs len =
 let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
   Rate.add p.download (String.length s);
+  Lwt_condition.broadcast p.on_got_block ();
   match p.info with
   | HasMeta info ->
     Bits.set info.blame idx;
@@ -232,7 +239,8 @@ let got_extended_handshake p bc =
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
   if Hashtbl.mem p.extensions "ut_metadata" then
-    signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int))
+    signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int));
+  Lwt_condition.broadcast p.on_ltep_handshake ()
 
 let got_extended p id data =
   let (_, f) = List.assoc id supported_extensions in
@@ -335,9 +343,7 @@ let has_piece p idx =
   assert (0 <= idx);
   match p.info with
   | HasMeta nfo -> Bits.is_set nfo.have idx
-  | NoMeta nfo -> List.mem idx nfo.have
-  (* if idx >= Bits.length p.have then false *)
-  (* else Bits.is_set p.have idx *)
+  | NoMeta nfo -> nfo.has_all || List.mem idx nfo.have
 
 let have p =
   match p.info with
@@ -421,36 +427,33 @@ let request_metadata_loop p =
         | Some i -> request_meta_piece p i
         | None -> ()
         end;
-        (* p.sock#on_write >>= loop *)
         Lwt_unix.sleep 1.0 >>= loop
       end
       else
-        Lwt_unix.sleep 1.0 >>= loop
+        Lwt_condition.wait p.on_ltep_handshake >>= loop
   in
-  loop ()
+  Lwt.pick [Lwt_condition.wait p.on_meta; loop ()]
 
 let request_blocks_loop p =
-  let rec loop () =
-    match p.info with
-    | HasMeta nfo ->
+  match p.info with
+  | HasMeta nfo ->
+    let rec loop () =
+      Log.debug "request_block_loop: %s" (Addr.to_string (addr p));
       let ps = nfo.request (request_pipeline_max - p.act_reqs) in
       List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
-      (* p.sock#on_write >>= loop *)
-      Lwt_unix.sleep 1.0 >>= loop
-    | NoMeta _ ->
-      failwith "Peer.request_loop: no meta info"
-  in
-  loop ()
-
-let wait_meta p =
-  match p.info with
-  | HasMeta _ ->
-    assert (Lwt_sequence.is_empty p.meta_waiters);
-    Lwt.return ()
-  | NoMeta _ -> Lwt.add_task_l p.meta_waiters
+      Lwt.pick [(Lwt_condition.wait p.on_got_block >|= fun () -> `GotBlock);
+                (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>=
+      function
+      | `GotBlock -> loop ()
+      | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop
+    in
+    Lwt_condition.wait p.on_unchoke >>= loop
+  | NoMeta _ ->
+    failwith "Peer.request_loop: no meta info"
 
 let request_loop p =
-  Lwt.join [request_metadata_loop p; wait_meta p >>= fun () -> request_blocks_loop p]
+  Lwt.join [(request_metadata_loop p);
+            (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)]
 
 let start p =
   let run_loop () =
@@ -466,12 +469,6 @@ let start p =
   in
   Lwt.async run_loop
 
-let fire_wait_meta p =
-  Lwt_sequence.iter_node_l begin fun n ->
-    Lwt.wakeup (Lwt_sequence.get n) ();
-    Lwt_sequence.remove n
-  end p.meta_waiters
-
 let got_metadata p m get_next_requests =
   match p.info with
   | NoMeta nfo ->
@@ -485,7 +482,7 @@ let got_metadata p m get_next_requests =
         meta = m }
     in
     p.info <- HasMeta info;
-    fire_wait_meta p
+    Lwt_condition.broadcast p.on_meta ()
   | HasMeta _ ->
     failwith "Peer.got_metadata: already has meta"
 
@@ -503,7 +500,11 @@ let create sock addr id handle_event info =
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
       handle = handle_event;
-      meta_waiters = Lwt_sequence.create ();
+      on_meta = Lwt_condition.create ();
+      on_unchoke = Lwt_condition.create ();
+      on_choke = Lwt_condition.create ();
+      on_got_block = Lwt_condition.create ();
+      on_ltep_handshake = Lwt_condition.create ();
       info;
       download = Rate.create ();
       upload = Rate.create ();
@@ -520,9 +521,11 @@ let create_has_meta sock addr id handle_event m get_next_requests =
   let npieces = Metadata.piece_count m in
   let info = HasMeta
       { have = Bits.create npieces;
-        blame = Bits.create npieces; request = get_next_requests; meta = m }
+        blame = Bits.create npieces;
+        request = get_next_requests; meta = m }
   in
   let p = create sock addr id handle_event info in
+  Lwt_condition.broadcast p.on_meta ();
   p
 
 let worked_on_piece p i =
