@@ -155,3 +155,8 @@ let of_base32 s =
 
 let pp fmt s =
   Format.fprintf fmt "0x%s" (to_hex s)
+
+let strings sl =
+  let h = Cryptokit.Hash.sha1 () in
+  List.iter h#add_string sl;
+  h#result

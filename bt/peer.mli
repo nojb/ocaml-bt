@@ -38,10 +38,10 @@ type event_callback = event -> unit
 type get_metadata_func = unit -> int option
 type get_block_func = int -> (int * int) list
 
-val create_has_meta : IO.socket -> Addr.t -> SHA1.t -> event_callback -> Metadata.t
+val create_has_meta : IO.t -> Addr.t -> SHA1.t -> event_callback -> Metadata.t
   -> get_block_func -> t
 
-val create_no_meta : IO.socket -> Addr.t -> SHA1.t -> event_callback -> get_metadata_func ->
+val create_no_meta : IO.t -> Addr.t -> SHA1.t -> event_callback -> get_metadata_func ->
   t
 
 val start : t -> unit

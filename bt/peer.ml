@@ -66,7 +66,7 @@ type meta_info =
 
 type t = {
   addr : Addr.t;
-  sock : IO.socket;
+  sock : IO.t;
   output : Lwt_io.output_channel;
   input : Lwt_io.input_channel;
   mutable id : SHA1.t;
@@ -468,7 +468,7 @@ let start p =
          Lwt.return ())
     >>= fun () ->
     signal p Finished;
-    ignore p.sock#close; (* FIXME *)
+    ignore (IO.close p.sock); (* FIXME *)
     Lwt.return ()
   in
   Lwt.async run_loop;

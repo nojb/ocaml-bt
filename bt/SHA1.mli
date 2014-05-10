@@ -19,7 +19,7 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type t
+type t = private string
 
 val zero : t
 val compare : t -> t -> int
@@ -41,3 +41,4 @@ val peer_id : string -> t
 val of_hex : string -> t
 val of_base32 : string -> t
 val pp : Format.formatter -> t -> unit
+val strings : string list -> t

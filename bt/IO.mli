@@ -1,38 +1,65 @@
-class type socket =
-  object
-    method close : unit Lwt.t
+type t
 
-    method read : string -> int -> int -> int Lwt.t
-    method really_read : string -> int -> int -> unit Lwt.t
-    method read_char : char Lwt.t
-    method read_string : int -> string Lwt.t
-    method read_int16 : int Lwt.t
-    method read_int32 : int32 Lwt.t
+val close : t -> unit Lwt.t
+val read : t -> string -> int -> int -> int Lwt.t
+val write : t -> string -> int -> int -> int Lwt.t
+val really_read : t -> string -> int -> int -> unit Lwt.t
+val read_char : t -> char Lwt.t
+val read_string : t -> int -> string Lwt.t
+val read_int16 : t -> int Lwt.t
+val read_int32 : t -> int32 Lwt.t
+val really_write : t -> string -> int -> int -> unit Lwt.t
+val write_string : t -> string -> unit Lwt.t
+val write_bitstring : t -> Bitstring.bitstring -> unit Lwt.t
+val write_int16 : t -> int -> unit Lwt.t
+val write_int32 : t -> int32 -> unit Lwt.t
+val on_write : t -> unit Lwt.t
+val enable_encryption : t -> Cryptokit.Stream.stream_cipher -> unit
+val disable_encryption : t -> unit
+val enable_decryption : t -> Cryptokit.Stream.stream_cipher -> unit
+val disable_decryption : t -> unit
+
+(* class type socket = *)
+(*   object *)
+(*     method close : unit Lwt.t *)
+
+(*     method read : string -> int -> int -> int Lwt.t *)
+(*     method really_read : string -> int -> int -> unit Lwt.t *)
+(*     method read_char : char Lwt.t *)
+(*     method read_string : int -> string Lwt.t *)
+(*     method read_int16 : int Lwt.t *)
+(*     method read_int32 : int32 Lwt.t *)
         
-    method write : string -> int -> int -> int Lwt.t
-    method really_write : string -> int -> int -> unit Lwt.t
-    method write_string : string -> unit Lwt.t
-    method write_bitstring : Bitstring.bitstring -> unit Lwt.t
-    method write_int16 : int -> unit Lwt.t
-    method write_int32 : int32 -> unit Lwt.t
+(*     method write : string -> int -> int -> int Lwt.t *)
+(*     method really_write : string -> int -> int -> unit Lwt.t *)
+(*     method write_string : string -> unit Lwt.t *)
+(*     method write_bitstring : Bitstring.bitstring -> unit Lwt.t *)
+(*     method write_int16 : int -> unit Lwt.t *)
+(*     method write_int32 : int32 -> unit Lwt.t *)
 
-    method on_write : unit Lwt.t
-  end
+(*     method on_write : unit Lwt.t *)
 
-val connect : Addr.t -> socket Lwt.t
+(*     method enable_encryption : Cryptokit.Stream.stream_cipher -> unit *)
+(*     method disable_encryption : unit *)
+(*     method enable_decryption : Cryptokit.Stream.stream_cipher -> unit *)
+(*     method disable_decryption : unit *)
+(*   end *)
 
-val of_fd : Lwt_unix.file_descr -> socket
+val create : Addr.t -> t
 
-class type encrypted_socket =
-  object
-    inherit socket
-    method enable_encryption : Cryptokit.Stream.stream_cipher -> unit
-    method disable_encryption : unit
-    method enable_decryption : Cryptokit.Stream.stream_cipher -> unit
-    method disable_decryption : unit
-  end
+val connect : t -> unit Lwt.t
+val reconnect : t -> unit Lwt.t
 
-val encrypt : socket -> encrypted_socket
+val addr : t -> Addr.t
+
+(* val of_fd : Lwt_unix.file_descr -> t *)
+
+(* class type encrypted_socket = *)
+(*   object *)
+(*     inherit socket *)
+(*   end *)
+
+(* val encrypt : socket -> encrypted_socket *)
     (* read:Cryptokit.Stream.stream_cipher -> write:Cryptokit.Stream.stream_cipher -> socket *)
 
 (* class type buffered_output = *)
@@ -63,5 +90,5 @@ val encrypt : socket -> encrypted_socket
                               
 (* val buffered_output : ?buffer_size:int -> socket -> buffered_output *)
 
-val out_channel : ?buffer_size:int -> socket -> Lwt_io.output_channel
-val in_channel : ?buffer_size:int -> socket -> Lwt_io.input_channel
+val out_channel : ?buffer_size:int -> t -> Lwt_io.output_channel
+val in_channel : ?buffer_size:int -> t -> Lwt_io.input_channel

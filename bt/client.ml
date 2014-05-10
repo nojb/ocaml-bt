@@ -25,7 +25,7 @@ let (>|=) = Lwt.(>|=)
 let listen_ports = [50000]
 
 type event =
-  | IncomingPeer of IO.socket * Addr.t
+  | IncomingPeer of IO.t * Addr.t
   | PeersReceived of Addr.t list
   | GotMetadata of Metadata.t
   | TorrentLoaded of Torrent.t

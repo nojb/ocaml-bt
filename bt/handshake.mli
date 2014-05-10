@@ -20,10 +20,22 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type t
-type result =
-  | Retry
-  | Success of SHA1.t * Bits.t * IO.socket
-  | Failure
 
-val create : incoming:bool -> id:SHA1.t -> ih:SHA1.t -> t
-val run : t -> bool -> IO.socket -> result Lwt.t
+type encryption_mode =
+  | PreferCrypto
+  | RequireCrypto
+  | RequirePlain
+
+type result =
+  | Success of SHA1.t * Bits.t
+  | Failed
+
+type handshake_callback = result -> unit
+
+(* val create : incoming:bool -> id:SHA1.t -> ih:SHA1.t -> t *)
+(* val run : t -> bool -> IO.socket -> result Lwt.t *)
+
+val incoming : id:SHA1.t -> ih:SHA1.t -> encryption_mode -> IO.t -> handshake_callback -> t
+val outgoing : id:SHA1.t -> ih:SHA1.t -> encryption_mode -> IO.t -> handshake_callback -> t
+val abort : t -> unit
+val addr : t -> Addr.t
