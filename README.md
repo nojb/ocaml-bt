@@ -36,7 +36,7 @@ otorrent "magnet:?xt=urn:btih:e3811b9539cacff680e418124272177c47477157&dn=Ubuntu
 - DHT
 - uTP
 - Fast Resume
-- Encryption
+- <del>Encryption</del>
 - PEX
 - LPD
 - UPnP
