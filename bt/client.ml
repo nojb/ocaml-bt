@@ -301,3 +301,39 @@ let create mg =
       port = -1 }
   in
   !!cl
+
+let stats c =
+  let downloaded = match c.stage with
+    | HasMeta (_, Leeching (t, _, _))
+    | HasMeta (_, Seeding (t, _)) ->
+      Torrent.have_size t
+    | _ ->
+      0L
+  in
+  let total_size = match c.stage with
+    | HasMeta (m, _) -> Metadata.total_length m
+    | NoMeta _ -> 0L
+  in
+  let have_pieces = match c.stage with
+    | HasMeta (_, Leeching (t, _, _))
+    | HasMeta (_, Seeding (t, _)) -> Torrent.numgot t
+    | _ -> 0
+  in
+  let total_pieces = match c.stage with
+    | HasMeta (m, _) -> Metadata.piece_count m
+    | NoMeta _ -> 0
+  in
+  let amount_left = match c.stage with
+    | HasMeta (_, Leeching (t, _, _))
+    | HasMeta (_, Seeding (t, _)) -> Torrent.amount_left t
+    | _ -> 0L
+  in
+  { Stats.upload_speed = PeerMgr.upload_speed c.peer_mgr;
+    download_speed = PeerMgr.download_speed c.peer_mgr;
+    num_connected_peers = PeerMgr.num_connected_peers c.peer_mgr;
+    num_total_peers = PeerMgr.num_total_peers c.peer_mgr;
+    downloaded;
+    total_size;
+    have_pieces;
+    total_pieces;
+    amount_left }

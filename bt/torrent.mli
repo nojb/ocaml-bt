@@ -40,3 +40,4 @@ val have : t -> Bits.t
 val has_piece : t -> int -> bool
 val has_block : t -> int -> int -> bool
 val missing_blocks_in_piece : t -> int -> int
+val have_size : t -> int64

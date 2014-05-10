@@ -37,3 +37,7 @@ val torrent_loaded : t -> Metadata.t -> Torrent.t -> (Peer.t -> Peer.get_block_f
 val got_bad_piece : t -> int -> unit
 val got_piece : t -> int -> unit
 (** Sends a HAVE message to all connected peers. *)
+val upload_speed : t -> float
+val download_speed : t -> float
+val num_connected_peers : t -> int
+val num_total_peers : t -> int

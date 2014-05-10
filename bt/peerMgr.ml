@@ -220,3 +220,15 @@ let got_bad_piece pm i =
 
 let got_piece pm i =
   iter_peers (fun p -> Peer.send_have p i) pm
+
+let upload_speed pm =
+  fold_peers (fun p ul -> ul +. Peer.upload_rate p) pm 0.0
+
+let download_speed pm =
+  fold_peers (fun p dl -> dl +. Peer.download_rate p) pm 0.0
+
+let num_connected_peers pm =
+  Hashtbl.length pm.peers
+
+let num_total_peers pm =
+  Hashtbl.length pm.peers + Hashtbl.length pm.connecting + List.length pm.saved

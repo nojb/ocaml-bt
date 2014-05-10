@@ -98,11 +98,10 @@ let got_block t peer idx b s =
         Store.read t.store (Metadata.piece_offset t.meta idx)
           (Metadata.piece_length t.meta idx) >|= fun s ->
         if SHA1.digest_of_string s = Metadata.hash t.meta idx then begin
+          t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx)));
           t.handle (PieceVerified idx);
           if is_complete t then t.handle TorrentComplete
         end
-        (* t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx))); *)
-        (* Lwt.return `Verified *)
         else begin
           Bits.clear t.completed.(idx);
           t.handle (PieceFailed idx)
@@ -151,3 +150,11 @@ let has_block t i j =
 
 let missing_blocks_in_piece t i =
   Bits.missing t.completed.(i)
+
+let have_size t =
+  let n = ref 0L in
+  for i = 0 to Array.length t.completed - 1 do
+    if Bits.has_all t.completed.(i) then
+      n := Int64.add !n (Int64.of_int (Metadata.piece_length t.meta i))
+  done;
+  !n
