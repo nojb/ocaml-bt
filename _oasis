@@ -1,6 +1,6 @@
 OASISFormat: 0.4
 Name: bt
-Version: 0.1.2
+Version: 0.2
 Synopsis: BitTorrent library and client using Lwt
 Authors: Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 License: MIT
@@ -15,7 +15,7 @@ Library bt
   Modules: Bcode, SHA1, Bits, IncompleteMetadata, Metadata, Stats,
            Magnet, Peer, Store, Tracker, Util, Torrent, PeerMgr, Choker,
            Client, Rate, Addr, Log, Udp, Wire, IO, Handshake, Requester
-  BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix, pa_ounit, pa_ounit.syntax, 
+  BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix,
                 cryptokit, zarith, qcheck, bitstring, bitstring.syntax
 
 Executable otorrent
