@@ -29,8 +29,6 @@ type event =
   | PeersReceived of Addr.t list
   | GotMetadata of Metadata.t
   | TorrentLoaded of Torrent.t
-  (* | PieceVerified of int *)
-  (* | TorrentCompleted *)
   | Announce of Tracker.Tier.t * Tracker.event option
   | GotMetaLength of IncompleteMetadata.t
   | GotBadMeta
@@ -231,7 +229,6 @@ let handle_event bt = function
     begin match bt.stage with
     | NoMeta _ ->
       bt.stage <- HasMeta (meta, Loading);
-      (* PeerMgr.got_metadata bt.peer_mgr meta (get_next_requests bt); *)
       let aux () =
         Torrent.create meta (handle_torrent_event bt) >|= fun dl ->
         bt.push (TorrentLoaded dl)
