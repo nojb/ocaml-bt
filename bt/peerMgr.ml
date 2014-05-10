@@ -30,30 +30,6 @@ let create_no_meta id ih h get_next_metadata_request =
     saved = []; handle_peer_event = h;
     info = NoMeta get_next_metadata_request }
 
-let proto = "BitTorrent protocol"
-
-let read_handshake sock =
-  sock#read_string (49 + String.length proto) >|= fun hs ->
-  bitmatch Bitstring.bitstring_of_string hs with
-  | { 19 : 8;
-      proto : 19 * 8 : string;
-      extbits : 8 * 8 : string, bind (Bits.of_bin extbits);
-      ih : 20 * 8 : string, bind (SHA1.from_bin ih);
-      id : 20 * 8 : string, bind (SHA1.from_bin id) } ->
-    (ih, id, extbits)
-
-let extended_bits =
-  let bits = Bits.create (8 * 8) in
-  Bits.set bits Wire.lt_extension_bit;
-  bits
-
-let handshake_message id ih =
-  BITSTRING
-    { 19 : 8; proto : -1 : string;
-      Bits.to_bin extended_bits : 8 * 8 : string;
-      SHA1.to_bin ih : 20 * 8 : string;
-      SHA1.to_bin id : 20 * 8 : string }
-
 let know_peer bt addr =
   Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr || List.mem addr bt.saved
 
@@ -98,56 +74,42 @@ let handshake_done bt sock res =
   | Handshake.Failed ->
     Log.error "handshake error"
 
-let rec connect_peer ?(retry = false) bt addr =
+let rec connect_peer bt addr =
   let doit () =
     let sock = IO.create addr in
     IO.connect sock >>= fun () ->
-    let hs = Handshake.outgoing ~id:bt.id ~ih:bt.ih
-        Handshake.RequireCrypto sock (handshake_done bt sock)
+    let hs =
+      Handshake.outgoing ~id:bt.id ~ih:bt.ih  
+        Handshake.(Crypto Prefer) sock (handshake_done bt sock)
     in
     Lwt.return ()
   in
   Lwt.catch doit (fun e -> Log.error ~exn:e "error while connecting"; Lwt.return ())
-  (* Handshake.run hs (if retry then false else true) sock >>= function *)
-  (* | Handshake.Success (id, exts, sock) -> *)
-  (*   Log.success "handshake successful (addr=%s,ih=%s,id=%s)" *)
-  (*     (Addr.to_string addr) (SHA1.to_hex_short bt.ih) (SHA1.to_hex_short id); *)
-  (*   peer_joined bt sock addr bt.ih id exts; *)
-  (*   Lwt.return () *)
-  (* | Handshake.Retry -> *)
-  (*   Log.info "encrypted handshake failed; retrying with plain..."; *)
-  (*   connect_peer ~retry:true bt addr *)
-  (* | _ -> *)
-  (*   Lwt.fail (Failure "error") *)
-
-(* and try_connect bt addr f = *)
-(*   Hashtbl.add bt.connecting addr (); *)
-  (* let doit () = Lwt.finalize f (fun () -> Hashtbl.remove bt.connecting addr; Lwt.return ()) in *)
-  (* Lwt.catch doit *)
-  (*   (fun e -> *)
-  (*      Log.error ~exn:e "try_connect"; *)
-  (*      Lwt.return ()) *)
 
 let peer_finished bt p =
   Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
   Hashtbl.remove bt.peers (Peer.addr p)
 
 let handle_incoming_peer bt sock addr =
-  assert false
-  (* if not (know_peer bt addr) then *)
-  (*   if need_more_peers bt then begin *)
-  (*     Log.info "contacting incoming peer (addr=%s)" (Addr.to_string addr); *)
-  (*     let doit () = *)
-  (*       read_handshake sock >>= fun (ih, id, exts) -> *)
-  (*       sock#write_bitstring (handshake_message bt.id ih) >|= fun () -> *)
-  (*       peer_joined bt sock addr ih id exts *)
-  (*     in *)
-  (*     Lwt.async (fun () -> try_connect bt addr doit) *)
-  (*   end else begin *)
-  (*     Log.warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr); *)
-  (*     bt.saved <- addr :: bt.saved; *)
-  (*     Lwt.async (fun () -> sock#close) *)
-  (*   end *)
+  if not (know_peer bt addr) then
+    if need_more_peers bt then begin
+      Log.info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
+      let doit () =
+        Hashtbl.add bt.connecting addr ();
+        let hs =
+          Handshake.incoming ~id:bt.id ~ih:bt.ih Handshake.(Crypto Prefer) sock
+            (handshake_done bt sock)
+        in
+        Lwt.return ()
+      in
+      Lwt.async
+        (fun () ->
+           Lwt.catch doit (fun e -> Log.error ~exn:e "error while connecting"; Lwt.return ()))
+    end else begin
+      Log.warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
+      bt.saved <- addr :: bt.saved;
+      Lwt.async (fun () -> IO.close sock)
+    end
 
 let handle_received_peer bt addr =
   if not (know_peer bt addr) then begin

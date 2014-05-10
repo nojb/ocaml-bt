@@ -22,12 +22,10 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-let vc = String.make 8 '\x00'
-    
+let vc = String.make 8 '\x00'    
 let crypto_plain = 0x01l
 let crypto_rc4 = 0x02l
 let crypto_provide = crypto_rc4
-
 let max_pad_len = 512
 let key_len = 96
 
@@ -66,10 +64,29 @@ let dh_params =
     g = "\x02";
     privlen = 160 }
 
+type crypto_mode =
+  | Require
+  | Prefer
+
 type encryption_mode =
-  | PreferCrypto
-  | RequireCrypto
-  | RequirePlain
+  | Crypto of crypto_mode
+  | Plain
+
+let crypto_select mode crypto_provide =
+  match mode, crypto_provide with
+  | Plain, 0x01l
+  | Plain, 0x03l -> Lwt.return 0x01l
+  | Crypto Require, 0x2l
+  | Crypto Require, 0x3l 
+  | Crypto Prefer, 0x2l
+  | Crypto Prefer, 0x3l -> Lwt.return 0x2l
+  | Crypto Prefer, 0x1l -> Lwt.return 0x1l
+  | _ -> Lwt.fail (Failure "no suitable crypto_select")
+
+let crypto_provide = function
+  | Plain -> 0x01l
+  | Crypto Require -> 0x02l
+  | Crypto Prefer -> 0x03l
 
 type result =
   | Success of SHA1.t * Bits.t
@@ -84,7 +101,8 @@ type t = {
   id : SHA1.t;
   mode : encryption_mode;
   callback : handshake_callback;
-  sock : IO.t
+  sock : IO.t;
+  on_abort : unit Lwt_condition.t
 }
 
 let keyA = "keyA"
@@ -92,13 +110,12 @@ let keyA = "keyA"
 let keyB = "keyB"
 
 let arcfour_key from secret skey =
-  (* let keyAB = if hs.incoming then "keyB" else "keyA" in *)
   let key = SHA1.strings [from; secret; SHA1.to_bin skey] in
   SHA1.to_bin key
 
 let arcfour =
   let discard = String.create 1024 in
-  fun ~key ->
+  fun key ->
     let c = new Cryptokit.Stream.arcfour key in
     c#transform discard 0 discard 0 (String.length discard);
     c
@@ -112,16 +129,6 @@ let arcfour =
 *)
 
 let proto = "BitTorrent protocol"
-
-(* let read_handshake sock = *)
-(*   sock#read_string (49 + String.length proto) >>= fun str -> *)
-(*   bitmatch Bitstring.bitstring_of_string str with *)
-(*   | { 19 : 8; *)
-(*       proto : 19 * 8 : string; *)
-(*       extbits : 8 * 8 : string, bind (Bits.of_bin extbits); *)
-(*       ih : 20 * 8 : string, bind (SHA1.from_bin ih); *)
-(*       id : 20 * 8 : string, bind (SHA1.from_bin id) } -> *)
-(*     Lwt.return (ih, id, extbits) *)
 
 let extended_bits =
   let bits = Bits.create (8 * 8) in
@@ -138,8 +145,12 @@ let handshake_message id ih =
   in
   Bitstring.string_of_bitstring bs
 
-let read_handshake hs =
-  IO.read_string hs.sock (49 + String.length proto) >>= fun str ->
+let handshake_len = 49 + String.length proto
+
+let send_handshake hs =
+  IO.write_string hs.sock (handshake_message hs.id hs.skey)
+
+let parse_handshake hs str =
   bitmatch Bitstring.bitstring_of_string str with
   | { 19 : 8;
       proto : 19 * 8 : string;
@@ -151,21 +162,15 @@ let read_handshake hs =
     else
       fail_lwt "info-hash mismatch received:%s expected:%s" (SHA1.to_hex ih) (SHA1.to_hex hs.skey)
 
-let read_handshake_or_ya hs sock =
-  assert false
+let read_handshake hs =
+  IO.read_string hs.sock handshake_len >>= parse_handshake hs
 
-(* let send_handshake hs = *)
-(*   let m = handshake_message hs.id hs.skey in *)
-(*   let m = Bitstring.string_of_bitstring m in *)
-(*   IO.write_int16 hs.sock (String.length m) >>= fun () -> *)
-(*   IO.write_string hs.sock m >>= fun () -> *)
-(*   Log.info "wrote handshake:%S" m; *)
-(*   Lwt.return () *)
-    
-(*
-4 B->A: ENCRYPT(VC, crypto_select, len(padD), padD), ENCRYPT2(Payload Stream)
-*)
-let read_vc hs shared_secret =
+let send_random_padding hs =
+  let len = Random.int (max_pad_len + 1) in
+  let pad = Cryptokit.Random.string Cryptokit.Random.secure_rng len in
+  IO.write_string hs.sock pad
+
+let sync_and_read_vc hs shared_secret =
   let buf = String.create (String.length vc) in
   let buf1 = String.create (String.length vc) in
   let key = arcfour_key keyB shared_secret hs.skey in
@@ -173,7 +178,7 @@ let read_vc hs shared_secret =
     if p >= max_pad_len then
       fail_lwt "could not find vc"
     else begin
-      let c = arcfour ~key in
+      let c = arcfour key in
       c#transform buf 0 buf1 0 (String.length vc);
       if buf1 = vc then
         Lwt.return c
@@ -185,135 +190,223 @@ let read_vc hs shared_secret =
     end
   in
   IO.really_read hs.sock buf 0 (String.length vc) >>= fun () ->
-  loop 0 >>= fun dec ->
-  Log.info "got vc";
-  IO.enable_decryption hs.sock dec;
-  IO.read_int32 hs.sock >>= fun crypto_select ->
-  Log.info "got crypto_select: %lx" crypto_select;
-  IO.read_int16 hs.sock >>= fun pad_d_len ->
-  Log.info "got pad_d_len:%d" pad_d_len;
-  IO.read_string hs.sock pad_d_len >>= fun _ ->
-  match crypto_select with
-  | 0x02l ->
-    Log.info "encrypted handshake";
-    Lwt.return `Crypto
-  | 0x01l ->
-    Log.info "plain handshake";
-    IO.disable_encryption hs.sock;
-    IO.disable_decryption hs.sock;
-    Lwt.return `Plain
-  | _ ->
-    fail_lwt "unknown crypto_select: %lx" crypto_select
+  loop 0
 
-(*
-2 B->A: Diffie Hellman Yb, PadB
-3 A->B: HASH('req1', S), HASH('req2', SKEY) xor HASH('req3', S), ENCRYPT(VC, crypto_provide, len(PadC), PadC, len(IA)), ENCRYPT(IA)
-*)
-let read_yb hs =
+let skip_pad hs =
+  IO.read_int16 hs.sock >>= fun pad_len ->
+  if 0 <= pad_len && pad_len <= max_pad_len then
+    IO.read_string hs.sock pad_len >>= fun _ ->
+    Lwt.return ()
+  else
+    Lwt.fail (Failure (Printf.sprintf "pad len too long(%d)" pad_len))
+
+let read_dh_key hs =
   IO.read_string hs.sock key_len >>= fun yb ->
-  (* Log.info "received yb"; *)
   Lwt.return yb
 
-let send_payload hs shared_secret =
-  (* HASH ('req1', S) *)
-  IO.write_string hs.sock (SHA1.strings ["req1"; shared_secret] :> string) >>= fun () ->
-  (* HASH ('req2', SKEY) xor HASH ('req3', S) *)
+let req2_xor_req3 hs shared_secret =
   let req2 = (SHA1.strings ["req2"; SHA1.to_bin hs.skey] :> string) in
   let req3 = (SHA1.strings ["req3"; shared_secret] :> string) in
   Cryptokit.xor_string req2 0 req3 0 (String.length req2);
-  IO.write_string hs.sock req3 >>= fun () ->
-  (* ENCRYPT (VC, crypto_provide, len (PadC), PadC
-     PadC is reserved for future extensions to the handshake...
-     standard practice at this time is for it to be zero-length *)
+  req3
+
+let send_payload hs shared_secret =
+  IO.write_string hs.sock (SHA1.strings ["req1"; shared_secret] :> string) >>= fun () ->
+  IO.write_string hs.sock (req2_xor_req3 hs shared_secret) >>= fun () ->
   let key = arcfour_key keyA shared_secret hs.skey in
-  let arc4encrypt = arcfour ~key in
+  let arc4encrypt = arcfour key in
   IO.enable_encryption hs.sock arc4encrypt;
   IO.write_string hs.sock vc >>= fun () ->
-  Log.info "wrote vc";
+  let crypto_provide = crypto_provide hs.mode in
   IO.write_int32 hs.sock crypto_provide >>= fun () ->
-  Log.info "wrote crypto_provide:%lX" crypto_provide;
+  Log.info "wrote crypto_provide(%lX)" crypto_provide;
   IO.write_int16 hs.sock 0 >>= fun () ->
-  (* ENCRYPT len (IA)), ENCRYPT (IA) *)
-  (* len (IA) ? *)
   let m = handshake_message hs.id hs.skey in
   IO.write_int16 hs.sock (String.length m) >>= fun () ->
   IO.write_string hs.sock m
-  (* send_handshake hs (\* >>= fun () ->*\) *)
-  (* read_vc hs secret sock *)
-(* end *)
-(* begin fun _ -> Lwt.return Retry end *)
 
-(*
-1 A->B: Diffie Hellman Ya, PadA
-*)
-let send_ya hs =
-  let ya = Cryptokit.DH.message dh_params hs.private_key in
-  IO.write_string hs.sock ya >>= fun () ->
-  let pad_len = Random.int (max_pad_len+1) in
+let send_dh_key hs =
+  let y = Cryptokit.DH.message dh_params hs.private_key in
+  IO.write_string hs.sock y >>= fun () ->
+  let pad_len = Random.int (max_pad_len + 1) in
   let pad = Cryptokit.Random.string Cryptokit.Random.secure_rng pad_len in
   IO.write_string hs.sock pad
 
-(* let read_crypto_select hs ic oc = *)
-(*   read_int32 fd ic >>= fun n -> *)
-(*   Log.info "crypto select is %ld" n; *)
-(*   read_int16 fd >>= fun pad_d_len -> *)
-(*   assert (0 <= pad_d_len && pad_d_len <= 512); *)
-(*   read_pad_d hs ic oc *)
-
-(* let read_pad_d hs ic oc pad_d_len = *)
-(*   read_string ic pad_d_len >>= fun _ -> *)
-(*   read_handshake hs ic oc *)
-
-(* let read_ya hs ic oc = *)
-(*   let ya = String.create key_len in *)
-(*   read_string fd key_len >>= fun ya -> *)
-(*   let secret = Cryptokit.DH.shared_secret dh_params hs.private_key ya in *)
-(*   (\* let key = sha1 ["req1"; secret; hs.skey] in *\) *)
-(*   Log.info "sending B->A: Diffie Hellman Yb, PadB"; *)
-(*   let public_key = Cryptokit.DH.message dh_params hs.private_key in *)
-(*   write_string fd public_key >>= fun () -> *)
-(*   (\* padding *\) *)
-(*   read_pad_a hs ic oc *)
-
 let run_outgoing hs =
   match hs.mode with
-  | RequirePlain ->
-    let m = handshake_message hs.id hs.skey in
-    IO.write_string hs.sock m >>= fun () ->
+  | Plain ->
+    send_handshake hs >>= fun () ->
     read_handshake hs >|= fun (id, exts) ->
     hs.callback (Success (id, exts))
-  | RequireCrypto ->
-    send_ya hs >>= fun () ->
-    read_yb hs >>= fun yb ->
-    let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key yb in
-    send_payload hs shared_secret >>= fun () ->
-    read_vc hs shared_secret >>= begin function
-    | `Plain ->
-      Lwt.fail (Failure "crypto required")
-    | `Crypto ->
-      read_handshake hs >|= fun (id, exts) ->
-      hs.callback (Success (id, exts))
-    end
-  | PreferCrypto ->
+  | Crypto mode ->
+    let require = match mode with Require -> true | Prefer -> false in
     Lwt.catch begin fun () ->
-      send_ya hs >>= fun () ->
-      read_yb hs >>= fun yb ->
+      send_dh_key hs >>= fun () ->
+      read_dh_key hs >>= fun yb ->
       let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key yb in
       send_payload hs shared_secret >>= fun () ->
-      read_vc hs shared_secret >>= fun _ ->
-      read_handshake hs >|= fun (id, exts) ->
-      hs.callback (Success (id, exts))
+      sync_and_read_vc hs shared_secret >>= fun dec ->
+      IO.enable_decryption hs.sock dec;
+      IO.read_int32 hs.sock >>= fun crypto_select ->
+      skip_pad hs >>= fun () ->
+      match crypto_select with
+      | 0x01l (* PLAIN *) ->
+        if require then Lwt.fail (Failure "crypto required")
+        else begin
+          IO.disable_encryption hs.sock;
+          IO.disable_decryption hs.sock;
+          read_handshake hs >|= fun (id, exts) ->
+          hs.callback (Success (id, exts))
+        end
+      | 0x02l (* RC4 *) ->
+        read_handshake hs >|= fun (id, exts) ->
+        hs.callback (Success (id, exts))
+      | _ ->
+        Lwt.fail (Failure (Printf.sprintf "unknown crypto_select(%lX)" crypto_select))
     end begin fun e ->
-      Log.debug ~exn:e "error while trying crypto connection; retrying with plain...";
-      IO.reconnect hs.sock >>= fun () ->
-      let m = handshake_message hs.id hs.skey in
-      IO.write_string hs.sock m >>= fun () ->
-      read_handshake hs >|= fun (id, exts) ->
-      hs.callback (Success (id, exts))
+      if require then
+        Lwt.fail e
+      else
+        IO.reconnect hs.sock >>= fun () ->
+        send_handshake hs >>= fun () ->
+        read_handshake hs >|= fun (id, exts) ->
+        hs.callback (Success (id, exts))
     end
+        (* | PreferCrypto -> *)
+  (*   Lwt.catch begin fun () -> *)
+  (*     send_dh_key hs >>= fun () -> *)
+  (*     read_dh_key hs >>= fun yb -> *)
+  (*     let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key yb in *)
+  (*     send_payload hs shared_secret >>= fun () -> *)
+  (*     read_vc hs shared_secret >>= fun _ -> *)
+  (*     read_handshake hs >|= fun (id, exts) -> *)
+  (*     hs.callback (Success (id, exts)) *)
+  (*   end begin fun e -> *)
+  (*     Log.debug ~exn:e "error while trying crypto connection; retrying with plain..."; *)
+  (*     IO.reconnect hs.sock >>= fun () -> *)
+  (*     let m = handshake_message hs.id hs.skey in *)
+  (*     IO.write_string hs.sock m >>= fun () -> *)
+  (*     read_handshake hs >|= fun (id, exts) -> *)
+  (*     hs.callback (Success (id, exts)) *)
+  (*   end *)
+
+let sync_and_read_req1 hs shared_secret =
+  let buf = String.create 20 in
+  let rec loop i =
+    if i >= max_pad_len then Lwt.fail (Failure "HASH('req1', S) not found") else
+    if buf = SHA1.to_bin (SHA1.strings ["req1"; shared_secret]) then Lwt.return ()
+    else begin
+      String.blit buf 1 buf 0 19;
+      IO.really_read hs.sock buf 19 1 >>= fun () ->
+      loop (i+1)
+    end
+  in
+  loop 0
+
+let read_req2_xor_req3 hs shared_secret =
+  IO.read_string hs.sock 20 >>= fun s ->
+  if s = req2_xor_req3 hs shared_secret then Lwt.return ()
+  else Lwt.fail (Failure "expected HASH('req2', SKEY) xor HASH('req3', S)")
+
+let read_vc hs =
+  IO.read_string hs.sock (String.length vc) >>= fun s ->
+  if s = vc then Lwt.return () else Lwt.fail (Failure "missing ENCRYPT(VC)")
+
+let read_crypto_provide hs shared_secret =
+  sync_and_read_req1 hs shared_secret >>= fun () ->
+  read_req2_xor_req3 hs shared_secret >>= fun () ->
+  let key = arcfour_key keyA shared_secret hs.skey in
+  let c = arcfour key in
+  IO.enable_decryption hs.sock c;
+  read_vc hs >>= fun () ->
+  IO.read_int32 hs.sock
+
+let read_ia_into hs m ofs =
+  IO.read_int16 hs.sock >>= fun ia_len ->
+  IO.really_read hs.sock m ofs ia_len >>= fun () ->
+  Lwt.return ia_len
+
+let assert_crypto crypto_provide mode =
+  match mode, crypto_provide with
+  | Require, 0x2l
+  | Require, 0x3l ->
+    Lwt.return ()
+  | Require, 0x1l ->
+    Lwt.fail
+      (Failure (Printf.sprintf "crypto_provide(%lX) is not RC4(%lX)" crypto_provide crypto_rc4))
+  | Prefer, 0x1l
+  | Prefer, 0x2l
+  | Prefer, 0x3l ->
+    Lwt.return ()
+  | _ ->
+    Lwt.fail (Failure (Printf.sprintf "unknown crypto_provide(%lX)" crypto_provide))
 
 let run_incoming hs =
-  assert false
+  match hs.mode with
+  | Plain ->
+    read_handshake hs >>= fun (id, exts) ->
+    send_handshake hs >|= fun () ->
+    hs.callback (Success (id, exts))
+  | Crypto mode ->
+    let require = match mode with Require -> true | Prefer -> false in
+    Lwt.catch begin fun () ->
+      read_dh_key hs >>= fun ya ->
+      send_dh_key hs >>= fun () ->
+      let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key ya in
+      read_crypto_provide hs shared_secret >>= fun crypto_provide ->
+      assert_crypto crypto_provide mode >>= fun () ->
+      skip_pad hs >>= fun () ->
+      let m = String.create handshake_len in
+      read_ia_into hs m 0 >>= fun ia_len ->
+      crypto_select hs.mode crypto_provide >>= fun crypto_select ->
+      let key = arcfour_key keyB shared_secret hs.skey in
+      let c = arcfour key in
+      IO.enable_encryption hs.sock c;
+      IO.write_string hs.sock vc >>= fun () ->
+      IO.write_int32 hs.sock crypto_select >>= fun () ->
+      send_random_padding hs >>= fun () ->
+      if crypto_select = crypto_plain then begin
+        IO.disable_encryption hs.sock;
+        IO.disable_decryption hs.sock
+      end;
+      let d = handshake_len - ia_len in
+      IO.really_read hs.sock m ia_len d >>= fun () ->
+      parse_handshake hs m >|= fun (id, exts) ->
+      hs.callback (Success (id, exts))
+    end begin fun e ->
+      if require then
+        Lwt.fail e
+      else (* FIXME *)
+        IO.reconnect hs.sock >>= fun () ->
+        send_handshake hs >>= fun () ->
+        read_handshake hs >|= fun (id, exts) ->
+        hs.callback (Success (id, exts))
+    end
+  (* | Crypto mode -> *)
+  (*   Lwt.catch begin fun () -> *)
+  (*     read_dh_key hs >>= fun ya -> *)
+  (*     let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key ya in *)
+  (*     send_dh_key hs >>= fun () -> *)
+  (*     read_crypto_provide hs shared_secret >>= fun crypto_provide -> *)
+  (*     skip_pad_c hs >>= fun () -> *)
+  (*     let m = String.create handshake_len in *)
+  (*     IO.read_int16 hs.sock >>= fun ia_len -> *)
+  (*     IO.really_read hs.sock m 0 ia_len >>= fun () -> *)
+  (*     assert_crypto crypto_provide crypto_rc4 >>= fun () -> *)
+  (*     send_vc_crypto_select_pad_d hs >>= fun () -> *)
+  (*     let ia_len = String.length ia in *)
+  (*     let d = handshake_len - ia_len in *)
+  (*     IO.really_read hs.sock m ia_len d >>= fun () -> *)
+  (*     parse_handshake m >>= fun (id, exts) -> *)
+  (*     hs.callback (Success (id, exts)) *)
+  (*   end begin fun e -> *)
+  (*     (\* Log.debug ~exn:e "error while trying crypto connection; retrying with plain..."; *\) *)
+  (*     (\* IO.reconnect hs.sock >>= fun () -> *\) *)
+  (*     (\* let m = handshake_message hs.id hs.skey in *\) *)
+  (*     (\* IO.write_string hs.sock m >>= fun () -> *\) *)
+  (*     (\* read_handshake hs >|= fun (id, exts) -> *\) *)
+  (*     (\* hs.callback (Success (id, exts)) *\) *)
+  (*   end *)
 
 let create ~id ~ih mode sock callback incoming =
   { private_key = Cryptokit.DH.private_secret dh_params;
@@ -322,22 +415,30 @@ let create ~id ~ih mode sock callback incoming =
     id;
     mode;
     callback;
-    sock }
+    sock;
+    on_abort = Lwt_condition.create () }
+
+exception Abort
+
+let run hs f =
+  Lwt.catch
+    (fun () ->
+       Lwt.pick [(Lwt_condition.wait hs.on_abort >>= fun () -> Lwt.fail Abort); f hs])
+    (fun e ->
+       Log.error ~exn:e "handshake error"; hs.callback Failed; Lwt.return ())
 
 let outgoing ~id ~ih mode sock callback =
   let hs = create ~id ~ih mode sock callback false in
-  Lwt.catch (fun () -> run_outgoing hs)
-    (fun e -> Log.error ~exn:e "handshake error"; callback Failed; Lwt.return ());
+  Lwt.async (fun () -> run hs run_outgoing);
   hs
 
 let incoming ~id ~ih mode sock callback =
   let hs = create ~id ~ih mode sock callback true in
-  Lwt.catch (fun () -> run_incoming hs)
-    (fun e -> Log.error ~exn:e "handshake error"; callback Failed; Lwt.return ());
+  Lwt.async (fun () -> run hs run_incoming);
   hs
 
 let abort hs =
-  assert false
+  Lwt_condition.broadcast hs.on_abort ()
 
 let addr hs =
   IO.addr hs.sock
