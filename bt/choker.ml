@@ -38,7 +38,9 @@ let rate_computation_iterations = 2
 
 let unchoke_peers bt optimistic =
   let aux compare_peers =
-    let peers = PeerMgr.fold_peers (fun p l -> p :: l) bt.peer_mgr [] in
+    let peers =
+      PeerMgr.fold_peers (fun p l -> if Peer.is_snubbed p then l else p :: l) bt.peer_mgr []
+    in
     let peers = List.sort compare_peers peers in
     let rec loop choked downloaders = function
       | [] -> choked
