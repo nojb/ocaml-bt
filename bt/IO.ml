@@ -152,6 +152,12 @@ let disable_decryption sock =
   | Some _ -> sock.dec <- None
   | None -> assert false
 
+let is_encrypted sock =
+  match sock.enc, sock.dec with
+  | None, None -> false
+  | Some _, _
+  | _, Some _ -> true
+    
 let create addr =
   let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   { on_write = Lwt_condition.create ();

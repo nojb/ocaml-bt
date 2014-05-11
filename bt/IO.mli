@@ -86,6 +86,10 @@ val enable_decryption : t -> Cryptokit.Stream.stream_cipher -> unit
 val disable_decryption : t -> unit
 (** [disable_decryption sock] disables decryption of incoming data. *)
 
+val is_encrypted : t -> bool
+(** Whether the socket is either encrypting the output or decrypting the
+    input. *)
+
 val create : Addr.t -> t
 (** Creates a socket to connect to a given address. *)
   

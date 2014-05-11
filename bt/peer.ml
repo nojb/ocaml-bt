@@ -531,9 +531,10 @@ let start p =
            (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
-    signal p Finished;
-    ignore (IO.close p.sock); (* FIXME *)
-    Lwt.return ()
+    IO.close p.sock >|= fun () ->
+    signal p Finished
+    (* ignore (IO.close p.sock); (\* FIXME *\) *)
+    (* Lwt.return () *)
   in
   Lwt.async run_loop;
   match p.info with

@@ -94,46 +94,44 @@ let handshake_done bt sock res =
   Hashtbl.remove bt.connecting (IO.addr sock);
   match res with
   | Handshake.Success (id, exts) ->
-    Log.success "handshake successful (addr=%s,ih=%s,id=%s)"
+    Log.success "handshake [%s] successful (addr=%s,ih=%s,id=%s)"
+      (if IO.is_encrypted sock then "encrypted" else "plain")
       (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih) (SHA1.to_hex_short id);
     peer_joined bt sock (IO.addr sock) bt.ih id exts
   | Handshake.Failed ->
+    Lwt.async (fun () -> IO.close sock);
     Log.error "handshake failed"
 
 let rec connect_peer bt addr =
-  let doit () =
-    let sock = IO.create addr in
-    IO.connect sock >>= fun () ->
-    let hs =
-      Handshake.outgoing ~id:bt.id ~ih:bt.ih  
-        Handshake.(Crypto Prefer) sock (handshake_done bt sock)
-    in
-    Lwt.return ()
-  in
-  Lwt.catch doit (fun e ->
-      Log.error ~exn:e "%s: could not connect" (Addr.to_string addr);
-      Hashtbl.remove bt.connecting addr;
-      Lwt.return ())
+  let sock = IO.create addr in
+  Lwt.try_bind (fun () -> IO.connect sock)
+    (fun () ->
+       let hs =
+         Handshake.outgoing ~id:bt.id ~ih:bt.ih  
+           Handshake.(Crypto Prefer) sock (handshake_done bt sock)
+       in
+       Lwt.return ())
+    (fun e ->
+       Log.error ~exn:e "%s: could not connect" (Addr.to_string addr);
+       Hashtbl.remove bt.connecting addr;
+       IO.close sock)
+      (* Lwt.return ()) *)
 
 let peer_finished bt p =
   Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
+  (* Peer.close p; *)
   Hashtbl.remove bt.peers (Peer.addr p)
 
 let handle_incoming_peer bt sock addr =
   if not (know_peer bt addr) then
     if need_more_peers bt then begin
       Log.info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
-      let doit () =
-        Hashtbl.add bt.connecting addr ();
-        let hs =
-          Handshake.incoming ~id:bt.id ~ih:bt.ih Handshake.(Crypto Prefer) sock
-            (handshake_done bt sock)
-        in
-        Lwt.return ()
+      Hashtbl.add bt.connecting addr ();
+      let hs =
+        Handshake.incoming ~id:bt.id ~ih:bt.ih Handshake.(Crypto Prefer) sock
+          (handshake_done bt sock)
       in
-      Lwt.async
-        (fun () ->
-           Lwt.catch doit (fun e -> Log.error ~exn:e "error while connecting"; Lwt.return ()))
+      ()
     end else begin
       Log.warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
       bt.saved <- addr :: bt.saved;
