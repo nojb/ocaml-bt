@@ -54,11 +54,15 @@ let create_no_meta id ih h get_next_metadata_request =
 let know_peer bt addr =
   Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr || List.mem addr bt.saved
 
+let is_complete bt =
+  match bt.info with
+  | HasMeta (_, t, _) -> Torrent.is_complete t
+  | NoMeta _ -> false
+
 let max_peer_count = 20
 
 let need_more_peers bt =
-  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count)
-(* && not (is_seeding bt) *)
+  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count) && not (is_complete bt)
 
 let (!!) = Lazy.force
 
