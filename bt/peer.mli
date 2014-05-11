@@ -188,5 +188,5 @@ val send_pex : t -> Addr.t list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
     is the list of currently connected peers. *)
 
-val is_snubbed : t -> bool
+val is_snubbing : t -> bool
 (** Whether the peer has sent any block in the last 30 seconds. *)

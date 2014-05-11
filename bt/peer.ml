@@ -651,6 +651,6 @@ let send_pex p pex =
     p.last_pex <- pex
   end
 
-let is_snubbed p =
+let is_snubbing p =
   let now = Unix.time () in
   now -. p.piece_data_time <= 30.0

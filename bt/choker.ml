@@ -39,30 +39,29 @@ let rate_computation_iterations = 2
 let unchoke_peers bt optimistic =
   let aux compare_peers =
     let peers =
-      PeerMgr.fold_peers (fun p l -> if Peer.is_snubbed p then l else p :: l) bt.peer_mgr []
+      PeerMgr.fold_peers (fun p l -> if Peer.is_snubbing p then l else p :: l) bt.peer_mgr []
     in
     let peers = List.sort compare_peers peers in
-    let rec loop choked downloaders = function
-      | [] -> choked
-      | p :: peers ->
-        if downloaders < max_downloaders_unchoke then
+    let rec loop n = function
+      | [] -> ()
+      | (p :: peers) as l ->
+        if n < max_downloaders_unchoke then
           if Peer.am_choking p then begin
             Peer.send_unchoke p;
-            if Peer.peer_interested p then loop choked (downloaders + 1) peers
-            else loop choked downloaders peers
+            if Peer.peer_interested p then loop (n + 1) peers
+            else loop n peers
           end else
-            loop choked downloaders peers
-        else begin
-          loop (p :: choked) downloaders peers
-        end
+            loop n peers
+        else
+          let r = ref (Random.int (List.length l)) in
+          let choke_or_optimistic_unchoke p =
+            if !r = 0 then Peer.send_unchoke p else Peer.send_choke p;
+            decr r
+          in
+          if optimistic then List.iter choke_or_optimistic_unchoke l
+          else List.iter Peer.send_choke l
     in
-    let choked = loop [] 0 peers in
-    if List.length choked > 0 then
-      let r = Random.int (List.length choked) in
-      let i = ref 0 in
-      List.iter (fun p ->
-          if optimistic && !i = r then Peer.send_unchoke p else Peer.send_choke p;
-          incr i) choked
+    loop 0 peers
   in
   if Torrent.is_complete bt.torrent then
     aux (fun a b -> compare (Peer.upload_rate b) (Peer.upload_rate a))
