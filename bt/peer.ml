@@ -22,6 +22,14 @@
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
+type pex_flags = {
+  pex_encryption : bool;
+  pex_seed : bool;
+  pex_utp : bool;
+  pex_holepunch : bool;
+  pex_outgoing : bool
+}
+
 type event =
   | Choked
   | Have of int
@@ -33,6 +41,7 @@ type event =
   | MetaRequested of int
   | GotMetaPiece of int * string
   | RejectMetaPiece of int
+  | GotPEX of (Addr.t * pex_flags) list * Addr.t list
 
 type event_callback = event -> unit
 type get_metadata_func = unit -> int option
@@ -97,7 +106,9 @@ type t = {
   mutable download : Rate.t;
 
   mutable time : float;
-  mutable piece_data_time : float
+  mutable piece_data_time : float;
+
+  mutable last_pex : Addr.t list
 }
 
 let next_to_send p =
@@ -156,9 +167,41 @@ let send_meta_piece p piece (len, s) =
     Bcode.encode (Bcode.Dict d) ^ s
   in
   send_extended p id m
-  
+
+let got_ut_pex p data =
+  (* FIXME support for IPv6 *)
+  let m = Bcode.decode data in
+  let added = Bcode.find "added" m |> Bcode.to_string in
+  let added_f = Bcode.find "added.f" m |> Bcode.to_string in
+  let dropped = Bcode.find "dropped" m |> Bcode.to_string in
+  let rec loop bs =
+    bitmatch bs with
+    | { addr : 6 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } ->
+      addr :: loop rest
+    | { _ } -> []
+  in
+  let flag c =
+    let n = int_of_char c in
+    { pex_encryption = n land 0x1 <> 0;
+      pex_seed = n land 0x2 <> 0;
+      pex_utp = n land 0x4 <> 0;
+      pex_holepunch = n land 0x8 <> 0;
+      pex_outgoing = n land 0x10 <> 0 }
+  in
+  let added = loop (Bitstring.bitstring_of_string added) in
+  let added_f =
+    let rec loop i =
+      if i >= String.length added_f then []
+      else flag added_f.[i] :: loop (i+1)
+    in
+    loop 0
+  in
+  let dropped = loop (Bitstring.bitstring_of_string dropped) in
+  signal p (GotPEX (List.combine added added_f, dropped))
+
 let supported_extensions =
-  [ 1, ("ut_metadata", got_ut_metadata) ]
+  [ 1, ("ut_metadata", got_ut_metadata);
+    2, ("ut_pex", got_ut_pex) ]
 
 let got_choke p =
   if not p.peer_choking then begin
@@ -315,6 +358,9 @@ let writer_loop p =
 
 let supports_ut_metadata p =
   Hashtbl.mem p.extensions "ut_metadata"
+
+let supports_ut_pex p =
+  Hashtbl.mem p.extensions "ut_pex"
 
 let id p =
   p.id
@@ -516,7 +562,8 @@ let create sock addr id handle_event info =
       upload = Rate.create ();
       strikes = 0;
       time = Unix.time ();
-      piece_data_time = 0.0 }
+      piece_data_time = 0.0;
+      last_pex = [] }
   in
   p
 
@@ -560,3 +607,27 @@ let piece_data_time p =
 
 let close p =
   Lwt_condition.broadcast p.on_stop ()
+
+let send_ut_pex p added dropped =
+  let id = Hashtbl.find p.extensions "ut_pex" in
+  let rec c = function
+    | [] -> Bitstring.empty_bitstring
+    | a :: aa -> BITSTRING { Addr.to_string_compact a : -1 : string; c aa : -1 : bitstring }
+  in
+  let c l = Bitstring.string_of_bitstring (c l) in
+  let d =
+    [ "added", Bcode.String (c added);
+      "added.f", Bcode.String (String.make (List.length added) '\000');
+      "dropped", Bcode.String (c dropped) ]
+  in
+  send_extended p id (Bcode.encode (Bcode.Dict d));
+  Log.info "%s: sent pex: added: %d dropped: %d" (Addr.to_string p.addr)
+    (List.length added) (List.length dropped)
+
+let send_pex p pex =
+  if supports_ut_pex p then begin
+    let added = List.filter (fun a -> not (List.mem a p.last_pex)) pex in
+    let dropped = List.filter (fun a -> not (List.mem a pex)) p.last_pex in
+    send_ut_pex p added dropped;
+    p.last_pex <- pex
+  end

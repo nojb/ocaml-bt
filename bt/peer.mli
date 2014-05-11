@@ -23,6 +23,14 @@
 
 type t
 
+type pex_flags = {
+  pex_encryption : bool;
+  pex_seed : bool;
+  pex_utp : bool;
+  pex_holepunch : bool;
+  pex_outgoing : bool
+}
+
 (** Important peer events.  They are broadcast and handled in
     {!Client.handle_peer_event} and there they are re-routed to the relevant objects
     (Peer manager, Torrent, Choker, Requester, etc.). *)
@@ -48,6 +56,8 @@ type event =
   (** The peer has sent us a metadata piece. *)
   | RejectMetaPiece of int
   (** The peer has rejected a request for metadata information from us. *)
+  | GotPEX of (Addr.t * pex_flags) list * Addr.t list
+  (** The peer has sent us ut_pex data: added peers, dropped peers. *)
 
 type event_callback = event -> unit
 type get_metadata_func = unit -> int option
@@ -82,6 +92,8 @@ val addr : t -> Addr.t
 (** The peer address. *)
 
 val send_extended_handshake : t -> unit
+(** Send LTEP handshake.  Currently supported extension are [ut_metadata] and
+    [ut_pex]. *)
 
 val peer_choking : t -> bool
 (** Whether the peer is choking us. *)
@@ -167,3 +179,7 @@ val piece_data_time : t -> float
   
 val close : t -> unit
 (** Disconnect this peer. *)
+
+val send_pex : t -> Addr.t list -> unit
+(** Sends a periodic PEX message (if supported).  The address list passed
+    is the list of currently connected peers. *)

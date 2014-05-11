@@ -196,8 +196,16 @@ let rec reconnect_pulse bt =
   done;
   Lwt_unix.sleep reconnect_pulse_delay >>= fun () -> reconnect_pulse bt
 
+let pex_delay = 60.0
+
+let rec pex_pulse pm =
+  let pex = Hashtbl.fold (fun addr _ l -> addr :: l) pm.peers [] in
+  iter_peers (fun p -> Peer.send_pex p pex) pm;
+  Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm
+
 let start pm =
-  Lwt.async (fun () -> reconnect_pulse pm)
+  Lwt.async (fun () -> reconnect_pulse pm);
+  Lwt.async (fun () -> pex_pulse pm)
     
 let torrent_loaded pm m tor get_next_requests =
   Log.debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor);

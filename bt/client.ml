@@ -180,6 +180,9 @@ let handle_peer_event bt p e =
     | _ ->
       ()
     end
+  | Peer.GotPEX (added, dropped) ->
+    Log.info "Got PEX: added: %d dropped: %d" (List.length added) (List.length dropped);
+    List.iter (fun (a, _) -> PeerMgr.handle_received_peer bt.peer_mgr a) added
   
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
