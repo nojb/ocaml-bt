@@ -86,6 +86,7 @@ let peer_joined bt sock addr ih id exts =
   | NoMeta _ -> ()
 
 let handshake_done bt sock res =
+  assert (Hashtbl.mem bt.connecting (IO.addr sock));
   Hashtbl.remove bt.connecting (IO.addr sock);
   match res with
   | Handshake.Success (id, exts) ->
@@ -93,7 +94,7 @@ let handshake_done bt sock res =
       (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih) (SHA1.to_hex_short id);
     peer_joined bt sock (IO.addr sock) bt.ih id exts
   | Handshake.Failed ->
-    Log.error "handshake error"
+    Log.error "handshake failed"
 
 let rec connect_peer bt addr =
   let doit () =
@@ -105,7 +106,10 @@ let rec connect_peer bt addr =
     in
     Lwt.return ()
   in
-  Lwt.catch doit (fun e -> Log.error ~exn:e "error while connecting"; Lwt.return ())
+  Lwt.catch doit (fun e ->
+      Log.error ~exn:e "%s: could not connect" (Addr.to_string addr);
+      Hashtbl.remove bt.connecting addr;
+      Lwt.return ())
 
 let peer_finished bt p =
   Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
@@ -188,6 +192,9 @@ let reconnect_pulse_delay = 0.5
 
 let rec reconnect_pulse bt =
   close_bad_peers bt;
+  if need_more_peers bt then
+    Log.info "reconnect_pulse: trying to connect to %d peers"
+      (max_peer_count - (Hashtbl.length bt.peers + Hashtbl.length bt.connecting));
   while need_more_peers bt && List.length bt.saved > 0 do
     let addr = List.hd bt.saved in
     bt.saved <- List.tl bt.saved;
