@@ -34,7 +34,7 @@ type event =
   | Choked
   | Have of int
   | HaveBitfield of Bits.t
-  | BlockRequested of int * int * int
+  | BlockRequested of int * int
   | BlockReceived of int * int * string
   | Finished
   | AvailableMetadata of int
@@ -131,8 +131,14 @@ let signal p e =
 let send_extended p id s =
   send_message p (Wire.EXTENDED (id, s))
 
-let send_block p i o s =
-  send_message p (Wire.PIECE (i, o, s))
+let send_block p i b s =
+  match p.info with
+  | HasMeta info ->
+    let i, o, l = Metadata.block info.meta i b in
+    assert (l = String.length s);
+    send_message p (Wire.PIECE (i, o, s))
+  | _ ->
+    assert false
 
 let got_ut_metadata p data =
   let m, data_start = Bcode.decode_partial data in
@@ -293,7 +299,15 @@ let got_extended p id data =
   f p data
 
 let got_request p idx off len =
-  signal p (BlockRequested (idx, off, len))
+  match p.info with
+  | HasMeta info ->
+    let b = Metadata.block_number info.meta idx off in
+    let _, _, l = Metadata.block info.meta idx b in
+    assert (l = len);
+    signal p (BlockRequested (idx, b))
+  | _ ->
+    ()
+    (* FIXME send REJECT if fast extension is supported *)
 
 let got_message p m =
   match m with

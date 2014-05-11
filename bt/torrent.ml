@@ -74,9 +74,11 @@ let create meta handle =
   dl.amount_left <- amount_left;
   Lwt.return dl
 
-let get_block t i ofs len =
-  t.up <- Int64.add t.up (Int64.of_int len);
-  Store.read t.store (Metadata.block_offset t.meta i ofs) len
+let get_block t i b =
+  (* FIXME Store should understand the piece/block language *)
+  let _, _, l = Metadata.block t.meta i b in
+  t.up <- Int64.add t.up (Int64.of_int l);
+  Store.read t.store (Metadata.block_offset t.meta i b) l
 
 let is_complete self =
   let rec loop i =

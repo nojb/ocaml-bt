@@ -40,7 +40,7 @@ val create : Metadata.t -> event_callback -> t Lwt.t
     This loads any partially downloaded data from disk and re-checks all the hashes
     to be sure which pieces are valid. *)
     
-val get_block : t -> int -> int -> int -> string Lwt.t
+val get_block : t -> int -> int -> string Lwt.t
 (** Called to read a block from the already downloaded data with the intention
     of sending it to another peer who has requested it. *)
     

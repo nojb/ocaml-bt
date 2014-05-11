@@ -41,7 +41,7 @@ type event =
   (** The peer has sent us a HAVE message. *)
   | HaveBitfield of Bits.t
   (** The peer has sent us a BITFIELD message. *)
-  | BlockRequested of int * int * int
+  | BlockRequested of int * int
   (** The peer has requested a block from us. *)
   | BlockReceived of int * int * string
   (** The peer has sent us a block. *)

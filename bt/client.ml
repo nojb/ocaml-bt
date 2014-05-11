@@ -159,12 +159,12 @@ let handle_peer_event bt p e =
     end
   | Peer.RejectMetaPiece i ->
     Log.warning "meta piece rejected (i=%d)" i
-  | Peer.BlockRequested (idx, off, len) ->
+  | Peer.BlockRequested (idx, b) ->
     begin match bt.stage with
     | HasMeta (_, Leeching (dl, _, _))
     | HasMeta (_, Seeding (dl, _)) ->
       if Torrent.has_piece dl idx then
-        let aux _ = Torrent.get_block dl idx off len >|= Peer.send_block p idx off in
+        let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in
         Lwt.async aux
     | _ ->
       ()
