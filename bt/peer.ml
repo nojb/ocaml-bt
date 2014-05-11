@@ -32,6 +32,8 @@ type pex_flags = {
 
 type event =
   | Choked
+  | Interested
+  | NotInterested
   | Have of int
   | HaveBitfield of Bits.t
   | BlockRequested of int * int
@@ -226,12 +228,14 @@ let got_unchoke p =
 
 let got_interested p =
   if not p.peer_interested then begin
-    p.peer_interested <- true
+    p.peer_interested <- true;
+    signal p Interested
   end
 
 let got_not_interested p =
   if p.peer_interested then begin
-    p.peer_interested <- false
+    p.peer_interested <- false;
+    signal p NotInterested
   end
 
 let got_have_bitfield p b =
@@ -646,3 +650,7 @@ let send_pex p pex =
     send_ut_pex p added dropped;
     p.last_pex <- pex
   end
+
+let is_snubbed p =
+  let now = Unix.time () in
+  now -. p.piece_data_time <= 30.0

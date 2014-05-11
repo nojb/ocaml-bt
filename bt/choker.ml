@@ -24,14 +24,15 @@ let (>|=) = Lwt.(>|=)
 
 type t = {
   peer_mgr : PeerMgr.t;
-  torrent : Torrent.t
+  torrent : Torrent.t;
+  on_manual : unit Lwt_condition.t
 }
 
 let create pm tor =
-  { peer_mgr = pm; torrent = tor }
+  { peer_mgr = pm; torrent = tor; on_manual = Lwt_condition.create () }
 
 let max_downloaders_unchoke = 4
-let unchoking_frequency = 10
+let unchoking_frequency = 10.0
 let optimistic_unchoke_iterations = 3
 let rate_computation_iterations = 2
 
@@ -86,10 +87,12 @@ let rec rechoke_pulse bt optimistic rateiter =
   let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
   unchoke_peers bt (optimistic = 0);
   rechoke_downloads bt;
-  (* print_info bt; *)
   if rateiter = 0 then reset_peer_rates bt;
-  Lwt_unix.sleep (float unchoking_frequency) >>= fun () ->
+  Lwt.pick [Lwt_unix.sleep unchoking_frequency; Lwt_condition.wait bt.on_manual] >>= fun () ->
   rechoke_pulse bt optimistic rateiter
 
 let start ch =
   Lwt.async (fun () -> rechoke_pulse ch 1 1)
+
+let rechoke ch =
+  Lwt_condition.broadcast ch.on_manual ()

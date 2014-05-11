@@ -102,9 +102,12 @@ let handle_peer_event bt p e =
   | Peer.Finished ->
     PeerMgr.peer_finished bt.peer_mgr p;
     begin match bt.stage with
-    | HasMeta (_, Leeching (_, _, r)) ->
+    | HasMeta (_, Leeching (_, ch, r)) ->
       Requester.peer_declined_all_requests r p;
-      Requester.lost_bitfield r (Peer.have p)
+      Requester.lost_bitfield r (Peer.have p);
+      if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
+    | HasMeta (_, Seeding (_, ch)) ->
+      if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
     | _ -> ()
     end
   | Peer.AvailableMetadata len ->
@@ -119,6 +122,15 @@ let handle_peer_event bt p e =
     begin match bt.stage with
     | HasMeta (_, Leeching (_, _, r)) ->
       Requester.peer_declined_all_requests r p
+    | _ ->
+      ()
+    end
+  | Peer.Interested
+  | Peer.NotInterested ->
+    begin match bt.stage with
+    | HasMeta (_, Leeching (_, ch, _))
+    | HasMeta (_, Seeding (_, ch)) ->
+      if not (Peer.am_choking p) then Choker.rechoke ch
     | _ ->
       ()
     end

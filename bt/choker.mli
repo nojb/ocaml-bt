@@ -29,3 +29,7 @@ val create : PeerMgr.t -> Torrent.t -> t
   
 val start : t -> unit
 (** Starts the choker event loop. *)
+
+val rechoke : t -> unit
+(** Manually starts a new round.  Called when an unchoke peer changes its
+    interest or if an unchoke peer leaves the swarm. *)

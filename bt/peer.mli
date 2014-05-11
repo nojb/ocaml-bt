@@ -37,6 +37,10 @@ type pex_flags = {
 type event =
   | Choked
   (** The peer has choked us. *)
+  | Interested
+  (** The peer is interested in us. *)
+  | NotInterested
+  (** The peer is no longer interested in us. *)
   | Have of int
   (** The peer has sent us a HAVE message. *)
   | HaveBitfield of Bits.t
@@ -183,3 +187,6 @@ val close : t -> unit
 val send_pex : t -> Addr.t list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
     is the list of currently connected peers. *)
+
+val is_snubbed : t -> bool
+(** Whether the peer has sent any block in the last 30 seconds. *)
