@@ -182,7 +182,7 @@ let got_ut_pex p data =
   let dropped = Bcode.find "dropped" m |> Bcode.to_string in
   let rec loop bs =
     bitmatch bs with
-    | { addr : 6 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } ->
+    | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } ->
       addr :: loop rest
     | { _ } -> []
   in
@@ -290,6 +290,7 @@ let got_extended_handshake p bc =
   List.iter (fun (name, id) ->
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
+  Log.info "%s: supports %s" (Addr.to_string p.addr) (String.concat " " (List.map fst m));
   if Hashtbl.mem p.extensions "ut_metadata" then
     signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int));
   Lwt_condition.broadcast p.on_ltep_handshake ()
