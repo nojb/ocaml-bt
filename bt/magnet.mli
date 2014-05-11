@@ -19,12 +19,17 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Magnet links *)
+
 type t = {
   xt : SHA1.t;
+  (** The torrent info-hash. *)
   dn : string option;
+  (** The display name. *)
   tr : Uri.t list
+  (** The list of trackers. *)
 }
 
-(** Parses a BitTorrent magnet link.
-    Raises Invalid_argument "Magnet.of_string" if parsing fails for any reason *)
 val of_string : string -> t
+(** Parses a BitTorrent magnet link.  Raises [Invalid_argument "Magnet.of_string"]
+    if parsing fails for any reason. *)

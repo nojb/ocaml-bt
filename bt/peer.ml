@@ -28,7 +28,6 @@ type event =
   | HaveBitfield of Bits.t
   | BlockRequested of int * int * int
   | BlockReceived of int * int * string
-  | Port of int
   | Finished
   | AvailableMetadata of int
   | MetaRequested of int
@@ -230,7 +229,7 @@ let got_piece p idx off s =
   match p.info with
   | HasMeta info ->
     Bits.set info.blame idx;
-    signal p (BlockReceived (idx, Metadata.block_number info.meta off, s))
+    signal p (BlockReceived (idx, Metadata.block_number info.meta idx off, s))
   | NoMeta _ ->
     failwith "Peer.got_piece: no meta info"
 

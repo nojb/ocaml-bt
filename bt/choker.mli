@@ -19,7 +19,13 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Choker. Handles sending INTERESTED/NOTINTERESTED messages and
+    choking/unchoking other peers so that they can download from us. *)
+
 type t
 
 val create : PeerMgr.t -> Torrent.t -> t
+(** Creates a choker. *)
+  
 val start : t -> unit
+(** Starts the choker event loop. *)

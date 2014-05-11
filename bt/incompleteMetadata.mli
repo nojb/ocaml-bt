@@ -19,12 +19,34 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Incomplete Metadata.  Used to keep track of the data we are receiving when
+    acquiring the metainfo dictionary using ut_metadata. *)
+
 type t
 
 val create : SHA1.t -> int -> t
+(** [create ih len] creates an incomplete metadata object which info-hash [ih]
+    and length [len]. *)
+  
 val add_piece : t -> int -> string -> bool
+(** Called when a metainfo piece has been received.  Returns [true] if the all
+    the pieces have been received (even though they may contain corrupted
+    data). *)
+  
 val get_next_metadata_request : t -> int option
+(** Which metainfo piece should be requested next.  Returns [None] if no
+    suitable piece can be found. *)
+    
 val verify : t -> string option
+(** Verify whether the SHA1 hash of the incomplete data matches the know
+    info-hash.  Returns [Some s] if it does, where [s] is the raw bencoded data.
+    Otherwise returns [None]. *)
+    
 val is_complete : t -> bool
+(** Whether all the pieces have been received. *)
+  
 val info_hash : t -> SHA1.t
+(** The info-hash of the metainfo dictionary. *)
+                       
 val length : t -> int
+(** The length of the bencoded metainfo dictionary. *)

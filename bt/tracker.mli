@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Tracker *)
+
 type event =
   | STARTED
   | STOPPED
@@ -29,9 +31,13 @@ exception Warning of string
 
 type response = {
   peers : Addr.t list;
+  (** The contact information for peers. *)
   leechers : int option;
+  (** How many peers have not yet the whole torrent. *)
   seeders : int option;
+  (** How many peers have the whole torrent. *)
   interval : int
+  (** The desired interval (in seconds) before another announce. *)
 }
 
 val query :
@@ -43,6 +49,12 @@ val query :
   ?event:event ->
   port:int ->
   id:SHA1.t -> response Lwt.t
+(** [query url ih up down left event port id] announces a torrent with info-hash
+    [ih] to the tracker [url].  [up] is the number of bytes uploaded since we last
+    restarted the torrent.  [down] is the number of bytes downloaded since we last
+    restarted the torrent.  [left] is the number of bytes currently left to
+    download.  [port] is the port in which we are listening for incoming
+    connections, [id] is our client ID. *)
 
 module Tier : sig
   type t
@@ -50,9 +62,19 @@ module Tier : sig
   exception No_valid_tracker
 
   val create : unit -> t
+  (** Create an empty tier. *)
+    
   val shuffle : t -> unit
+  (** Shuffle a tier randomly. *)
+    
   val add_tracker : t -> Uri.t -> unit
+  (** Add a tracker to a tier. *)
+    
   val query : t -> ih:SHA1.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
     port:int -> id:SHA1.t -> response Lwt.t
+  (** Query a tier.  All the trackers are tried in turn, until one that works is
+      found. *)
+      
   val show : t -> string
+  (** First tracker in the tier. *)
 end

@@ -19,8 +19,16 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Client *)
+
 type t
 
 val create : Magnet.t -> t
+(** Create a client sharing the torrent specified by the magnet link. *)
+  
 val start : t -> unit Lwt.t
+(** Start the client event loop.  Currently the thread never finishes because
+    the client keeps seeding after it comples the torrent. *)
+    
 val stats : t -> Stats.t
+(** Return some rudimentary statistics about the current session. *)

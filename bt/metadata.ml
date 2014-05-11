@@ -236,5 +236,5 @@ let block m i j =
 let iter_files m f =
   Lwt_list.iter_s f m.files
 
-let block_number m off =
+let block_number m _ off =
   off / m.block_size

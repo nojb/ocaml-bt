@@ -19,36 +19,60 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Metadata.  It handles the piece/block <-> piece/ofs/len abstraction. *)
+
 type file_info = {
   file_path     : string list;
   file_size     : int64
 }
 
 type t
-(*   name : string; *)
-(*   info_hash : SHA1.t; *)
-(*   hashes : SHA1.t array; *)
-(*   piece_count : int; *)
-(*   piece_length : int; *)
-(*   block_size : int; *)
-(*   last_piece_size : int; *)
-(*   total_length : int64; *)
-(*   files : file_info list; *)
-(*   encoded : string *)
-(* } *)
 
 val create : Bcode.t -> t
+(** Parse a bencoded metainfo dictionary *)
+  
 val get_piece : t -> int -> string
+(** Get a metainfo piece to send to a peer that has requested it via
+    ut_metadata. *)
+  
 val length : t -> int
-val block_number : t -> int -> int
+(** Total length of the metainfo in bencoded form. *)
+  
+val block_number : t -> int -> int -> int
+(** [block_number m i ofs] returns the block number corresponding to that
+    piece/offs combination.  [i] is not necessary but is required for consistency. *)
+  
 val total_length : t -> int64
+(** Total length of the torrent. *)
+  
 val piece_count : t -> int
+(** Number of pieces. *)
+  
 val piece_length : t -> int -> int
+(** Length of a particular piece.  All the pieces are the same length except,
+    possibly, the last one. *)
+  
 val piece_offset : t -> int -> int64
+(** The global offset at which the given piece begins.  Used as an argument to
+    {!Store.read} and {!Store.write}. *)
+  
 val block_count : t -> int -> int
+(** How many blocks does the given piece have. *)
+  
 val pp : Format.formatter -> t -> unit
+(** Pretty prints the metainfo. *)
+  
 val block_offset : t -> int -> int -> int64
+(** Return the global offset at which the piece/block begins.  Used as an
+    argument to {!Store.read} and {!Store.write}. *)
+  
 (* val block_size : t -> int -> int -> int *)
+  
 val hash : t -> int -> SHA1.t
+(** The SHA1 hash of the given piece. *)
+                         
 val block : t -> int -> int -> int * int * int
+(** The piece/ofs/len corresponding to the given piece/block. *)
+                               
 val iter_files : t -> (file_info -> unit Lwt.t) -> unit Lwt.t
+(** Iterates over all the files listen in the metainfo dictionary. *)

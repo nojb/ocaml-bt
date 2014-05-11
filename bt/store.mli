@@ -19,10 +19,29 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+(** Store.  Used to read/write blocks/pieces from disk.  Its main function is to
+    present an interface as if a collection of files was just one big continuous
+    file (this is the point of view of the BitTorrent protocol).  Currently
+    there is no effort to perform caching, even though this is probably a good
+    idea in the long run for better performance. *)
+
 type t
 
 val create : unit -> t
+(** Creates a store.  Initially no files are being accessed. *)
+  
 val add_file : t -> string list -> int64 -> unit Lwt.t
+(** Add a file to the store.  The path is given as a list of its components and
+    the full size must be given.  If the file does not exist, it is created and
+    resized to the given size. *)
+    
 val close : t -> unit Lwt.t
+(** Close all the files in the store. *)
+    
 val read : t -> int64 -> int -> string Lwt.t
+(** [read st ofs len] reads [len] bytes starting at offset [ofs] from the store
+    [st].  The offset and the length can span multiple files in the store. *)
+    
 val write : t -> int64 -> string -> unit Lwt.t
+(** [write st ofs s] writes [s] starting at offset [ofs] in the store [st].  The
+    string may end up being written in more than one file in the store. *)

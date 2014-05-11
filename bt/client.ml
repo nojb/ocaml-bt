@@ -180,9 +180,7 @@ let handle_peer_event bt p e =
     | _ ->
       ()
     end
-  | Peer.Port _ ->
-    ()
-
+  
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
     Log.success "piece %d verified and written to disk" i;
