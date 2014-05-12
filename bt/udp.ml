@@ -25,8 +25,14 @@ type socket = Lwt_unix.file_descr
 
 open Lwt
 
-let create_socket () =
+let create_socket ?port () =
   let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
+  let () =
+    match port with
+    | None -> ()
+    | Some port ->
+      Lwt_unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_any, port));
+  in
   sock
 
 let send sock s addr =

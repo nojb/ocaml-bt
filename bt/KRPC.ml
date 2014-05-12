@@ -107,8 +107,8 @@ type t = {
   pending : (Addr.t, string, rpc Lwt.u * float) Assoc2.t
 }
 
-let create answer =
-  { sock = Udp.create_socket (); answer; pending = Assoc2.create () }
+let create answer port =
+  { sock = Udp.create_socket ~port (); answer; pending = Assoc2.create () }
 
 let read_one_packet krpc =
   Udp.recv krpc.sock >>= fun (s, addr) ->

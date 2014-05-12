@@ -19,24 +19,30 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type msg =
-  | Query of string * (string * Bcode.t) list
-  | Response of (string * Bcode.t) list
-  | Error of int64 * string
+type query =
+  | Ping
+  | FindNode of SHA1.t
+  | GetPeers of SHA1.t
+  | Announce of SHA1.t * int * string
 
-type rpc =
-  | Error
-  | Timeout
-  | Response of (string * Bcode.t) list
+type node_info = SHA1.t * Addr.t
+
+type nodes =
+  | Exact of node_info
+  | Closest of node_info list
+
+type peers =
+  | Peers of Addr.t list
+  | Closest of node_info list
+
+type response =
+  | Pong
+  | Nodes of nodes
+  | Peers of string * peers
 
 type t
 
-type answer_func = Addr.t -> string -> (string * Bcode.t) list -> msg
-
-val create : answer_func -> int -> t
-
-val start : t -> unit
-
-val string_of_msg : msg -> string
-
-val send_msg : t -> msg -> Addr.t -> rpc Lwt.t
+val ping : t -> Addr.t -> SHA1.t option Lwt.t
+val find_node : t -> Addr.t -> SHA1.t -> (SHA1.t * nodes) Lwt.t
+val get_peers : t -> Addr.t -> SHA1.t -> (SHA1.t * string * peers) Lwt.t
+val announce : t -> Addr.t -> int -> string -> SHA1.t -> SHA1.t Lwt.t
