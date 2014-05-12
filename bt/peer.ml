@@ -451,9 +451,10 @@ let send_have p idx =
     send_message p (Wire.HAVE idx)
 
 let send_have_bitfield p bits =
-  for i = 0 to Bits.length bits - 1 do
-    if Bits.is_set bits i then send_have p i
-  done
+  send_message p (Wire.BITFIELD bits)
+  (* for i = 0 to Bits.length bits - 1 do *)
+  (*   if Bits.is_set bits i then send_have p i *)
+  (* done *)
 
 let send_cancel p (i, j) =
   match p.info with
