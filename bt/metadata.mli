@@ -21,11 +21,6 @@
 
 (** Metadata.  It handles the piece/block <-> piece/ofs/len abstraction. *)
 
-type file_info = {
-  file_path     : string list;
-  file_size     : int64
-}
-
 type t
 
 val create : Bcode.t -> t
@@ -74,5 +69,5 @@ val hash : t -> int -> SHA1.t
 val block : t -> int -> int -> int * int * int
 (** The piece/ofs/len corresponding to the given piece/block. *)
                                
-val iter_files : t -> (file_info -> unit Lwt.t) -> unit Lwt.t
-(** Iterates over all the files listen in the metainfo dictionary. *)
+val map_files : t -> (string list -> int64 -> 'a Lwt.t) -> 'a list Lwt.t
+(** Maps the file list found in the metainfo dictionary. *)

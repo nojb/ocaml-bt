@@ -1,3 +1,4 @@
 strict_with=auto
 syntax=bitstring
 syntax=lwt
+align_ops=false

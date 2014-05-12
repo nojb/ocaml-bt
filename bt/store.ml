@@ -27,7 +27,8 @@ let failwith_lwt fmt = Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
     
 type t = {
-  mutable descrs : (Lwt_unix.file_descr * int64) list;
+  meta : Metadata.t;
+  descrs : (Lwt_unix.file_descr * int64) list;
   lock : Lwt_mutex.t
 }
 
@@ -111,13 +112,15 @@ let close self =
   Lwt_mutex.with_lock self.lock
     (fun () -> Lwt_list.iter_p (fun (fd, _) -> Lwt_unix.close fd) self.descrs)
 
-let create () =
-  { descrs = []; lock = Lwt_mutex.create () }
+let create meta =
+  Metadata.map_files meta
+    (fun path size -> open_file path size >>= fun fd -> Lwt.return (fd, size)) >>= fun descrs ->
+  Lwt.return { meta; descrs; lock = Lwt_mutex.create () }
 
-let add_file self path size =
-  open_file path size >>= fun fd ->
-  self.descrs <- self.descrs @ [fd, size];
-  Lwt.return ()
+(* let add_file self path size = *)
+(*   open_file path size >>= fun fd -> *)
+(*   self.descrs <- self.descrs @ [fd, size]; *)
+(*   Lwt.return () *)
 
 let update self =
   assert false

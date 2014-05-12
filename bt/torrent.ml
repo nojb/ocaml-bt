@@ -43,15 +43,14 @@ type t = {
 
 let create meta handle =
   let numpieces = Metadata.piece_count meta in
+  Store.create meta >>= fun store ->
   let dl = {
-    meta; store = Store.create ();
+    meta; store;
     completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
     up = 0L; down = 0L;
     amount_left = Metadata.total_length meta;
     handle
   } in
-  Metadata.iter_files meta
-    (fun fi -> Store.add_file dl.store fi.Metadata.file_path fi.Metadata.file_size) >>= fun () ->
   let plen = Metadata.piece_length dl.meta in
   let rec loop good acc i =
     if i >= numpieces then
@@ -128,21 +127,11 @@ let amount_left self =
 
 let numgot self =
   Array.fold_left (fun n b -> if Bits.has_all b then n+1 else n) 0 self.completed
-  (* let rec loop n i = *)
-  (*   if i >= Array.length self.completed then n else *)
-  (*   if Bits.has_all self.completed.(i) then loop (n+1) (i+1) *)
-  (*   else loop n (i+1) *)
-  (* in *)
-  (* loop 0 0 *)
 
 let have self =
   let have = Bits.create (Array.length self.completed) in
   Array.iteri (fun i b -> if Bits.has_all b then Bits.set have i) self.completed;
   have
-  (* for i = 0 to (Array.length self.completed) - 1 do *)
-  (*   if Bits.has_all self.completed.(i) then Bits.set b i *)
-  (* done; *)
-  (* b *)
 
 let has_piece self i =
   Bits.has_all self.completed.(i)

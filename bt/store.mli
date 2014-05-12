@@ -27,14 +27,10 @@
 
 type t
 
-val create : unit -> t
-(** Creates a store.  Initially no files are being accessed. *)
+val create : Metadata.t -> t Lwt.t
+(** Creates a store to access the files specified in
+    the given metainfo dictionary. *)
   
-val add_file : t -> string list -> int64 -> unit Lwt.t
-(** Add a file to the store.  The path is given as a list of its components and
-    the full size must be given.  If the file does not exist, it is created and
-    resized to the given size. *)
-    
 val close : t -> unit Lwt.t
 (** Close all the files in the store. *)
     
