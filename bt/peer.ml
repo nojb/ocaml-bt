@@ -502,7 +502,7 @@ let request_blocks_loop p =
   match p.info with
   | HasMeta nfo ->
     let rec loop () =
-      Log.debug "request_block_loop: %s" (Addr.to_string (addr p));
+      (* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *)
       let ps = nfo.request (request_pipeline_max - p.act_reqs) in
       List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
       Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest);

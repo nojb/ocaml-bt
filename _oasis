@@ -12,7 +12,7 @@ Library bt
   Pack: true
   Install: true
   FindlibName: bt
-  Modules: Bcode, SHA1, Bits, IncompleteMetadata, Metadata, Stats,
+  Modules: Bcode, SHA1, Bits, IncompleteMetadata, Metadata, Stats, KRPC,
            Magnet, Peer, Store, Tracker, Util, Torrent, PeerMgr, Choker,
            Client, Rate, Addr, Log, Udp, Wire, IO, Handshake, Requester
   BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix,
