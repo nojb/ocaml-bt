@@ -27,22 +27,20 @@ type query =
 
 type node_info = SHA1.t * Addr.t
 
-type nodes =
-  | Exact of node_info
-  | Closest of node_info list
-
 type peers =
-  | Peers of Addr.t list
-  | Closest of node_info list
+  | Values of Addr.t list
+  | Nodes of node_info list
 
 type response =
   | Pong
-  | Nodes of nodes
+  | Nodes of node_info list
   | Peers of string * peers
 
 type t
 
 val ping : t -> Addr.t -> SHA1.t option Lwt.t
-val find_node : t -> Addr.t -> SHA1.t -> (SHA1.t * nodes) Lwt.t
+val find_node : t -> Addr.t -> SHA1.t -> (SHA1.t * node_info list) Lwt.t
 val get_peers : t -> Addr.t -> SHA1.t -> (SHA1.t * string * peers) Lwt.t
 val announce : t -> Addr.t -> int -> string -> SHA1.t -> SHA1.t Lwt.t
+
+val create : int -> SHA1.t -> t

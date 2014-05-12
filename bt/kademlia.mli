@@ -1,18 +1,38 @@
-module type KEY = sig
-  type t
-  val length : int
-  val nth : t -> int -> bool
-  val equal : t -> t -> bool
-end
+(* The MIT License (MIT)
 
-module type S = sig
-  type key
-  type 'a t
+   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
-  val empty : 'a t
-  val add : key -> 'a -> 'a t -> 'a t
-  val find : ?max:int -> ?pred:('a -> bool) -> key -> 'a t -> (key * 'a) list
-  val iter : (key -> 'a -> unit) -> 'a t -> unit
-end
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
 
-include S with type key = SHA1.t
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
+
+(* module type S = sig *)
+(*   type key *)
+(*   type 'a t *)
+
+(*   val empty : 'a t *)
+(*   val add : key -> 'a -> 'a t -> 'a t *)
+(*   val find : ?max:int -> ?pred:('a -> bool) -> key -> 'a t -> (key * 'a) list *)
+(*   val iter : (key -> 'a -> unit) -> 'a t -> unit *)
+(* end *)
+
+(* module Table : S with type key = SHA1.t *)
+
+type t
+
+val create : unit -> t
+
+val find_node : t -> SHA1.t -> (SHA1.t * Addr.t) list

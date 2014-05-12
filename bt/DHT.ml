@@ -29,17 +29,13 @@ type query =
 
 type node_info = SHA1.t * Addr.t
 
-type nodes =
-  | Exact of node_info
-  | Closest of node_info list
-
 type peers =
-  | Peers of Addr.t list
-  | Closest of node_info list
+  | Values of Addr.t list
+  | Nodes of node_info list
 
 type response =
   | Pong
-  | Nodes of nodes
+  | Nodes of node_info list
   | Peers of string * peers
 
 let parse_query name args : SHA1.t * query =
@@ -94,20 +90,17 @@ let parse_response q args =
       Pong
     | FindNode _ ->
       let s = Bcode.to_string (List.assoc "nodes" args) in
-      begin match parse_nodes s with
-      | node :: [] -> Nodes (Exact node)
-      | _ as nodes -> Nodes (Closest nodes)
-      end
+      Nodes (parse_nodes s)
     | GetPeers _ ->
       let token = Bcode.to_string (List.assoc "token" args) in
       let peers_or_nodes : peers =
         try
           let values = Bcode.to_string (List.assoc "values" args) in
-          Peers (parse_values values)
+          Values (parse_values values)
         with
         | Not_found ->
           let nodes = Bcode.to_string (List.assoc "nodes" args) in
-          Closest (parse_nodes nodes)
+          Nodes (parse_nodes nodes)
       in
       Peers (token, peers_or_nodes)
     | Announce _ ->
@@ -116,12 +109,41 @@ let parse_response q args =
   let id = sha1 "id" args in
   id, r
 
+let secret_timeout = 10.0 *. 60.0
+
+module SecretToken : sig
+  type t
+  val create : float -> t
+  val current : t -> string
+  val previous : t -> string
+  val is_valid : t -> string -> bool
+end = struct
+  type t = {
+    mutable cur : string;
+    mutable prev : string;
+    mutable next_timeout : float;
+    timeout_delay : float
+  }
+  let fresh () = string_of_int (Random.int 1_000_000)
+  let create timeout_delay =
+    let s = fresh () in
+    { cur = s; prev = s; next_timeout = Unix.time () +. timeout_delay; timeout_delay }
+  let check_timeout secret =
+    let now = Unix.time () in
+    if now > secret.next_timeout then begin
+      secret.prev <- secret.cur;
+      secret.cur <- fresh ();
+      secret.next_timeout <- now +. secret.timeout_delay
+    end
+  let current secret = check_timeout secret; secret.cur
+  let previous secret = check_timeout secret; secret.prev
+  let is_valid secret str = check_timeout secret; str = secret.cur || str = secret.prev
+end
+
 module Peers = Map.Make (struct type t = Addr.t let compare = compare end)
 
-type node = unit
-  
 type t = {
-  mutable table : node Kademlia.t;
+  mutable table : Kademlia.t;
   torrents : (SHA1.t, int Peers.t) Hashtbl.t;
   id : SHA1.t;
   port : int;
@@ -199,9 +221,61 @@ let announce dht addr port token ih =
   | _ ->
     Lwt.fail (Failure "DHT.announce")
 
-let create answer port id =
-  { table = Kademlia.empty;
-    krpc = KRPC.create answer port;
-    port;
-    id;
-    torrents = Hashtbl.create 3 }
+let encode_nodes l =
+  let rec loop = function
+    | [] -> Bitstring.empty_bitstring
+    | (id, addr) :: nodes ->
+      BITSTRING { SHA1.to_bin id : -1 : string;
+                  Addr.to_string_compact addr : -1 : string;
+                  loop nodes : -1 : bitstring }
+  in
+  Bitstring.string_of_bitstring (loop l)
+
+let encode_values l =
+  let rec loop = function
+    | [] -> Bitstring.empty_bitstring
+    | addr :: values ->
+      BITSTRING { Addr.to_string_compact addr : -1 : string;
+                  loop values : -1 : bitstring }
+  in
+  Bitstring.string_of_bitstring (loop l)
+
+let encode_response id r : KRPC.msg =
+  let sha1 x = Bcode.String (SHA1.to_bin x) in
+  let self = ("id", sha1 id) in
+  match r with
+  | Pong ->
+    KRPC.Response [ self ]
+  | Nodes nodes ->
+    KRPC.Response
+      [ self; "nodes", Bcode.String (encode_nodes nodes) ]
+  | Peers (token, Values values) ->
+    KRPC.Response
+      [ self; "token", Bcode.String token; "values", Bcode.String (encode_values values) ]
+  | Peers (token, Nodes nodes) ->
+    KRPC.Response
+      [ self; "token", Bcode.String token; "nodes", Bcode.String (encode_nodes nodes) ]
+
+let answer dht addr name args =
+  let id, q = parse_query name args in
+  let r = match q with
+    | Ping ->
+      Pong
+    | FindNode nid ->
+      (* Nodes (M.self_find_node dht nid) *)
+    (* | _ -> *)
+      assert false
+  in
+  encode_response dht.id r
+
+let (!!) = Lazy.force
+
+let create port id =
+  let rec dht = lazy
+    { table = Kademlia.create ();
+      krpc = KRPC.create (fun addr name args -> answer !!dht addr name args) port;
+      port;
+      id;
+      torrents = Hashtbl.create 3 }
+  in
+  !!dht

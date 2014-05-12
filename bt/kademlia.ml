@@ -1,3 +1,24 @@
+(* The MIT License (MIT)
+
+   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
+
 module type KEY = sig
   type t
   val length : int
@@ -15,7 +36,7 @@ module type S = sig
   val iter : (key -> 'a -> unit) -> 'a t -> unit
 end
 
-module Make (Key : KEY) = struct
+module MakeTable (Key : KEY) = struct
   type key = Key.t
   type 'a t =
     | Empty
@@ -59,7 +80,7 @@ module Make (Key : KEY) = struct
           else loop (i+1) (loop (i+1) lst l) r
     in
     loop 0 [] tree
-  
+
   let rec iter f = function
     | Empty -> ()
     | NodeF (k, d) -> f k d
@@ -94,10 +115,60 @@ end
 
 (* include Make (K) *)
 
-include Make
+module Table = MakeTable
     (struct
       type t = SHA1.t
       let length = 160
       let nth key i = Bitstring.get (SHA1.to_bin key, 0, 160) i <> 0
       let equal x y = x = y
     end)
+
+type status =
+  | Good
+  | Bad
+  | Unknown
+  | Pinged
+
+let string_of_status = function
+  | Good -> "good"
+  | Bad -> "bad"
+  | Unknown -> "unknown"
+  | Pinged -> "pinged"
+
+type node = {
+  id : SHA1.t;
+  addr : Addr.t;
+  mutable last_changed : float;
+  mutable status : status;
+}
+
+let string_of_node n =
+  Printf.sprintf "%s at %s was %s %d sec ago"
+    (SHA1.to_hex_short n.id)
+    (Addr.to_string n.addr)
+    (string_of_status n.status)
+    (truncate (Unix.time () -. n.last_changed))
+  
+type t = {
+  mutable tbl : node Table.t;
+  mutable tbl_last_change : float
+}
+
+let create () =
+  { tbl = Table.empty; tbl_last_change = Unix.time () }
+
+let make_node id addr status =
+  { id; addr; status; last_changed = Unix.time () }
+
+let mark node st =
+  node.last_changed <- Unix.time ();
+  node.status <- st
+
+let touch node =
+  node.last_changed <- Unix.time ()
+
+let update ping table st id data =
+  assert false
+
+let find_node table id =
+  List.map (fun (_, n) -> n.id, n.addr) (Table.find id table.tbl)
