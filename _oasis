@@ -15,7 +15,7 @@ Library bt
   Modules: Bcode, SHA1, Bits, IncompleteMetadata, Metadata, Stats, KRPC,
            Magnet, Peer, Store, Tracker, Util, Torrent, PeerMgr, Choker,
            Client, Rate, Addr, Log, Udp, Wire, IO, Handshake, Requester,
-           DHT
+           DHT, Kademlia
   BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix,
                 cryptokit, zarith, qcheck, bitstring, bitstring.syntax
 

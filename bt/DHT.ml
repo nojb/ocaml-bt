@@ -115,10 +115,14 @@ let parse_response q args =
   in
   let id = sha1 "id" args in
   id, r
+
+module Peers = Map.Make (struct type t = Addr.t let compare = compare end)
+
+type node = unit
   
 type t = {
-  (* table : Routing.t; *)
-  (* torrents : (SHA1.t, int Peers.t) Hashtbl.t; *)
+  mutable table : node Kademlia.t;
+  torrents : (SHA1.t, int Peers.t) Hashtbl.t;
   id : SHA1.t;
   port : int;
   krpc : KRPC.t
@@ -196,6 +200,8 @@ let announce dht addr port token ih =
     Lwt.fail (Failure "DHT.announce")
 
 let create answer port id =
-  { krpc = KRPC.create answer port;
+  { table = Kademlia.empty;
+    krpc = KRPC.create answer port;
     port;
-    id }
+    id;
+    torrents = Hashtbl.create 3 }

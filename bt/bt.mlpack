@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: bcb1134964b080dddca724104407791e)
+# DO NOT EDIT (digest: 2b8ca159eb7fb00ba7baab18e4a657ca)
 Bcode
 SHA1
 Bits
@@ -25,4 +25,5 @@ IO
 Handshake
 Requester
 DHT
+Kademlia
 # OASIS_STOP
