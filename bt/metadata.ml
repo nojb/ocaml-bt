@@ -41,18 +41,14 @@ type t = {
 let length info =
   String.length info.encoded
 
-let kilobytes n = n * 1024
-
-let info_piece_size = kilobytes 16 (* bytes *)
+let info_piece_size = 16 * 1024 (* bytes *)
                       
-let roundup n r =
-  (n + r - 1) / r * r
+(* let roundup n r = *)
+(*   (n + r - 1) / r * r *)
 
 let get_piece info i =
   let l = String.length info.encoded in
-  let numpieces =
-    roundup l info_piece_size / info_piece_size
-  in
+  let numpieces = (l + info_piece_size - 1) / info_piece_size in
   if i >= numpieces || i < 0 then invalid_arg "Info.get_piece";
   if i < numpieces - 1 then
     String.sub info.encoded (i * info_piece_size) info_piece_size
@@ -148,12 +144,28 @@ let pp_files fmt files =
         (Util.string_of_file_size fi.file_size) (loop (i+1)) files
   in loop 1 fmt files
 
+let max_block_size = 16 * 1024
+
+(* choose block_size so that piece_size is a multiple of block_size *)
+let compute_block_size piece_size =
+  let rec loop b =
+    if b > max_block_size then loop (b lsr 2)
+    else begin
+      assert (piece_size mod b = 0);
+      b
+    end
+  in
+  loop piece_size
+
+(* let compute_block_size _ = max_block_size *)
+
 let create bc =
   let name = name bc in
   let hashes = hashes bc in
   let info_hash = info_hash bc in
   let piece_length = piece_length bc in
-  let block_size = 16 * 1024 in
+  let block_size = compute_block_size piece_length in
+  Log.info "block_size: %d" block_size;
   let total_length = total_length bc in
   let files = files bc in
   let last_piece_size = Util.safe_int64_to_int (Int64.rem total_length (Int64.of_int piece_length)) in
@@ -187,10 +199,11 @@ let pp fmt info =
   Format.fprintf fmt "            files: @[<v>%a@]" pp_files info.files;
   Format.fprintf fmt "@]@."
 
-let block_size = 16 * 1024
+(* let block_size = 16 * 1024 *)
 
 let block_count meta i =
-  roundup (piece_length meta i) block_size / block_size
+  let len = piece_length meta i in
+  (len + meta.block_size - 1) / meta.block_size
 
 let block_size info i j =
   assert (0 <= i && i < piece_count info);
