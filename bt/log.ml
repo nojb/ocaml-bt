@@ -19,79 +19,67 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let now () = Unix.gettimeofday ()
-    
-let start_time = ref (now ())
+type section = string
 
-let reset_timer () = start_time := now ()
-
-type level = 
- | DEBUG
- | INFO
- | NOTICE
- | WARNING
- | ERROR
- | FATAL
-
-let current_level = ref FATAL
-
-type color =
-  | NONE
-  | RED
-  | GREEN
-  | YELLOW
-  | BLUE
-  | MAGENTA
-  | CYAN
-  | WHITE
-
-let colorcode = function
-  | NONE -> ""
-  | RED -> "\027[31m"
-  | GREEN -> "\027[32m"
-  | YELLOW -> "\027[33m"
-  | BLUE -> "\027[34m"
-  | MAGENTA -> "\027[35m"
-  | CYAN -> "\027[36m"
-  | WHITE -> "\027[37m"
+type level =
+  | Debug
+  | Info
+  | Notice
+  | Warning
+  | Error
+  | Fatal
 
 let string_of_level = function
-  | DEBUG -> "debug"
-  | INFO -> "info"
-  | NOTICE -> "notice"
-  | WARNING -> "warning"
-  | ERROR -> "error"
-  | FATAL -> "fatal"
+  | Debug -> "debug"
+  | Info -> "info"
+  | Notice -> "notice"
+  | Warning -> "warning"
+  | Error -> "error"
+  | Fatal -> "fatal"
 
-let color_of_level = function
-  | DEBUG -> CYAN
-  | INFO -> WHITE
-  | NOTICE -> GREEN
-  | WARNING -> YELLOW
-  | ERROR -> RED
-  | FATAL -> RED
+let make_section name = name
 
-let log level ?exn fmt =
-  let title = string_of_level level in
-  let color = if Unix.isatty Unix.stderr then color_of_level level else NONE in
-  if level >= !current_level then
-    Format.kfprintf (fun fmt ->
-        Printf.eprintf "\027[34m[%.3f]\027[0m %s%s\027[0m %s%s\n%!"
-          (now () -. !start_time)
-          (colorcode color)
-          ("(" ^ title ^ ")")
-          (Format.flush_str_formatter ())
-          (match exn with None -> "" | Some exn -> ": " ^ (Printexc.to_string exn)))
-      Format.str_formatter fmt
-  else
-    Format.ikfprintf (fun _ -> ()) Format.str_formatter fmt
+let log_level = ref Debug
     
-let error ?exn fmt = log ERROR ?exn fmt
+let render template level section ?exn msg =
+  let now = Unix.gettimeofday () in
+  let msecs, now = modf now in
+  let tm = Unix.localtime now in
+  let b = Buffer.create 10 in
+  Buffer.add_substitute b begin
+    function
+    | "message" ->
+      msg
+    | "date" ->
+      Printf.sprintf "%04d-%02d-%02d"
+        (tm.Unix.tm_year+1900) (tm.Unix.tm_mon+1) tm.Unix.tm_mday
+    | "time" ->
+      Printf.sprintf "%02d:%02d:%02d.%03d"
+        tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec (truncate (msecs *. 1000.0))
+    | "level" ->
+      string_of_level level
+    | "section" ->
+      section
+    | "exn" ->
+      begin match exn with
+      | None -> ""
+      | Some exn -> ": " ^ Printexc.to_string exn
+      end
+    | _ ->
+      ""
+  end template;
+  Buffer.contents b
 
-let info ?exn fmt = log INFO ?exn fmt
+let log level section ?exn fmt =
+  let template = "[$(date) $(time)] $(section): $(level): $(message)$(exn)" in
+  Printf.ksprintf begin fun msg ->
+    if level >= !log_level then
+      prerr_endline (render template level section ?exn msg)
+  end fmt
 
-let warning ?exn fmt = log WARNING ?exn fmt
-
-let success ?exn fmt = log NOTICE ?exn fmt
-    
-let debug ?exn fmt = log DEBUG ?exn fmt
+let debug section ?exn fmt = log Debug section ?exn fmt
+let info section ?exn fmt = log Info section ?exn fmt
+let notice section ?exn fmt = log Notice section ?exn fmt
+let warning section ?exn fmt = log Warning section ?exn fmt
+let error section ?exn fmt = log Error section ?exn fmt
+let fatal section ?exn fmt = log Fatal section ?exn fmt

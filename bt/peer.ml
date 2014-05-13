@@ -19,6 +19,12 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "Peer"
+
+let debug ?exn fmt = Log.debug section ?exn fmt
+let error ?exn fmt = Log.error section ?exn fmt
+let info ?exn fmt = Log.info section ?exn fmt
+    
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -221,7 +227,7 @@ let got_choke p =
 
 let got_unchoke p =
   if p.peer_choking then begin
-    Log.debug "UNCHOKE %s" (Addr.to_string p.addr);
+    debug "UNCHOKE %s" (Addr.to_string p.addr);
     p.peer_choking <- false;
     Lwt_condition.broadcast p.on_unchoke ()
   end
@@ -294,7 +300,7 @@ let got_extended_handshake p bc =
   List.iter (fun (name, id) ->
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
-  Log.info "%s: supports %s" (Addr.to_string p.addr) (String.concat " " (List.map fst m));
+  info "%s: supports %s" (Addr.to_string p.addr) (String.concat " " (List.map fst m));
   if Hashtbl.mem p.extensions "ut_metadata" then
     signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int));
   Lwt_condition.broadcast p.on_ltep_handshake ()
@@ -335,7 +341,7 @@ let got_message p m =
 let reader_loop p =
   let input = Lwt_stream.from
       (fun () -> Wire.read p.input >>= fun msg ->
-        Log.debug "%s >>> %s" (Addr.to_string p.addr) (Wire.string_of_message msg);
+        debug "%s >>> %s" (Addr.to_string p.addr) (Wire.string_of_message msg);
         Lwt.return (Some msg))
   in
   let rec loop f =
@@ -369,7 +375,7 @@ let writer_loop p =
     | `Ready m ->
       Wire.write p.output m >>= fun () ->
       Lwt_io.flush p.output >>= fun () ->
-      Log.debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
+      debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
       (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
       loop ()
   in
@@ -421,28 +427,28 @@ let client_interested p =
 let send_choke p =
   if not p.am_choking then begin
     p.am_choking <- true;
-    Log.info "choking peer (addr=%s)" (Addr.to_string p.addr);
+    info "choking peer (addr=%s)" (Addr.to_string p.addr);
     send_message p Wire.CHOKE
   end
 
 let send_unchoke p =
   if p.am_choking then begin
     p.am_choking <- false;
-    Log.info "unchoking peer (addr=%s)" (Addr.to_string p.addr);
+    info "unchoking peer (addr=%s)" (Addr.to_string p.addr);
     send_message p Wire.UNCHOKE
   end
 
 let send_interested p =
   if not p.am_interested then begin
     p.am_interested <- true;
-    Log.info "interested in peer (addr=%s)" (Addr.to_string p.addr);
+    info "interested in peer (addr=%s)" (Addr.to_string p.addr);
     send_message p Wire.INTERESTED
   end
 
 let send_not_interested p =
   if p.am_interested then begin
     p.am_interested <- false;
-    Log.info "not interested in peer (addr=%s)" (Addr.to_string p.addr);
+    info "not interested in peer (addr=%s)" (Addr.to_string p.addr);
     send_message p Wire.NOT_INTERESTED
   end
 
@@ -528,7 +534,7 @@ let start p =
                            wrap (request_metadata_loop p);
                            wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
       (fun e ->
-         Log.error ~exn:e "peer input/output error (addr=%s,id=%s)"
+         error ~exn:e "peer input/output error (addr=%s,id=%s)"
            (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
          Lwt.return ())
     >>= fun () ->
@@ -642,7 +648,7 @@ let send_ut_pex p added dropped =
       "dropped", Bcode.String (c dropped) ]
   in
   send_extended p id (Bcode.encode (Bcode.Dict d));
-  Log.info "%s: sent pex: added: %d dropped: %d" (Addr.to_string p.addr)
+  info "%s: sent pex: added: %d dropped: %d" (Addr.to_string p.addr)
     (List.length added) (List.length dropped)
 
 let send_pex p pex =

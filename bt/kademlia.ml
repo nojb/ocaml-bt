@@ -19,6 +19,11 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "Kademlia"
+  
+let error ?exn fmt = Log.error section ?exn fmt
+let info ?exn fmt = Log.info section ?exn fmt
+
 module type KEY = sig
   type t
   val length : int
@@ -167,7 +172,9 @@ let mark node st =
 let touch node =
   node.last_changed <- Unix.time ()
 
-let update ping table st id data =
+type ping_fun = Addr.t -> SHA1.t option Lwt.t
+
+let update ping table st id addr =
   assert false
 
 let find_node table id =

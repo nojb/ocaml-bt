@@ -19,20 +19,43 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type level = 
- | DEBUG
- | INFO
- | NOTICE
- | WARNING
- | ERROR
- | FATAL
+(** Simple Log system. Messages are printed out only if their level (see
+    {!level}) is higher than the value of {!log_level}. *)
 
-val current_level : level ref
+type section
+(** Sections.  These are printed as headers in the log message. *)
 
-val reset_timer : unit -> unit
+(** Log levels *)
+type level =
+  | Debug
+  | Info
+  | Notice
+  | Warning
+  | Error
+  | Fatal
 
-val info : ?exn:exn -> ('a, Format.formatter, unit, unit) format4 -> 'a
-val error : ?exn:exn -> ('a, Format.formatter, unit, unit) format4 -> 'a
-val warning : ?exn:exn -> ('a, Format.formatter, unit, unit) format4 -> 'a
-val success : ?exn:exn -> ('a, Format.formatter, unit, unit) format4 -> 'a
-val debug : ?exn:exn -> ('a, Format.formatter, unit, unit) format4 -> 'a
+val make_section : string -> section
+(** Make a section with the given name.  The name will appear in the header of
+    the log message. *)
+
+val log_level : level ref
+(** The current log level.  Messages with a level at least this will get printed
+    on [stderr]. *)
+
+val debug : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
+(** Log a debug message. *)
+  
+val info : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
+(** Log an informational message. *)
+  
+val notice : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
+(** Log an informational message. *)
+  
+val warning : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
+(** Log a warning. *)
+  
+val error : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
+(** Log an error. *)
+  
+val fatal : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
+(** Log a fatal message. *)

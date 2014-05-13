@@ -19,6 +19,11 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "Handshake"
+
+let info ?exn fmt = Log.info section ?exn fmt
+let error ?exn fmt = Log.error section ?exn fmt
+    
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -219,7 +224,7 @@ let send_payload hs shared_secret =
   IO.write_string hs.sock vc >>= fun () ->
   let crypto_provide = crypto_provide hs.mode in
   IO.write_int32 hs.sock crypto_provide >>= fun () ->
-  Log.info "wrote crypto_provide(%lX)" crypto_provide;
+  info "wrote crypto_provide(%lX)" crypto_provide;
   IO.write_int16 hs.sock 0 >>= fun () ->
   let m = handshake_message hs.id hs.skey in
   IO.write_int16 hs.sock (String.length m) >>= fun () ->
@@ -424,8 +429,8 @@ let run hs f =
   Lwt.catch
     (fun () ->
        Lwt.pick [(Lwt_condition.wait hs.on_abort >>= fun () -> Lwt.fail Abort); f hs])
-    (fun e ->
-       Log.error ~exn:e "handshake error"; hs.callback Failed; Lwt.return ())
+    (fun exn ->
+       error ~exn "handshake error"; hs.callback Failed; Lwt.return ())
 
 let outgoing ~id ~ih mode sock callback =
   let hs = create ~id ~ih mode sock callback false in

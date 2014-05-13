@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 2b8ca159eb7fb00ba7baab18e4a657ca)
+# DO NOT EDIT (digest: 78cafb5c72c426d47b37ef6ebff8ad4b)
 Bcode
 SHA1
 Bits
@@ -18,7 +18,6 @@ Choker
 Client
 Rate
 Addr
-Log
 Udp
 Wire
 IO
@@ -26,4 +25,5 @@ Handshake
 Requester
 DHT
 Kademlia
+Log
 # OASIS_STOP

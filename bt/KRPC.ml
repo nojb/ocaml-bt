@@ -19,6 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "KRPC"
+
+let error ?exn fmt = Log.error section ?exn fmt
+
 let (>>=) = Lwt.(>>=)
 
 open Printf
@@ -117,7 +121,7 @@ let read_one_packet krpc =
   | Error (code, msg) ->
     begin match Assoc2.find krpc.pending addr t with
     | None -> 
-      Log.error "no t:%S for %s" t (Addr.to_string addr)
+      error "no t:%S for %s" t (Addr.to_string addr)
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;
       Lwt.wakeup w Error
@@ -129,7 +133,7 @@ let read_one_packet krpc =
   | Response args ->
     begin match Assoc2.find krpc.pending addr t with
     | None ->
-      Log.error "no t:%S for %s" t (Addr.to_string addr);
+      error "no t:%S for %s" t (Addr.to_string addr);
       Lwt.return ()
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;

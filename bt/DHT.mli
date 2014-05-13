@@ -43,4 +43,4 @@ val find_node : t -> Addr.t -> SHA1.t -> (SHA1.t * node_info list) Lwt.t
 val get_peers : t -> Addr.t -> SHA1.t -> (SHA1.t * string * peers) Lwt.t
 val announce : t -> Addr.t -> int -> string -> SHA1.t -> SHA1.t Lwt.t
 
-val create : int -> SHA1.t -> t
+val create : int -> t

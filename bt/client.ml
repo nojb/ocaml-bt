@@ -19,6 +19,13 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "Client"
+
+let warning ?exn fmt = Log.warning section ?exn fmt
+let info ?exn fmt = Log.info section ?exn fmt
+let error ?exn fmt = Log.error section ?exn fmt
+let notice ?exn fmt = Log.notice section ?exn fmt
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -111,7 +118,7 @@ let handle_peer_event bt p e =
     | _ -> ()
     end
   | Peer.AvailableMetadata len ->
-    Log.success "metadata available len:%d" len;
+    notice "metadata available len:%d" len;
     begin match bt.stage with
     | NoMeta NoMetaLength ->
       bt.push (GotMetaLength (IncompleteMetadata.create bt.ih len))
@@ -156,21 +163,21 @@ let handle_peer_event bt p e =
   | Peer.GotMetaPiece (i, s) ->
     begin match bt.stage with
     | NoMeta (PartialMeta meta) ->
-      Log.success "got meta piece (i=%d)" i;
+      notice "got meta piece (i=%d)" i;
       if IncompleteMetadata.add_piece meta i s then begin
         match IncompleteMetadata.verify meta with
         | Some meta ->
-          Log.success "got complete metadata";
+          notice "got complete metadata";
           push_metadata bt (Metadata.create (Bcode.decode meta))
         | None ->
-          Log.error "metadata hash check failed";
+          error "metadata hash check failed";
           bt.push GotBadMeta
       end
     | _ ->
       ()
     end
   | Peer.RejectMetaPiece i ->
-    Log.warning "meta piece rejected (i=%d)" i
+    warning "meta piece rejected (i=%d)" i
   | Peer.BlockRequested (idx, b) ->
     begin match bt.stage with
     | HasMeta (_, Leeching (dl, _, _))
@@ -184,7 +191,7 @@ let handle_peer_event bt p e =
   | Peer.BlockReceived (idx, b, s) ->
     begin match bt.stage with
     | HasMeta (meta, Leeching (t, _, r)) ->
-      Log.success "received block (idx=%d,blk=%d,len=%d) from %s (%s/s)"
+      notice "received block (idx=%d,blk=%d,len=%d) from %s (%s/s)"
         idx b (String.length s) (Addr.to_string (Peer.addr p))
         (Util.string_of_file_size (Int64.of_float (Peer.download_rate p)));
       Requester.got_block r p idx b;
@@ -193,12 +200,12 @@ let handle_peer_event bt p e =
       ()
     end
   | Peer.GotPEX (added, dropped) ->
-    Log.info "Got PEX: added: %d dropped: %d" (List.length added) (List.length dropped);
+    info "Got PEX: added: %d dropped: %d" (List.length added) (List.length dropped);
     List.iter (fun (a, _) -> PeerMgr.handle_received_peer bt.peer_mgr a) added
   
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
-    Log.success "piece %d verified and written to disk" i;
+    notice "piece %d verified and written to disk" i;
     begin match bt.stage with
     | HasMeta (_, Leeching (_, _, r)) ->
       PeerMgr.got_piece bt.peer_mgr i;
@@ -210,14 +217,14 @@ let handle_torrent_event bt = function
     begin match bt.stage with
     | HasMeta (_, Leeching (_, _, r)) ->
       (* Announcer.add_bytes *)
-      Log.error "piece %d failed hashcheck" i;
+      error "piece %d failed hashcheck" i;
       Requester.got_bad_piece r i;
       PeerMgr.got_bad_piece bt.peer_mgr i
     | _ ->
       ()
     end
   | Torrent.TorrentComplete ->
-    Log.success "torrent completed!";
+    notice "torrent completed!";
     begin match bt.stage with
     | HasMeta (meta, Leeching (t, ch, _)) ->
       (* FIXME stop requester ? *)
@@ -236,7 +243,7 @@ let handle_event bt = function
   | IncomingPeer (sock, addr) ->
     PeerMgr.handle_incoming_peer bt.peer_mgr sock addr
   | PeersReceived addrs ->
-    Log.success "received %d peers" (List.length addrs);
+    notice "received %d peers" (List.length addrs);
     List.iter (PeerMgr.handle_received_peer bt.peer_mgr) addrs
   | GotMetadata meta ->
     begin match bt.stage with
@@ -253,7 +260,7 @@ let handle_event bt = function
   | TorrentLoaded dl ->
     begin match bt.stage with
     | HasMeta (meta, Loading) ->
-      Log.success "torrent loaded (good=%d,total=%d)"
+      notice "torrent loaded (good=%d,total=%d)"
         (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl);
       PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt);
       let ch = Choker.create bt.peer_mgr dl in
@@ -271,14 +278,14 @@ let handle_event bt = function
   | Announce (tier, event) ->
     let doit () =
       Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:bt.port ~id:bt.id >>= fun resp ->
-      Log.success "announce on %s successful, reannouncing in %d seconds"
+      notice "announce on %s successful, reannouncing in %d seconds"
         (Tracker.Tier.show tier) resp.Tracker.interval;
       push_peers_received bt resp.Tracker.peers;
       Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
       bt.push (Announce (tier, None))
     in
     let safe_doit () =
-      Lwt.catch doit (fun e -> Log.error ~exn:e "announce failure"; Lwt.return ())
+      Lwt.catch doit (fun exn -> error ~exn "announce failure"; Lwt.return ())
     in
     Lwt.async safe_doit
 
@@ -289,7 +296,7 @@ let start bt =
   (* let port, _ = create_server (push_incoming_peer bt) in *)
   let port = 5000 in
   bt.port <- port;
-  Log.info "starting";
+  info "starting";
   List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
   PeerMgr.start bt.peer_mgr;
   event_loop bt

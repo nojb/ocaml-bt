@@ -19,20 +19,18 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(* module type S = sig *)
-(*   type key *)
-(*   type 'a t *)
-
-(*   val empty : 'a t *)
-(*   val add : key -> 'a -> 'a t -> 'a t *)
-(*   val find : ?max:int -> ?pred:('a -> bool) -> key -> 'a t -> (key * 'a) list *)
-(*   val iter : (key -> 'a -> unit) -> 'a t -> unit *)
-(* end *)
-
-(* module Table : S with type key = SHA1.t *)
+type status =
+  | Good
+  | Bad
+  | Unknown
+  | Pinged
 
 type t
 
 val create : unit -> t
 
 val find_node : t -> SHA1.t -> (SHA1.t * Addr.t) list
+
+type ping_fun = Addr.t -> SHA1.t option Lwt.t
+
+val update : t -> ping_fun -> status -> SHA1.t -> Addr.t -> unit

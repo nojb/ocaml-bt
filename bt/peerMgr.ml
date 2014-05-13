@@ -19,6 +19,14 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "PeerMgr"
+
+let debug ?exn fmt = Log.debug section ?exn fmt
+let error ?exn fmt = Log.error section ?exn fmt
+let info ?exn fmt = Log.info section ?exn fmt
+let notice ?exn fmt = Log.notice section ?exn fmt
+let warning ?exn fmt = Log.warning section ?exn fmt
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -94,13 +102,13 @@ let handshake_done bt sock res =
   Hashtbl.remove bt.connecting (IO.addr sock);
   match res with
   | Handshake.Success (id, exts) ->
-    Log.success "handshake [%s] successful (addr=%s,ih=%s,id=%s)"
+    notice "handshake [%s] successful (addr=%s,ih=%s,id=%s)"
       (if IO.is_encrypted sock then "encrypted" else "plain")
       (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih) (SHA1.to_hex_short id);
     peer_joined bt sock (IO.addr sock) bt.ih id exts
   | Handshake.Failed ->
     Lwt.async (fun () -> IO.close sock);
-    Log.error "handshake failed"
+    error "handshake failed"
 
 let rec connect_peer bt addr =
   let sock = IO.create addr in
@@ -112,20 +120,20 @@ let rec connect_peer bt addr =
        in
        Lwt.return ())
     (fun e ->
-       Log.error ~exn:e "%s: could not connect" (Addr.to_string addr);
+       error ~exn:e "%s: could not connect" (Addr.to_string addr);
        Hashtbl.remove bt.connecting addr;
        IO.close sock)
       (* Lwt.return ()) *)
 
 let peer_finished bt p =
-  Log.info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
+  info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
   (* Peer.close p; *)
   Hashtbl.remove bt.peers (Peer.addr p)
 
 let handle_incoming_peer bt sock addr =
   if not (know_peer bt addr) then
     if need_more_peers bt then begin
-      Log.info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
+      info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
       Hashtbl.add bt.connecting addr ();
       let hs =
         Handshake.incoming ~id:bt.id ~ih:bt.ih Handshake.(Crypto Prefer) sock
@@ -133,14 +141,14 @@ let handle_incoming_peer bt sock addr =
       in
       ()
     end else begin
-      Log.warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
+      warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
       bt.saved <- addr :: bt.saved;
       Lwt.async (fun () -> IO.close sock)
     end
 
 let handle_received_peer bt addr =
   if not (know_peer bt addr) then begin
-    Log.warning "saving outgoing peer for later (addr=%s)" (Addr.to_string addr);
+    warning "saving outgoing peer for later (addr=%s)" (Addr.to_string addr);
     bt.saved <- addr :: bt.saved
   end
 
@@ -166,7 +174,7 @@ let max_upload_idle_secs = 60.0 *. 5.0
 
 let is_bad_peer pm p =
   if is_seed pm && Peer.is_seed p then begin
-    Log.debug "closing peer %s because we are both seeds" (Addr.to_string (Peer.addr p));
+    debug "closing peer %s because we are both seeds" (Addr.to_string (Peer.addr p));
     true (* FIXME pex *)
   end
   else
@@ -180,7 +188,7 @@ let is_bad_peer pm p =
                 ((max_upload_idle_secs -. min_upload_idle_secs) *. strictness) in
     let idle_time = Unix.time () -. max (Peer.time p) (Peer.piece_data_time p) in
     if idle_time > limit then begin
-      Log.debug "closing peer %s because it's been %d secs since we shared anything"
+      debug "closing peer %s because it's been %d secs since we shared anything"
         (Addr.to_string (Peer.addr p)) (truncate idle_time);
       true
     end
@@ -195,7 +203,7 @@ let reconnect_pulse_delay = 0.5
 let rec reconnect_pulse bt =
   close_bad_peers bt;
   if need_more_peers bt then
-    Log.info "reconnect_pulse: trying to connect to %d peers"
+    info "reconnect_pulse: trying to connect to %d peers"
       (max_peer_count - (Hashtbl.length bt.peers + Hashtbl.length bt.connecting));
   while need_more_peers bt && List.length bt.saved > 0 do
     let addr = List.hd bt.saved in
@@ -217,7 +225,7 @@ let start pm =
   Lwt.async (fun () -> pex_pulse pm)
     
 let torrent_loaded pm m tor get_next_requests =
-  Log.debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor);
+  debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor);
   Hashtbl.iter (fun _ p -> Peer.got_metadata p m (get_next_requests p)) pm.peers;
   let b = Torrent.have tor in
   Hashtbl.iter begin fun _ p ->

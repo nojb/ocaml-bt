@@ -19,6 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "Udp"
+
+let debug ?exn fmt = Log.debug section ?exn fmt
+
 let max_udp_packet_size = 4096
 
 type socket = Lwt_unix.file_descr
@@ -38,7 +42,7 @@ let create_socket ?port () =
 let send sock s addr =
   Lwt_unix.sendto sock s 0 (String.length s) [] (Addr.to_sockaddr addr) >>= fun n ->
   if n < String.length s then
-    Log.debug "[udp] send: could not send all the data (requested=%d,sent=%d)"
+    debug "send: could not send all the data (requested=%d,sent=%d)"
       (String.length s) n;
   Lwt.return ()
 
@@ -46,7 +50,7 @@ let send_bitstring sock (s, off, len) addr =
   assert (off land 7 = 0 && len land 7 = 0);
   Lwt_unix.sendto sock s (off lsr 3) (len lsr 3) [] (Addr.to_sockaddr addr) >|= fun n ->
   if n < String.length s then
-    Log.debug "[udp] send_bitstring: could not send all the data (requested=%d,sent=%d)"
+    debug "send_bitstring: could not send all the data (requested=%d,sent=%d)"
       len n
 
 let recv =

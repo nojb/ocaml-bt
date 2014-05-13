@@ -19,6 +19,12 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Log.make_section "Torrent"
+
+let debug ?exn fmt = Log.debug section ?exn fmt
+let info ?exn fmt = Log.info section ?exn fmt
+let notice ?exn fmt = Log.notice section ?exn fmt
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -67,8 +73,7 @@ let create meta handle =
   let start_time = Unix.gettimeofday () in
   loop 0 (Metadata.total_length dl.meta) 0 >>= fun (good, amount_left) ->
   let end_time = Unix.gettimeofday () in
-  Log.success
-    "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
+  notice "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
     good numpieces amount_left (end_time -. start_time);
   dl.amount_left <- amount_left;
   Lwt.return dl
@@ -91,7 +96,7 @@ let got_block t peer idx b s =
   (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
   if not (Bits.is_set t.completed.(idx) b) then begin
     Bits.set t.completed.(idx) b;
-    Log.debug "got block %d:%d (%d remaining)" idx b
+    debug "got block %d:%d (%d remaining)" idx b
       (Bits.length t.completed.(idx) - Bits.count t.completed.(idx));
     let doit () =
       Store.write t.store (Metadata.block_offset t.meta idx b) s >|= fun () ->
@@ -114,7 +119,7 @@ let got_block t peer idx b s =
     Lwt.async doit
   end
   else
-    Log.info "received a block that we already have"
+    info "received a block that we already have"
   
 let down self =
   self.down

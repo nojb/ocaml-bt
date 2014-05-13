@@ -111,7 +111,7 @@ let parse_response q args =
 
 let secret_timeout = 10.0 *. 60.0
 
-module SecretToken : sig
+module Secret : sig
   type t
   val create : float -> t
   val current : t -> string
@@ -268,14 +268,21 @@ let answer dht addr name args =
   in
   encode_response dht.id r
 
+let update dht st id addr =
+  Kademlia.update dht.table (ping dht) st id addr
+
 let (!!) = Lazy.force
 
-let create port id =
+let create port =
   let rec dht = lazy
     { table = Kademlia.create ();
       krpc = KRPC.create (fun addr name args -> answer !!dht addr name args) port;
       port;
-      id;
+      id = SHA1.peer_id "OCTO";
       torrents = Hashtbl.create 3 }
   in
   !!dht
+
+let start dht =
+  let secret = Secret.create secret_timeout in
+  assert false

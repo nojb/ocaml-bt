@@ -19,6 +19,11 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let section = Bt.Log.make_section "otorrent"
+
+let error ?exn fmt = Bt.Log.error section ?exn fmt
+let info ?exn fmt = Bt.Log.info section ?exn fmt
+
 open Cmdliner
 
 let print_stats_header () =
@@ -69,10 +74,10 @@ let download magnet =
        let t = Bt.Client.start bt in
        print_stats_header ();
        Lwt.pick [print_stats_loop bt; t])
-    (fun e -> Bt.Log.error ~exn:e "fatal error during download"; Lwt.return ())
+    (fun exn -> error ~exn "fatal error during download"; Lwt.return ())
 
 let download_all debug magnets =
-  if debug then Bt.Log.current_level := Bt.Log.DEBUG;
+  if debug then Bt.Log.log_level := Bt.Log.Debug;
   Lwt_main.run (Lwt_list.iter_p download magnets)
 
 let download_t =
