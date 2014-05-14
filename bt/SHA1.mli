@@ -22,6 +22,7 @@
 type t = private string
 
 val zero : t
+val last : t
 val compare : t -> t -> int
 val equal : t -> t -> bool
 val hash : t -> int
@@ -35,7 +36,8 @@ val to_bin : t -> string
 val from_bin : string -> t
 val digest_of_string : string -> t
 val to_z : t -> Z.t
-val dist : t -> t -> Z.t
+val of_z : Z.t -> t
+val distance : t -> t -> Z.t
 val random : unit -> t
 val peer_id : string -> t
 val of_hex : string -> t

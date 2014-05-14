@@ -20,113 +20,14 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 let section = Log.make_section "Kademlia"
-  
+
+let debug ?exn fmt = Log.debug section ?exn fmt
 let error ?exn fmt = Log.error section ?exn fmt
 let info ?exn fmt = Log.info section ?exn fmt
 
-module type KEY = sig
-  type t
-  val length : int
-  val nth : t -> int -> bool
-  val equal : t -> t -> bool
-end
+let node_period = 15.0 *. 60.0
 
-module type S = sig
-  type key
-  type 'a t
-
-  val empty : 'a t
-  val add : key -> 'a -> 'a t -> 'a t
-  val find : ?max:int -> ?pred:('a -> bool) -> key -> 'a t -> (key * 'a) list
-  val iter : (key -> 'a -> unit) -> 'a t -> unit
-end
-
-module MakeTable (Key : KEY) = struct
-  type key = Key.t
-  type 'a t =
-    | Empty
-    | NodeE of 'a t * 'a t
-    | NodeF of Key.t * 'a
-
-  let empty = Empty
-
-  let branch_out k1 n1 k2 n2 i =
-    let rec loop i =
-      match Key.nth k1 i, Key.nth k2 i with
-      | true, false -> NodeE (NodeF (k2, n2), NodeF (k1, n1))
-      | false, true -> NodeE (NodeF (k1, n1), NodeF (k2, n2))
-      | true, true -> NodeE (Empty, loop (i+1))
-      | false, false -> NodeE (loop (i+1), Empty)
-    in
-    loop i
-
-  let add k d tree =
-    let rec loop i = function
-      | Empty
-      | NodeE (Empty, Empty) ->
-        NodeF (k, d)
-      | NodeE (l, r) ->
-        if Key.nth k i then NodeE (l, loop (i+1) r) else NodeE (loop (i+1) l, r)
-      | NodeF (u, x) ->
-        if Key.equal k u then NodeF (k, d) else branch_out k d u x i
-    in
-    loop 0 tree
-
-  let find ?(max = 8) ?(pred = (fun _ -> true)) k tree =
-    let rec loop i lst tree =
-      if List.length lst >= max then lst
-      else match tree with
-        | Empty ->
-          lst
-        | NodeF (k, x) ->
-          if pred x then (k, x) :: lst else lst
-        | NodeE (l, r) ->
-          if Key.nth k i then loop (i+1) (loop (i+1) lst r) l
-          else loop (i+1) (loop (i+1) lst l) r
-    in
-    loop 0 [] tree
-
-  let rec iter f = function
-    | Empty -> ()
-    | NodeF (k, d) -> f k d
-    | NodeE (l, r) -> iter f l; iter f r
-end
-
-(* module K = struct *)
-(*   type t = int array *)
-(*   type key = t *)
-(*   let length = 4 *)
-(*   let create a0 = *)
-(*     let a = Array.create length false in *)
-(*     Array.blit a0 0 a 0 (min (Array.length a0) length); *)
-(*     a *)
-(*   let to_string a = *)
-(*     let str = String.create (Array.length a) in *)
-(*     for i = 0 to Array.length a - 1 do *)
-(*       str.[i] <- if a.(i) <> 0 then '1' else '0' *)
-(*     done; *)
-(*     str *)
-(*   let printer fmt a = *)
-(*     Format.fprintf fmt "%s" (to_string a) *)
-(*   let nth a i = a.(i) <> 0 *)
-(*   let equal k1 k2 = *)
-(*     let rec loop i = *)
-(*       if i >= length then true *)
-(*       else if (k1.(i) = 0 && k2.(i) <> 0) || (k1.(i) <> 0 && k2.(i) = 0) then false *)
-(*       else loop (i+1) *)
-(*     in *)
-(*     loop 0 *)
-(* end *)
-
-(* include Make (K) *)
-
-module Table = MakeTable
-    (struct
-      type t = SHA1.t
-      let length = 160
-      let nth key i = Bitstring.get (SHA1.to_bin key, 0, 160) i <> 0
-      let equal x y = x = y
-    end)
+let bucket_nodes = 8
 
 type status =
   | Good
@@ -143,7 +44,7 @@ let string_of_status = function
 type node = {
   id : SHA1.t;
   addr : Addr.t;
-  mutable last_changed : float;
+  mutable last : float;
   mutable status : status;
 }
 
@@ -152,30 +53,225 @@ let string_of_node n =
     (SHA1.to_hex_short n.id)
     (Addr.to_string n.addr)
     (string_of_status n.status)
-    (truncate (Unix.time () -. n.last_changed))
-  
-type t = {
-  mutable tbl : node Table.t;
-  mutable tbl_last_change : float
+    (truncate (Unix.time () -. n.last))
+
+type bucket = {
+  lo : SHA1.t;
+  hi : SHA1.t;
+  mutable last_change : float;
+  mutable nodes : node array
 }
 
-let create () =
-  { tbl = Table.empty; tbl_last_change = Unix.time () }
+let mark n st =
+  debug "mark [%s] as %s" (string_of_node n) (string_of_status st);
+  n.last <- Unix.time ();
+  n.status <- st
+
+let touch b =
+  b.last_change <- Unix.time ()
+
+type tree =
+  | L of bucket
+  | N of tree * SHA1.t * tree
+
+type table = {
+  mutable root : tree;
+  self : SHA1.t
+}
+
+(* boundaries inclusive *)
+let inside n h =
+  not (SHA1.compare h n.lo < 0 || SHA1.compare h n.hi > 0)
+
+let split lo hi =
+  assert (SHA1.compare lo hi < 0);
+  let mid = Z.div (Z.add (SHA1.to_z lo) (SHA1.to_z hi)) (Z.of_int 2) in
+  SHA1.of_z mid
+
+let succ h =
+  assert (SHA1.compare h SHA1.last < 0);
+  SHA1.of_z (Z.add (SHA1.to_z h) Z.one)
+
+let choose_random lo hi =
+  assert (SHA1.compare lo hi < 0);
+  let rec loop a b =
+    if SHA1.compare a b = 0 then a
+    else
+      let mid = split a b in
+      if Random.bool () then loop a mid else loop mid b
+  in
+  loop lo hi
 
 let make_node id addr status =
-  { id; addr; status; last_changed = Unix.time () }
+  { id; addr; status; last = Unix.time () }
 
-let mark node st =
-  node.last_changed <- Unix.time ();
-  node.status <- st
+let update_bucket_node b status id addr i n =
+  match SHA1.compare n.id id = 0, n.addr = addr with
+  | true, true ->
+    mark n status;
+    touch b;
+    raise Exit
+  | true, false | false, true ->
+    info "conflict [%s] with %s %s, replacing"
+      (string_of_node n) (SHA1.to_hex_short id) (Addr.to_string addr);
+    b.nodes.(i) <- make_node id addr status;
+    touch b;
+    raise Exit
+  | _ ->
+    ()
 
-let touch node =
-  node.last_changed <- Unix.time ()
+let insert_bucket_node b status id addr =
+  debug "insert %s %s" (SHA1.to_hex_short id) (Addr.to_string addr);
+  b.nodes <- Array.of_list (make_node id addr status :: Array.to_list b.nodes);
+  touch b;
+  raise Exit
 
-type ping_fun = Addr.t -> SHA1.t option Lwt.t
+let replace_bucket_node b status id addr i n =
+  let now = Unix.time () in
+  if n.status = Good && now -. n.last > node_period then mark n Unknown;
+  if n.status = Bad || (n.status = Pinged && now -. n.last > node_period) then begin
+    debug "replace [%s] with %s" (string_of_node b.nodes.(i)) (SHA1.to_hex_short id);
+    b.nodes.(i) <- make_node id addr status; (* replace *)
+    touch b;
+    raise Exit
+  end
 
-let update ping table st id addr =
-  assert false
+let split_bucket b =
+  debug "split %s %s" (SHA1.to_hex_short b.lo) (SHA1.to_hex_short b.hi);
+  let mid = split b.lo b.hi in
+  let nodes1, nodes2 = List.partition (fun n -> SHA1.compare n.id mid < 0) (Array.to_list b.nodes) in
+  (* FIXME *)
+  let n1 = { lo = b.lo; hi = mid; last_change = b.last_change; nodes = Array.of_list nodes1 } in
+  let n2 = { lo = succ mid; hi = b.hi; last_change = b.last_change; nodes = Array.of_list nodes2 } in
+  N (L n1, mid, L n2)
+
+type ping_fun = Addr.t -> ((SHA1.t * Addr.t) option -> unit) -> unit
+
+let rec update table (ping : ping_fun) status id addr =
+  let rec loop = function
+    | N (l, mid, r) ->
+      let c = SHA1.compare id mid in
+      if c < 0 || c = 0 then N (loop l, mid, r) else N (l, mid, loop r)
+    | L b ->
+      Array.iteri (update_bucket_node b status id addr) b.nodes;
+      if Array.length b.nodes <> bucket_nodes then insert_bucket_node b status id addr;
+      Array.iteri (replace_bucket_node b status id addr) b.nodes;
+      let unknown n = match n.status with Unknown -> true | _ -> false in
+      let unk = Array.fold_left (fun acc n -> if unknown n then n :: acc else acc) [] b.nodes in
+      match unk with
+      | [] -> (* all nodes are good or waiting to pong *)
+        if inside b table.self && Z.gt (SHA1.distance b.lo b.hi) (Z.of_int 256) then
+          split_bucket b
+        else begin
+          debug "bucket full (%s)" (SHA1.to_hex_short id);
+          raise Exit
+        end
+      | _ ->
+        let count = ref (List.length unk) in
+        debug "ping %d unknown nodes" !count;
+        let on_pong n res =
+          decr count;
+          mark n (match res with Some _ -> Good | None -> Bad);
+          if !count = 0 then begin (* retry *)
+            debug "all %d pinged, retry %s" (List.length unk) (SHA1.to_hex_short id);
+            touch b;
+            update table ping status id addr
+          end
+        in
+        List.iter (fun n -> mark n Pinged; ping n.addr (on_pong n)) unk;
+        raise Exit
+  in
+  if id <> table.self then
+    try
+      while true do table.root <- loop table.root done
+    with
+    | Exit -> ()
+
+let insert_node table node =
+  let rec loop = function
+    | N (l,mid,r) ->
+      let c = SHA1.compare node.id mid in
+      if c < 0 || c = 0 then N (loop l, mid, r) else N (l, mid, loop r)
+    | L b ->
+      Array.iter begin fun n ->
+        match SHA1.compare n.id node.id = 0, n.addr = node.addr with
+        | true, true ->
+          info "insert_node: duplicate entry %s" (string_of_node n);
+          raise Exit
+        | true, false | false, true ->
+          info "insert_node: conflict [%s] with [%s]" (string_of_node n) (string_of_node node);
+          raise Exit
+        | _ -> ()
+      end b.nodes;
+      if Array.length b.nodes <> bucket_nodes then begin
+        b.nodes <- Array.of_list (node :: Array.to_list b.nodes);
+        raise Exit
+      end;
+      if inside b table.self && Z.gt (SHA1.distance b.lo b.hi) (Z.of_int 256) then begin
+        let mid = split b.lo b.hi in
+        let nodes1, nodes2 =
+          List.partition (fun n -> SHA1.compare n.id mid < 0) (Array.to_list b.nodes)
+        in
+        let last_change = List.fold_left (fun acc n -> max acc n.last) 0.0 in
+        let n1 =
+          { lo = b.lo; hi = mid;
+            last_change = last_change nodes1;
+            nodes = Array.of_list nodes1 }
+        in
+        let n2 =
+          { lo = succ mid; hi = b.hi;
+            last_change = last_change nodes2;
+            nodes = Array.of_list nodes2 }
+        in
+        N (L n1, mid, L n2)
+      end
+      else begin
+        info "insert_node: bucket full [%s]" (string_of_node node);
+        raise Exit
+      end
+  in
+  try
+    while true do table.root <- loop table.root done
+  with
+  | Exit -> ()
 
 let find_node table id =
-  List.map (fun (_, n) -> n.id, n.addr) (Table.find id table.tbl)
+  let rec loop alt = function
+    | N (l, mid, r) ->
+      let c = SHA1.compare id mid in
+      if c < 0 || c = 0 then loop (r :: alt) l else loop (l :: alt) r
+    | L b ->
+      let found = Array.to_list b.nodes in
+      List.map (fun n -> n.id, n.addr) found
+      (* found *)
+      (* if Array.length b.nodes = bucket_nodes then found else found *)
+  in
+  loop [] table.root
+
+let refresh table =
+  let now = Unix.time () in
+  let rec loop acc = function
+    | N (l, _, r) ->
+      loop (loop acc l) r
+    | L b when b.last_change +. node_period < now ->
+      if Util.array_exists (fun n -> n.status <> Bad) b.nodes then
+        let nodes = Array.map (fun n -> n.id, n.addr) b.nodes in
+        (choose_random b.lo b.hi, Array.to_list nodes) :: acc
+      else
+        acc (* do not refresh buckets with all bad nodes *)
+    | L _ ->
+      acc
+  in
+  loop [] table.root
+
+let rec fold f acc = function
+  | N (l, _, r) -> fold f (fold f acc l) r
+  | L b -> f acc b
+
+let size table =
+  fold (fun acc b -> acc + Array.length b.nodes) 0 table.root
+        
+let create self =
+  { root = L { lo = SHA1.zero; hi = SHA1.last; last_change = Unix.time (); nodes = [| |] };
+    self }
+

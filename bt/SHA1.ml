@@ -24,6 +24,9 @@ type t =
     
 let zero =
   String.make 20 '\000'
+
+let last =
+  String.make 20 (Char.chr 0xFF)
     
 let compare s1 s2 =
   compare s1 s2
@@ -71,7 +74,15 @@ let digest_of_string s =
 let to_z s =
   Z.of_bits s
 
-let dist s1 s2 : Z.t =
+let of_z z =
+  let s = String.create 20 in
+  let zs = Z.to_bits z in
+  let l = String.length zs in
+  assert (l <= 20);
+  String.blit (Z.to_bits z) 0 s 0 l;
+  s
+
+let distance s1 s2 : Z.t =
   Z.(logxor (of_bits s1) (of_bits s2))
 
 let random () =

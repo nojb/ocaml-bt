@@ -27,7 +27,7 @@ type msg =
 type rpc =
   | Error
   | Timeout
-  | Response of (string * Bcode.t) list
+  | Response of Addr.t * (string * Bcode.t) list
 
 type t
 

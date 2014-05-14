@@ -19,8 +19,13 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let (>>=) = Lwt.(>>=)
+let section = Log.make_section "DHT"
 
+let debug ?exn fmt = Log.debug section ?exn fmt
+
+let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
+    
 type query =
   | Ping
   | FindNode of SHA1.t
@@ -37,6 +42,14 @@ type response =
   | Pong
   | Nodes of node_info list
   | Peers of string * peers
+
+let string_of_response = function
+  | Pong ->
+    "pong"
+  | Nodes nodes ->
+    assert false
+  | Peers (token, peers) ->
+    assert false
 
 let parse_query name args : SHA1.t * query =
   let sha1 k args = SHA1.from_bin (Bcode.to_string (List.assoc k args)) in
@@ -143,7 +156,7 @@ end
 module Peers = Map.Make (struct type t = Addr.t let compare = compare end)
 
 type t = {
-  mutable table : Kademlia.t;
+  mutable rt : Kademlia.table;
   torrents : (SHA1.t, int Peers.t) Hashtbl.t;
   id : SHA1.t;
   port : int;
@@ -181,43 +194,43 @@ let encode_query id (q : query) =
 
 let query dht addr q =
   KRPC.send_msg dht.krpc (encode_query dht.id q) addr >>= function
-  | KRPC.Response args ->
+  | KRPC.Response (addr, args) ->
     let id, r = parse_response q args in
-    Lwt.return (id, r)
+    Lwt.return ((id, addr), r)
   | KRPC.Timeout ->
     Lwt.fail (Failure "timeout")
   | KRPC.Error ->
     Lwt.fail (Failure "dht error")
 
 let ping dht addr =
-  query dht addr Ping >>= fun (id, r) ->
+  query dht addr Ping >>= fun (n, r) ->
   match r with
   | Pong ->
-    Lwt.return (Some id)
+    Lwt.return (Some n)
   | _ ->
     Lwt.return None
 
 let find_node dht addr id =
-  query dht addr (FindNode id) >>= fun (id, r) ->
+  query dht addr (FindNode id) >>= fun (n, r) ->
   match r with
   | Nodes nodes ->
-    Lwt.return (id, nodes)
+    Lwt.return (n, nodes)
   | _ ->
     Lwt.fail (Failure "DHT.find_node")
 
 let get_peers dht addr ih =
-  query dht addr (GetPeers ih) >>= fun (id, r) ->
+  query dht addr (GetPeers ih) >>= fun (n, r) ->
   match r with
   | Peers (token, peers) ->
-    Lwt.return (id, token, peers)
+    Lwt.return (n, token, peers)
   | _ ->
     Lwt.fail (Failure "DHT.get_peers")
 
 let announce dht addr port token ih =
-  query dht addr (Announce (ih, port, token)) >>= fun (id, r) ->
+  query dht addr (Announce (ih, port, token)) >>= fun (n, r) ->
   match r with
   | Pong ->
-    Lwt.return id
+    Lwt.return n
   | _ ->
     Lwt.fail (Failure "DHT.announce")
 
@@ -256,33 +269,106 @@ let encode_response id r : KRPC.msg =
     KRPC.Response
       [ self; "token", Bcode.String token; "nodes", Bcode.String (encode_nodes nodes) ]
 
-let answer dht addr name args =
+let self_get_peers dht h =
+  let peers =
+    try
+      Peers.fold (fun p _ l -> p :: l) (Hashtbl.find dht.torrents h) []
+    with
+    | Not_found -> []
+  in
+  if List.length peers <= 100 then
+    peers
+  else
+    let a = Array.of_list peers in
+    Util.shuffle_array a;
+    Array.to_list (Array.sub a 0 100)
+
+let self_find_node dht h =
+  Kademlia.find_node dht.rt h
+
+(* do not hash port cause some broken implementations change it all the time *)
+let make_token addr ih secret =
+  string_of_int (Hashtbl.hash
+      (Addr.Ip.to_string (Addr.ip addr), SHA1.to_bin ih, secret))
+
+let valid_token addr ih secret token =
+  let cur = Secret.current secret in
+  let prev = Secret.previous secret in
+  token = make_token addr ih cur || token = make_token addr ih prev
+
+let answer dht secret addr name args =
   let id, q = parse_query name args in
   let r = match q with
     | Ping ->
       Pong
     | FindNode nid ->
-      (* Nodes (M.self_find_node dht nid) *)
-    (* | _ -> *)
+      Nodes (self_find_node dht nid)
+    | GetPeers ih ->
+      let token = make_token addr ih (Secret.current secret) in
+      begin match self_get_peers dht ih with
+      | [] ->
+        let nodes = self_find_node dht ih in
+        debug "answer with %d nodes" (List.length nodes);
+        Peers (token, Nodes nodes)
+      | _ as peers ->
+        debug "answer with %d peers" (List.length peers);
+        Peers (token, Values peers)
+      end
+      (* Peers (token, peers, nodes) *)
+    | Announce (ih, port, token) ->
+      if not (valid_token addr ih secret token) then
+        failwith (Printf.sprintf "invalid token %S" token);
       assert false
+      (* store dht ih 0 *)
   in
+  debug "DHT response to %s (%s) : %s"
+    (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r);
   encode_response dht.id r
 
 let update dht st id addr =
-  Kademlia.update dht.table (ping dht) st id addr
+  let ping addr k = Lwt.async (fun () -> ping dht addr >|= k) in
+  Kademlia.update dht.rt ping st id addr
 
 let (!!) = Lazy.force
 
 let create port =
+  let id = SHA1.random () in
+  let secret = Secret.create secret_timeout in
   let rec dht = lazy
-    { table = Kademlia.create ();
-      krpc = KRPC.create (fun addr name args -> answer !!dht addr name args) port;
+    { rt = Kademlia.create id;
+      krpc = KRPC.create (fun addr name args -> answer !!dht secret addr name args) port;
       port;
-      id = SHA1.peer_id "OCTO";
+      id;
+      (* secret; *)
       torrents = Hashtbl.create 3 }
   in
   !!dht
 
+let rec refresh dht =
+  let ids = Kademlia.refresh dht.rt in
+  debug "will refresh %d buckets" (List.length ids);
+  let cb prev_id (n, l) =
+    let id, addr = n in
+    update dht Kademlia.Good id addr; (* replied *)
+    if SHA1.compare id prev_id <> 0 then begin
+      debug "refresh: node %s (%s) changed id (was %s)"
+        (SHA1.to_hex_short id) (Addr.to_string addr) (SHA1.to_hex_short prev_id);
+      update dht Kademlia.Bad prev_id addr
+    end;
+    debug "refresh: got %d nodes from %s (%s)"
+      (List.length l) (SHA1.to_hex_short id) (Addr.to_string addr);
+    List.iter (fun (id, addr) -> update dht Kademlia.Unknown id addr) l
+  in
+  Lwt_list.iter_p (fun (target, nodes) ->
+    Lwt_list.iter_p (fun (id, addr) ->
+      Lwt.catch
+        (fun () -> find_node dht addr target >|= cb id)
+        (fun exn ->
+           debug ~exn "refresh: find_node error %s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr);
+           Lwt.return ()))
+      nodes) ids >>= fun () ->
+  Lwt_unix.sleep 60.0 >>= fun () -> refresh dht
+
 let start dht =
-  let secret = Secret.create secret_timeout in
-  assert false
+  debug "DHT size : %d self : %s" (Kademlia.size dht.rt) (SHA1.to_hex_short dht.id);
+  Lwt.async (fun () -> refresh dht)

@@ -103,7 +103,7 @@ type answer_func = Addr.t -> string -> (string * Bcode.t) list -> msg
 type rpc =
   | Error
   | Timeout
-  | Response of (string * Bcode.t) list
+  | Response of Addr.t * (string * Bcode.t) list
 
 type t = {
   sock : Udp.socket;
@@ -137,7 +137,7 @@ let read_one_packet krpc =
       Lwt.return ()
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;
-      Lwt.wakeup w (Response args);
+      Lwt.wakeup w (Response (addr, args));
       Lwt.return ()
     end
 

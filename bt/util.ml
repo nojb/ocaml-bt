@@ -76,6 +76,14 @@ let shuffle_array a =
     a.(j) <- t
   done
 
+let array_exists f a =
+  let rec loop i =
+    if i >= Array.length a then false else
+    if f a.(i) then true
+    else loop (i+1)
+  in
+  loop 0
+
 let safe_int64_to_int n =
   let m = Int64.to_int n in
   assert (Int64.(compare (of_int m) n) = 0);

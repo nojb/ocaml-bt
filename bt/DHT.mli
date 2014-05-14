@@ -38,9 +38,9 @@ type response =
 
 type t
 
-val ping : t -> Addr.t -> SHA1.t option Lwt.t
-val find_node : t -> Addr.t -> SHA1.t -> (SHA1.t * node_info list) Lwt.t
-val get_peers : t -> Addr.t -> SHA1.t -> (SHA1.t * string * peers) Lwt.t
-val announce : t -> Addr.t -> int -> string -> SHA1.t -> SHA1.t Lwt.t
+val ping : t -> Addr.t -> node_info option Lwt.t
+val find_node : t -> Addr.t -> SHA1.t -> (node_info * node_info list) Lwt.t
+val get_peers : t -> Addr.t -> SHA1.t -> (node_info * string * peers) Lwt.t
+val announce : t -> Addr.t -> int -> string -> SHA1.t -> node_info Lwt.t
 
 val create : int -> t
