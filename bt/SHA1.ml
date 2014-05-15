@@ -44,28 +44,18 @@ let to_hex s =
   done;
   Buffer.contents buf
 
-let sprint () s =
-  to_hex s
-
 let to_hex_short s =
   let s = to_hex s in
-  (* String.sub s 0 6 *)
-  String.sub s 0 5
+  String.sub s 0 7
     
 let pp fmt s =
-  Format.fprintf fmt "%s" (to_hex s)
+  Format.fprintf fmt "0x%s" (to_hex s)
 
-let print oc s =
-  output_string oc s
-
-let sprint () s =
-  to_hex s
-    
 let to_bin x =
   x
     
 let from_bin x =
-  if String.length x <> 20 then invalid_arg "Word160.from_bin";
+  if String.length x <> 20 then invalid_arg "SHA1.from_bin";
   x
       
 let digest_of_string s =
@@ -84,6 +74,8 @@ let of_z z =
 
 let distance s1 s2 : Z.t =
   Z.(logxor (of_bits s1) (of_bits s2))
+
+let _ = Random.self_init ()
 
 let random () =
   let s = String.create 20 in
@@ -163,9 +155,6 @@ let of_base32 s =
     s'.[i] <- bits.[19-i]
   done;
   s'
-
-let pp fmt s =
-  Format.fprintf fmt "0x%s" (to_hex s)
 
 let strings sl =
   let h = Cryptokit.Hash.sha1 () in

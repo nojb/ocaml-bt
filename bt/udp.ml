@@ -25,39 +25,40 @@ let debug ?exn fmt = Log.debug section ?exn fmt
 
 let max_udp_packet_size = 4096
 
-type socket = Lwt_unix.file_descr
+type socket = {
+  fd : Lwt_unix.file_descr;
+  buf : string
+}
 
-open Lwt
-
-let create_socket ?port () =
-  let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
-  let () =
-    match port with
-    | None -> ()
-    | Some port ->
-      Lwt_unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_any, port));
-  in
-  sock
+let (>>=) = Lwt.(>>=)
+let (>|=) = Lwt.(>|=)
+    
+let create_socket ?(port = 0) () =
+  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
+  Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, port));
+  (* let () = *)
+  (*   match port with *)
+  (*   | None -> () *)
+  (*   | Some port -> *)
+  (*     Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, port)); *)
+  (* in *)
+  { fd; buf = String.create max_udp_packet_size }
 
 let send sock s addr =
-  Lwt_unix.sendto sock s 0 (String.length s) [] (Addr.to_sockaddr addr) >>= fun n ->
-  if n < String.length s then
-    debug "send: could not send all the data (requested=%d,sent=%d)"
-      (String.length s) n;
-  Lwt.return ()
+  Lwt_unix.sendto sock.fd s 0 (String.length s) [] (Addr.to_sockaddr addr) >|= fun n ->
+  if n < String.length s then debug "send: sent %d bytes, should have sent %d" n (String.length s)
 
 let send_bitstring sock (s, off, len) addr =
   assert (off land 7 = 0 && len land 7 = 0);
-  Lwt_unix.sendto sock s (off lsr 3) (len lsr 3) [] (Addr.to_sockaddr addr) >|= fun n ->
-  if n < String.length s then
-    debug "send_bitstring: could not send all the data (requested=%d,sent=%d)"
-      len n
+  Lwt_unix.sendto sock.fd s (off lsr 3) (len lsr 3) [] (Addr.to_sockaddr addr) >|= fun n ->
+  if n < String.length s then debug "send_bitstring: sent %d bytes, should have sent %d" n len
 
-let recv =
-  let buf = String.create max_udp_packet_size in
-  fun sock ->
-    Lwt_unix.recvfrom sock buf 0 max_udp_packet_size [] >|= fun (n, iaddr) ->
-    String.sub buf 0 n, Addr.of_sockaddr iaddr
+let recv sock =
+    Lwt_unix.recvfrom sock.fd sock.buf 0 (String.length sock.buf) [] >|= fun (n, iaddr) ->
+    String.sub sock.buf 0 n, Addr.of_sockaddr iaddr
 
 let set_timeout sock t =
-  Lwt_unix.setsockopt_float sock Lwt_unix.SO_RCVTIMEO t
+  Lwt_unix.setsockopt_float sock.fd Lwt_unix.SO_RCVTIMEO t
+
+let close sock =
+  Lwt_unix.close sock.fd

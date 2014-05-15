@@ -27,3 +27,12 @@ Executable otorrent
   CompiledObject: best
   Install: true
   BuildDepends: bt, cmdliner
+
+Executable find_ih
+  Path: examples
+  MainIs: find_ih.ml
+  Build$: true
+  Custom: true
+  CompiledObject: best
+  Install: false
+  BuildDepends: bt

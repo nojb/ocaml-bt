@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: a3c66a1d5ad0cb76c6c9235084438967)
+# DO NOT EDIT (digest: 7e9aace2c4dada1585fc8143299d5f58)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -77,5 +77,29 @@
 <otorrent/*.ml{,i}>: pkg_zarith
 <otorrent/*.ml{,i}>: use_bt
 <otorrent/otorrent.{native,byte}>: custom
+# Executable find_ih
+<examples/find_ih.{native,byte}>: pkg_bitstring
+<examples/find_ih.{native,byte}>: pkg_bitstring.syntax
+<examples/find_ih.{native,byte}>: pkg_cohttp
+<examples/find_ih.{native,byte}>: pkg_cohttp.lwt
+<examples/find_ih.{native,byte}>: pkg_cryptokit
+<examples/find_ih.{native,byte}>: pkg_lwt
+<examples/find_ih.{native,byte}>: pkg_lwt.unix
+<examples/find_ih.{native,byte}>: pkg_qcheck
+<examples/find_ih.{native,byte}>: pkg_uri
+<examples/find_ih.{native,byte}>: pkg_zarith
+<examples/find_ih.{native,byte}>: use_bt
+<examples/*.ml{,i}>: pkg_bitstring
+<examples/*.ml{,i}>: pkg_bitstring.syntax
+<examples/*.ml{,i}>: pkg_cohttp
+<examples/*.ml{,i}>: pkg_cohttp.lwt
+<examples/*.ml{,i}>: pkg_cryptokit
+<examples/*.ml{,i}>: pkg_lwt
+<examples/*.ml{,i}>: pkg_lwt.unix
+<examples/*.ml{,i}>: pkg_qcheck
+<examples/*.ml{,i}>: pkg_uri
+<examples/*.ml{,i}>: pkg_zarith
+<examples/*.ml{,i}>: use_bt
+<examples/find_ih.{native,byte}>: custom
 # OASIS_STOP
 # true: bin_annot

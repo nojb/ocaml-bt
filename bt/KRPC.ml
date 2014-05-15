@@ -174,4 +174,4 @@ let send_msg krpc msg addr =
   let t = fresh_txn () in (* FIXME only outstanding queries need be unique *)
   let wait, w = Lwt.wait () in
   Assoc2.add krpc.pending addr t (w, Unix.time () +. timeout_delay);
-  wait
+  Udp.send krpc.sock (encode t msg) addr >>= fun () -> wait
