@@ -25,6 +25,8 @@ let debug ?exn fmt = Log.debug section ?exn fmt
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
+
+let alpha = 3
     
 type query =
   | Ping
@@ -43,13 +45,20 @@ type response =
   | Nodes of node_info list
   | Peers of string * peers
 
-let string_of_response = function
+let string_of_node (id, addr) =
+  Printf.sprintf "%s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr)
+
+let string_of_response r =
+  let strl f l = "[" ^ String.concat " " (List.map f l) ^ "]" in
+  match r with
   | Pong ->
     "pong"
   | Nodes nodes ->
-    assert false
-  | Peers (token, peers) ->
-    assert false
+    Printf.sprintf "nodes %s" (strl string_of_node nodes)
+  | Peers (token, Values values) ->
+    Printf.sprintf "peers token=%S values %s" token (strl Addr.to_string values)
+  | Peers (token, Nodes nodes) ->
+    Printf.sprintf "peers token=%S nodes %s" token (strl string_of_node nodes)
 
 let parse_query name args : SHA1.t * query =
   let sha1 k args = SHA1.from_bin (Bcode.to_string (List.assoc k args)) in
@@ -157,7 +166,7 @@ module Peers = Map.Make (struct type t = Addr.t let compare = compare end)
 
 type t = {
   mutable rt : Kademlia.table;
-  torrents : (SHA1.t, int Peers.t) Hashtbl.t;
+  torrents : (SHA1.t, float Peers.t) Hashtbl.t;
   id : SHA1.t;
   port : int;
   krpc : KRPC.t
@@ -296,6 +305,12 @@ let valid_token addr ih secret token =
   let prev = Secret.previous secret in
   token = make_token addr ih cur || token = make_token addr ih prev
 
+let store_peer_timeout = 30.0 *. 60.0
+
+let store dht ih addr =
+  let peers = try Hashtbl.find dht.torrents ih with Not_found -> Peers.empty in
+  Hashtbl.replace dht.torrents ih (Peers.add addr (Unix.time () +. store_peer_timeout) peers)
+
 let answer dht secret addr name args =
   let id, q = parse_query name args in
   let r = match q with
@@ -314,12 +329,11 @@ let answer dht secret addr name args =
         debug "answer with %d peers" (List.length peers);
         Peers (token, Values peers)
       end
-      (* Peers (token, peers, nodes) *)
     | Announce (ih, port, token) ->
       if not (valid_token addr ih secret token) then
         failwith (Printf.sprintf "invalid token %S" token);
-      assert false
-      (* store dht ih 0 *)
+      store dht ih (Addr.ip addr, port);
+      Pong
   in
   debug "DHT response to %s (%s) : %s"
     (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r);
@@ -339,7 +353,6 @@ let create port =
       krpc = KRPC.create (fun addr name args -> answer !!dht secret addr name args) port;
       port;
       id;
-      (* secret; *)
       torrents = Hashtbl.create 3 }
   in
   !!dht
@@ -372,3 +385,111 @@ let rec refresh dht =
 let start dht =
   debug "DHT size : %d self : %s" (Kademlia.size dht.rt) (SHA1.to_hex_short dht.id);
   Lwt.async (fun () -> refresh dht)
+
+module BoundedSet = struct
+  module type S = sig
+    type elt
+    type t
+    val create : int -> t
+    val insert : t -> elt -> bool
+    val elements : t -> elt list
+    val iter : (elt -> unit) -> t -> unit
+    val min_elt : t -> elt
+    val is_empty : t -> bool
+  end
+  module Make (Ord : Set.OrderedType) : S with type elt = Ord.t = struct
+    module S = Set.Make (Ord)
+    type elt = Ord.t
+    type t = int ref * S.t ref
+
+    let create n = ref n, ref S.empty
+
+    let insert (left, set) elem =
+      if S.mem elem !set then false else
+      if !left = 0 then
+        let max = S.max_elt !set in
+        if Ord.compare elem max < 0 then begin
+          set := S.add elem (S.remove max !set);
+          true
+        end
+        else false
+      else begin
+        set := S.add elem !set;
+        decr left;
+        true
+      end
+
+    let iter f (_, set) = S.iter f !set
+
+    let elements (_, set) = S.elements !set
+
+    let min_elt (_, set) = S.min_elt !set
+
+    let is_empty (_, set) = S.is_empty !set
+  end
+end
+
+let lookup_node dht ?nodes target =
+  debug "lookup %s" (SHA1.to_hex_short target);
+  let start = Unix.time () in
+  let queried = Hashtbl.create 13 in
+  let module BS = BoundedSet.Make
+      (struct
+        type t = SHA1.t * Addr.t
+        let compare n1 n2 =
+          Z.compare (SHA1.distance target (fst n1)) (SHA1.distance target (fst n2))
+      end)
+  in
+  let found = BS.create Kademlia.bucket_nodes in
+  let rec loop nodes =
+    let inserted =
+      List.fold_left (fun acc node ->
+        if BS.insert found node then acc+1 else acc) 0 nodes
+    in
+    let n = ref 0 in
+    let res = ref (Lwt.return ()) in
+    let t =
+      try
+        BS.iter begin fun node ->
+          if alpha = !n || Hashtbl.mem queried node then raise Exit;
+          incr n;
+          res := Lwt.join [!res; query true node]
+        end found;
+        !res
+      with
+      | Exit -> !res
+    in
+    inserted, t
+  and query store n =
+    let id, addr = n in
+    Hashtbl.add queried n true;
+    debug "will query node %s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr);
+    Lwt.catch
+      (fun () ->
+         find_node dht addr target >>= fun (n, nodes) ->
+         let id, addr = n in
+         if store then update dht Kademlia.Good id addr;
+         let inserted, t = loop nodes in
+         let s =
+           if BS.is_empty found then ""
+           else Printf.sprintf ", best %s" (SHA1.to_hex_short (fst (BS.min_elt found)))
+         in
+         debug "got %d nodes from %s (%s), useful %d%s"
+           (List.length nodes) (SHA1.to_hex_short id) (Addr.to_string addr)
+           inserted s;
+         t)
+      (fun exn ->
+         debug "timeout from %s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr);
+         Lwt.return ())
+  in
+  begin match nodes with
+  | None ->
+    let _, t = loop (self_find_node dht target) in t
+  | Some nodes ->
+    Lwt_list.iter_p (query false) nodes
+  end >>= fun () ->
+  let result = BS.elements found in
+  debug "lookup_node %s done, queried %d, found %d, elapsed %ds"
+    (SHA1.to_hex_short target) (Hashtbl.length queried) (List.length result)
+    (truncate (Unix.time () -. start));
+  Lwt.return result

@@ -58,3 +58,5 @@ val find_node : table -> SHA1.t -> (SHA1.t * Addr.t) list
 val refresh : table -> (SHA1.t * (SHA1.t * Addr.t) list) list
 
 val size : table -> int
+
+val bucket_nodes : int
