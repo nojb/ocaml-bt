@@ -1,3 +1,6 @@
+0.3.0 (in progress)
+* Add DHT support
+        
 0.2 (2014-05-11)
 * Library: encryption support
 * Library: much improved peer & piece selection

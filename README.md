@@ -2,6 +2,8 @@
 
 OCaml-BT is a small BitTorrent library and client written in OCaml.  It uses Lwt for concurrency.
 
+This is a preliminary release.
+
 ## Installation
 
 The easiest way is to use [OPAM](http://opam.ocaml.org).
