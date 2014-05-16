@@ -30,7 +30,7 @@ let find (s : string) (bc : t) : t =
   | Dict d ->
     List.assoc s d
   | _ ->
-    invalid_arg "Bcode.find"
+    invalid_arg (Printf.sprintf "Bcode.find: key %S not found" s)
 
 let to_list = function
   | List l -> l

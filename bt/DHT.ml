@@ -122,8 +122,12 @@ let parse_response q args =
       Nodes (parse_nodes s)
     | GetPeers _ ->
       let token = Bcode.to_string (List.assoc "token" args) in
-      let peers = parse_values (Bcode.to_string (List.assoc "values" args)) in
-      let nodes = parse_nodes (Bcode.to_string (List.assoc "nodes" args)) in
+      let peers =
+        try parse_values (Bcode.to_string (List.assoc "values" args)) with Not_found -> []
+      in
+      let nodes =
+        try parse_nodes (Bcode.to_string (List.assoc "nodes" args)) with Not_found -> []
+      in
       Peers (token, peers, nodes)
     | Announce _ ->
       Pong
@@ -202,10 +206,12 @@ let encode_query id (q : query) =
         self ])
 
 let query dht addr q =
-  debug "DHT query to %s : %s" (Addr.to_string addr) (string_of_query q);
+  debug "query: %s %s" (Addr.to_string addr) (string_of_query q);
   KRPC.send_msg dht.krpc (encode_query dht.id q) addr >>= function
   | KRPC.Response (addr, args) ->
     let id, r = parse_response q args in
+    debug "query: got response from %s (%s): %s"
+      (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r);
     Lwt.return ((id, addr), r)
   | KRPC.Timeout ->
     Lwt.fail (Failure "timeout")
@@ -322,15 +328,15 @@ let answer dht secret addr name args =
       let token = make_token addr ih (Secret.current secret) in
       let peers = self_get_peers dht ih in
       let nodes = self_find_node dht ih in
-      debug "answer with %d peers and %d nodes" (List.length peers) (List.length nodes);
+      debug "answer: %d peers and %d nodes" (List.length peers) (List.length nodes);
       Peers (token, peers, nodes)
     | Announce (ih, port, token) ->
       if not (valid_token addr ih secret token) then
-        failwith (Printf.sprintf "invalid token %S" token);
+        failwith (Printf.sprintf "answer: invalid token %S" token);
       store dht ih (Addr.ip addr, port);
       Pong
   in
-  debug "DHT response to %s (%s) : %s"
+  debug "answer: %s (%s) : %s"
     (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r);
   encode_response dht.id r
 
@@ -354,25 +360,23 @@ let create port =
 
 let rec refresh dht =
   let ids = Kademlia.refresh dht.rt in
-  debug "will refresh %d buckets" (List.length ids);
+  debug "refresh: %d buckets" (List.length ids);
   let cb prev_id (n, l) =
     let id, addr = n in
     update dht Kademlia.Good id addr; (* replied *)
     if SHA1.compare id prev_id <> 0 then begin
-      debug "refresh: node %s (%s) changed id (was %s)"
-        (SHA1.to_hex_short id) (Addr.to_string addr) (SHA1.to_hex_short prev_id);
+      debug "refresh: node %s changed id (was %s)" (string_of_node n) (SHA1.to_hex_short prev_id);
       update dht Kademlia.Bad prev_id addr
     end;
-    debug "refresh: got %d nodes from %s (%s)"
-      (List.length l) (SHA1.to_hex_short id) (Addr.to_string addr);
+    debug "refresh: got %d nodes from %s" (List.length l) (string_of_node n);
     List.iter (fun (id, addr) -> update dht Kademlia.Unknown id addr) l
   in
   Lwt_list.iter_p (fun (target, nodes) ->
-    Lwt_list.iter_p (fun (id, addr) ->
+    Lwt_list.iter_p (fun n ->
       Lwt.catch
-        (fun () -> find_node dht addr target >|= cb id)
+        (fun () -> let id, addr = n in find_node dht addr target >|= cb id)
         (fun exn ->
-           debug ~exn "refresh: find_node error %s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr);
+           debug ~exn "refresh: find_node error %s" (string_of_node n);
            Lwt.return ()))
       nodes) ids >>= fun () ->
   Lwt_unix.sleep 60.0 >>= fun () -> refresh dht
@@ -449,7 +453,7 @@ module BoundedSet = struct
 end
 
 let lookup_node dht ?nodes target =
-  debug "lookup %s" (SHA1.to_hex_short target);
+  debug "lookup_node: %s" (SHA1.to_hex_short target);
   let start = Unix.time () in
   let queried = Hashtbl.create 13 in
   let module BS = BoundedSet.Make
@@ -466,22 +470,22 @@ let lookup_node dht ?nodes target =
         if BS.insert found node then acc+1 else acc) 0 nodes
     in
     let n = ref 0 in
-    let res = ref (Lwt.return ()) in
-    let t =
-      try
-        BS.iter begin fun node ->
-          if alpha = !n || Hashtbl.mem queried node then raise Exit;
+    let res = ref [] in
+    begin try
+      BS.iter begin fun node ->
+        if alpha = !n then raise Exit;
+        if not (Hashtbl.mem queried node) then begin
           incr n;
-          res := Lwt.join [!res; query true node]
-        end found;
-        !res
-      with
-      | Exit -> !res
-    in
-    inserted, t
+          res := (query true node) :: !res;
+        end
+      end found
+    with
+    | Exit -> ()
+    end;
+    inserted, Lwt.join !res
   and query store n =
     Hashtbl.add queried n true;
-    debug "will query node %s" (string_of_node n);
+    debug "lookup_node: will query node %s" (string_of_node n);
     Lwt.catch
       (fun () ->
          let _, addr = n in
@@ -493,10 +497,10 @@ let lookup_node dht ?nodes target =
            if BS.is_empty found then ""
            else Printf.sprintf ", best %s" (SHA1.to_hex_short (fst (BS.min_elt found)))
          in
-         debug "got %d nodes from %s, useful %d%s" (List.length nodes) (string_of_node n) inserted s;
+         debug "lookup_node: got %d nodes from %s, useful %d%s" (List.length nodes) (string_of_node n) inserted s;
          t)
       (fun exn ->
-         debug "timeout from %s" (string_of_node n);
+         debug "lookup_node: timeout from %s" (string_of_node n);
          Lwt.return ())
   in
   begin match nodes with
@@ -562,6 +566,7 @@ let bootstrap dht routers =
   (* loop routers (List.length l >= Kademlia.bucket_nodes) *)
 
 let bootstrap_nodes =
-  [ "router.utorrent.com", 6881;
-    "router.transmission.com", 6881;
-    "router.bittorrent.com", 6881 ]
+  (* [ "router.utorrent.com", 6881; *)
+    (* "router.transmission.com", 6881; *)
+    [ "router.bittorrent.com", 6881 ]
+    (* [ "dht.transmissionbt.com", 6881 ] *)

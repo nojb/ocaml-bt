@@ -27,10 +27,11 @@ type status =
 
 type table
 
+type node_info = SHA1.t * Addr.t
+
 val create : SHA1.t -> table
 
-(* type ping_fun = Addr.t -> (SHA1.t option -> unit) -> unit *)
-type ping_fun = Addr.t -> ((SHA1.t * Addr.t) option -> unit) -> unit
+type ping_fun = Addr.t -> (node_info option -> unit) -> unit
 
 
 val update : table -> ping_fun -> status -> SHA1.t -> Addr.t -> unit
@@ -53,9 +54,9 @@ val update : table -> ping_fun -> status -> SHA1.t -> Addr.t -> unit
     was received) or ``Bad'' (if no response was received).  Once all the
     ``Unknown'' nodes have been dealt with, the insertion is tried again. *)
 
-val find_node : table -> SHA1.t -> (SHA1.t * Addr.t) list
+val find_node : table -> SHA1.t -> node_info list
 
-val refresh : table -> (SHA1.t * (SHA1.t * Addr.t) list) list
+val refresh : table -> (SHA1.t * node_info list) list
 
 val size : table -> int
 

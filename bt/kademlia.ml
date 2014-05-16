@@ -25,6 +25,8 @@ let debug ?exn fmt = Log.debug section ?exn fmt
 let error ?exn fmt = Log.error section ?exn fmt
 let info ?exn fmt = Log.info section ?exn fmt
 
+type node_info = SHA1.t * Addr.t
+
 let node_period = 15.0 *. 60.0
 
 let bucket_nodes = 8
@@ -137,15 +139,15 @@ let replace_bucket_node b status id addr i n =
   end
 
 let split_bucket b =
-  debug "split %s %s" (SHA1.to_hex_short b.lo) (SHA1.to_hex_short b.hi);
   let mid = split b.lo b.hi in
+  debug "split [lo %s] [hi %s] [mid %s]" (SHA1.to_hex b.lo) (SHA1.to_hex b.hi) (SHA1.to_hex mid);
   let nodes1, nodes2 = List.partition (fun n -> SHA1.compare n.id mid < 0) (Array.to_list b.nodes) in
   (* FIXME *)
   let n1 = { lo = b.lo; hi = mid; last_change = b.last_change; nodes = Array.of_list nodes1 } in
   let n2 = { lo = succ mid; hi = b.hi; last_change = b.last_change; nodes = Array.of_list nodes2 } in
   N (L n1, mid, L n2)
 
-type ping_fun = Addr.t -> ((SHA1.t * Addr.t) option -> unit) -> unit
+type ping_fun = Addr.t -> (node_info option -> unit) -> unit
 
 let rec update table (ping : ping_fun) status id addr =
   let rec loop = function

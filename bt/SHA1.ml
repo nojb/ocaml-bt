@@ -62,14 +62,15 @@ let digest_of_string s =
   Cryptokit.hash_string (Cryptokit.Hash.sha1 ()) s
     
 let to_z s =
+  (* [s] is little-endian ? FIXME *)
   Z.of_bits s
 
 let of_z z =
   let s = String.create 20 in
   let zs = Z.to_bits z in
   let l = String.length zs in
-  assert (l <= 20);
-  String.blit (Z.to_bits z) 0 s 0 l;
+  (* [zs] is little-endian *)
+  String.blit (Z.to_bits z) 0 s 0 (min 20 l);
   s
 
 let distance s1 s2 : Z.t =

@@ -66,10 +66,10 @@ let decode s =
     | "e" ->
       begin match Bcode.to_list (Bcode.find "e" bc) with
       | Bcode.Int n :: Bcode.String s :: _ -> Error (n, s)
-      | _ -> failwith "KRPC.decode"
+      | _ -> failwith "KRPC.decode: bad fields for 'e' entry"
       end
     | _ ->
-      failwith "KRPC.decode"
+      failwith (Printf.sprintf "KRPC.decode: unknown message type y %S" y)
   in
   (t, msg)
 
