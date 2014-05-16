@@ -47,9 +47,20 @@ let to_int = function
   | _ ->
     invalid_arg "Bcode.to_int"
 
+let rec sprint bc =
+  let strl sep f l = String.concat sep (List.map f l) in
+  match bc with
+  | String s -> Printf.sprintf "%S" s
+  | Int n -> Printf.sprintf "%Ld" n
+  | Dict d ->
+    let aux (k, v) = Printf.sprintf "%s: %s" k (sprint v) in
+    "{" ^ (strl ";" aux d) ^ "}"
+  | List l -> "[" ^ (strl "," sprint l) ^ "]"
+
 let to_string = function
   | String s -> s
-  | _ -> invalid_arg "Bcode.to_string"
+  | _ as bc ->
+    invalid_arg (Printf.sprintf "Bcode.to_string: %s" (sprint bc))
 
 let to_dict = function
   | Dict d -> d

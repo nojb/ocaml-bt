@@ -18,7 +18,7 @@ let main _ =
   let handle_peers token peers =
     List.iter (fun addr ->
       incr count;
-      Printf.printf "%d: %s\n" !count (Bt.Addr.to_string addr)
+      Printf.printf "%d: %s\n%!" !count (Bt.Addr.to_string addr)
       (* if !count >= num_target then DHT.stop dht *)) peers;
     Lwt.return ()
   in

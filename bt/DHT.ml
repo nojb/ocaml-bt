@@ -99,17 +99,19 @@ let parse_nodes s =
   in
   loop s
 
-let parse_values s =
+let parse_value s =
   let s = Bitstring.bitstring_of_string s in
-  let rec loop s =
-    bitmatch s with
-    | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr);
-        rest : -1 : bitstring } ->
-      addr :: loop rest
-    | { _ } ->
-      []
-  in
-  loop s
+  Addr.of_string_compact s
+  (* bitmatch s with *)
+  (* let rec loop s = *)
+  (*   bitmatch s with *)
+  (*   | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); *)
+  (*       rest : -1 : bitstring } -> *)
+  (*     addr :: loop rest *)
+  (*   | { _ } -> *)
+  (*     [] *)
+  (* in *)
+  (* loop s *)
 
 let parse_response q args =
   let sha1 k args = SHA1.from_bin (Bcode.to_string (List.assoc k args)) in
@@ -122,7 +124,12 @@ let parse_response q args =
     | GetPeers _ ->
       let token = Bcode.to_string (List.assoc "token" args) in
       let peers =
-        try parse_values (Bcode.to_string (List.assoc "values" args)) with Not_found -> []
+        try
+          let values = Bcode.to_list (List.assoc "values" args) in
+          let values = List.map Bcode.to_string values in
+          List.map parse_value values
+        with
+        | Not_found -> []
       in
       let nodes =
         try parse_nodes (Bcode.to_string (List.assoc "nodes" args)) with Not_found -> []
@@ -566,6 +573,7 @@ let bootstrap dht routers =
 
 let bootstrap_nodes =
   (* [ "router.utorrent.com", 6881; *)
-    (* "router.transmission.com", 6881; *)
-    [ "router.bittorrent.com", 6881 ]
-    (* [ "dht.transmissionbt.com", 6881 ] *)
+  (* "router.transmission.com", 6881; *)
+  [ "router.bittorrent.com", 6881;
+    "dht.transmissionbt.com", 6881 ]
+   

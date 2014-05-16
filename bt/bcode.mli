@@ -38,3 +38,5 @@ val encode : t -> string
 
 (* val from_file : string -> t *)
 (* val from_string : string -> t *)
+
+val sprint : t -> string
