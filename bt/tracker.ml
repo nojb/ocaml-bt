@@ -21,8 +21,7 @@
 
 let section = Log.make_section "Tracker"
 
-let error ?exn fmt = Log.error section ?exn fmt
-let info ?exn fmt = Log.info section ?exn fmt
+let debug ?exn fmt = Log.debug section ?exn fmt
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -116,7 +115,7 @@ module UdpTracker = struct
               if n >= 8 then
                 failwith_lwt "connect_request: too many retries"
               else begin
-                info "UDP connect request timeout after %d s; retrying..."
+                debug "udp connect request timeout after %ds; retrying..."
                   (truncate (15.0 *. 2.0 ** float n));
                 loop (Connect_request (n+1))
               end
@@ -136,7 +135,7 @@ module UdpTracker = struct
           (fun () -> loop (Announce_response trans_id))
           (function
             | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-              info "ANNOUNCE UDP announce request timeout after %d s; retrying..."
+              debug "udp announce request timeout after %ds; retrying..."
                 (truncate (15.0 *. 2.0 ** float n));
               if n >= 2 then
                 loop (Connect_request (n+1))
@@ -233,7 +232,7 @@ module HttpTracker = struct
     let uri = add_param_maybe uri "event" string_of_event event in
     Cohttp_lwt_unix.Client.get uri >>= fun (_, body) ->
     Cohttp_lwt_body.to_string body >>= fun body ->
-    info "Received response from HTTP tracker body: %S" body;
+    debug "received response from http tracker: %S" body;
     try
       Bcode.decode body |> decode_response
     with exn ->
@@ -241,7 +240,7 @@ module HttpTracker = struct
 end
 
 let query tr ~ih ?up ?down ?left ?event ~port ~id =
-  info "announcing on %S" (Uri.to_string tr);
+  debug "announcing on %S" (Uri.to_string tr);
   match Uri.scheme tr with
   | Some "http" | Some "https" ->
     HttpTracker.announce tr ih ?up ?down ?left ?event port id
@@ -277,8 +276,8 @@ module Tier = struct
           tier := tr :: List.rev_append failtrs rest;
           Lwt.return resp
         with
-        | e ->
-          error ~exn:e "error while announcing on %S" (Uri.to_string tr);
+        | exn ->
+          debug ~exn "error while announcing on %S" (Uri.to_string tr);
           loop (tr :: failtrs) rest
     in
     loop [] !tier

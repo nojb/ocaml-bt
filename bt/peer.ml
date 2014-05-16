@@ -22,8 +22,6 @@
 let section = Log.make_section "Peer"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-let error ?exn fmt = Log.error section ?exn fmt
-let info ?exn fmt = Log.info section ?exn fmt
     
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -80,12 +78,18 @@ type meta_info =
   | HasMeta of has_meta_info
   | NoMeta of no_meta_info
 
+let string_of_node (id, addr) =
+  Printf.sprintf "%s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr)
+
+let strl f l =
+  "[" ^ String.concat " " (List.map f l) ^ "]"
+
 type t = {
-  addr : Addr.t;
+  node : SHA1.t * Addr.t;
   sock : IO.t;
   output : Lwt_io.output_channel;
   input : Lwt_io.input_channel;
-  mutable id : SHA1.t;
+  (* mutable id : SHA1.t; *)
   mutable am_choking : bool;
   mutable am_interested : bool;
   mutable peer_choking : bool;
@@ -227,19 +231,21 @@ let got_choke p =
 
 let got_unchoke p =
   if p.peer_choking then begin
-    debug "UNCHOKE %s" (Addr.to_string p.addr);
+    debug "%s is no longer choking us" (string_of_node p.node);
     p.peer_choking <- false;
     Lwt_condition.broadcast p.on_unchoke ()
   end
 
 let got_interested p =
   if not p.peer_interested then begin
+    debug "%s is interested in us" (string_of_node p.node);
     p.peer_interested <- true;
     signal p Interested
   end
 
 let got_not_interested p =
   if p.peer_interested then begin
+    debug "%s is no longer interested in us" (string_of_node p.node);
     p.peer_interested <- false;
     signal p NotInterested
   end
@@ -300,7 +306,7 @@ let got_extended_handshake p bc =
   List.iter (fun (name, id) ->
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
-  info "%s: supports %s" (Addr.to_string p.addr) (String.concat " " (List.map fst m));
+  debug "%s supports %s" (string_of_node p.node) (strl fst m);
   if Hashtbl.mem p.extensions "ut_metadata" then
     signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int));
   Lwt_condition.broadcast p.on_ltep_handshake ()
@@ -341,7 +347,7 @@ let got_message p m =
 let reader_loop p =
   let input = Lwt_stream.from
       (fun () -> Wire.read p.input >>= fun msg ->
-        debug "%s >>> %s" (Addr.to_string p.addr) (Wire.string_of_message msg);
+        debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg);
         Lwt.return (Some msg))
   in
   let rec loop f =
@@ -375,7 +381,7 @@ let writer_loop p =
     | `Ready m ->
       Wire.write p.output m >>= fun () ->
       Lwt_io.flush p.output >>= fun () ->
-      debug "%s <<< %s" (Addr.to_string p.addr) (Wire.string_of_message m);
+      debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m);
       (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
       loop ()
   in
@@ -388,10 +394,10 @@ let supports_ut_pex p =
   Hashtbl.mem p.extensions "ut_pex"
 
 let id p =
-  p.id
+  fst p.node
 
 let addr p =
-  p.addr
+  snd p.node
 
 let send_extended_handshake p =
   let m =
@@ -427,41 +433,38 @@ let client_interested p =
 let send_choke p =
   if not p.am_choking then begin
     p.am_choking <- true;
-    info "choking peer (addr=%s)" (Addr.to_string p.addr);
+    debug "choking %s" (string_of_node p.node);
     send_message p Wire.CHOKE
   end
 
 let send_unchoke p =
   if p.am_choking then begin
     p.am_choking <- false;
-    info "unchoking peer (addr=%s)" (Addr.to_string p.addr);
+    debug "no longer choking %s" (string_of_node p.node);
     send_message p Wire.UNCHOKE
   end
 
 let send_interested p =
   if not p.am_interested then begin
     p.am_interested <- true;
-    info "interested in peer (addr=%s)" (Addr.to_string p.addr);
+    debug "interested in %s" (string_of_node p.node);
     send_message p Wire.INTERESTED
   end
 
 let send_not_interested p =
   if p.am_interested then begin
     p.am_interested <- false;
-    info "not interested in peer (addr=%s)" (Addr.to_string p.addr);
+    debug "no longer interested in %s" (string_of_node p.node);
     send_message p Wire.NOT_INTERESTED
   end
 
 let send_have p idx =
-  if not (has_piece p idx) then (* Bits.is_set p.have idx) then*)
+  if not (has_piece p idx) then
     send_message p (Wire.HAVE idx)
 
 let send_have_bitfield p bits =
   send_message p (Wire.BITFIELD bits)
-  (* for i = 0 to Bits.length bits - 1 do *)
-  (*   if Bits.is_set bits i then send_have p i *)
-  (* done *)
-
+  
 let send_cancel p (i, j) =
   match p.info with
   | HasMeta n ->
@@ -533,9 +536,8 @@ let start p =
                            wrap (writer_loop p);
                            wrap (request_metadata_loop p);
                            wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
-      (fun e ->
-         error ~exn:e "peer input/output error (addr=%s,id=%s)"
-           (Addr.to_string p.addr) (SHA1.to_hex_short p.id);
+      (fun exn ->
+         debug ~exn "%s read/write error" (string_of_node p.node);
          Lwt.return ())
     >>= fun () ->
     IO.close p.sock >|= fun () ->
@@ -569,7 +571,7 @@ let create sock addr id handle_event info =
   let input, output = IO.in_channel sock, IO.out_channel sock in
   let extensions = Hashtbl.create 17 in
   let p =
-    { sock; addr; input; output; id;
+    { sock; node = (id, addr); input; output;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
       extbits = Bits.create (8 * 8);
@@ -648,7 +650,7 @@ let send_ut_pex p added dropped =
       "dropped", Bcode.String (c dropped) ]
   in
   send_extended p id (Bcode.encode (Bcode.Dict d));
-  info "%s: sent pex: added: %d dropped: %d" (Addr.to_string p.addr)
+  debug "sent pex to %s added %d dropped %d" (string_of_node p.node)
     (List.length added) (List.length dropped)
 
 let send_pex p pex =
@@ -662,3 +664,6 @@ let send_pex p pex =
 let is_snubbing p =
   let now = Unix.time () in
   now -. p.piece_data_time <= 30.0
+
+let to_string p =
+  string_of_node p.node

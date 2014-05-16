@@ -21,8 +21,7 @@
 
 let section = Log.make_section "Handshake"
 
-let info ?exn fmt = Log.info section ?exn fmt
-let error ?exn fmt = Log.error section ?exn fmt
+let debug ?exn fmt = Log.debug section ?exn fmt
     
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -109,6 +108,11 @@ type t = {
   sock : IO.t;
   on_abort : unit Lwt_condition.t
 }
+
+let to_string hs =
+  Printf.sprintf "%s [%s]"
+    (Addr.to_string (IO.addr hs.sock))
+    (if hs.incoming then "incoming" else "outgoing")
 
 let keyA = "keyA"
   
@@ -224,7 +228,7 @@ let send_payload hs shared_secret =
   IO.write_string hs.sock vc >>= fun () ->
   let crypto_provide = crypto_provide hs.mode in
   IO.write_int32 hs.sock crypto_provide >>= fun () ->
-  info "wrote crypto_provide(%lX)" crypto_provide;
+  debug "sent crypto_provide(%lX) to %s" crypto_provide (to_string hs);
   IO.write_int16 hs.sock 0 >>= fun () ->
   let m = handshake_message hs.id hs.skey in
   IO.write_int16 hs.sock (String.length m) >>= fun () ->
@@ -430,7 +434,7 @@ let run hs f =
     (fun () ->
        Lwt.pick [(Lwt_condition.wait hs.on_abort >>= fun () -> Lwt.fail Abort); f hs])
     (fun exn ->
-       error ~exn "handshake error"; hs.callback Failed; Lwt.return ())
+       debug ~exn "error"; hs.callback Failed; Lwt.return ())
 
 let outgoing ~id ~ih mode sock callback =
   let hs = create ~id ~ih mode sock callback false in

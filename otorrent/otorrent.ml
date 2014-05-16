@@ -21,8 +21,7 @@
 
 let section = Bt.Log.make_section "otorrent"
 
-let error ?exn fmt = Bt.Log.error section ?exn fmt
-let info ?exn fmt = Bt.Log.info section ?exn fmt
+let debug ?exn fmt = Bt.Log.debug section ?exn fmt
 
 open Cmdliner
 
@@ -53,7 +52,7 @@ let print_stats stats =
     stats.Stats.num_connected_peers stats.Stats.num_total_peers
     stats.Stats.have_pieces stats.Stats.total_pieces
 
-let debug =
+let debug_ =
   let doc = "Enable debug output (note: this generates a LOT of output)" in
   Arg.(value & flag & info ["d"; "debug"] ~doc)
 
@@ -74,14 +73,14 @@ let download magnet =
        let t = Bt.Client.start bt in
        print_stats_header ();
        Lwt.pick [print_stats_loop bt; t])
-    (fun exn -> error ~exn "fatal error during download"; Lwt.return ())
+    (fun exn -> debug ~exn "fatal error during download"; Lwt.return ())
 
-let download_all debug magnets =
-  if debug then Bt.Log.log_level := Bt.Log.Debug;
+let download_all debug_ magnets =
+  Bt.Log.active := debug_;
   Lwt_main.run (Lwt_list.iter_p download magnets)
 
 let download_t =
-  Term.(pure download_all $ debug $ magnets)
+  Term.(pure download_all $ debug_ $ magnets)
 
 let info =
   let doc = "download torrent(s)" in

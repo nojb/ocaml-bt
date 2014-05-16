@@ -40,44 +40,27 @@ type message =
   | ALLOWED of int list
   | EXTENDED of int * string
 
-let string_of_message = function
-  | KEEP_ALIVE ->
-    "KEEP_ALIVE"
-  | CHOKE ->
-    "CHOKE"
-  | UNCHOKE ->
-    "UNCHOKE"
-  | INTERESTED ->
-    "INTERESTED"
-  | NOT_INTERESTED ->
-    "NOT_INTERESTED"
-  | HAVE i ->
-    sprintf "HAVE(i=%d)" i
-  | BITFIELD b ->
-    sprintf "BITFIELD(count=%d)" (Bits.count b)
-  | REQUEST (i, off, len) ->
-    sprintf "REQUEST(i=%d,off=%d,len=%d)" i off len
-  | PIECE (i, off, _) ->
-    sprintf "PIECE(i=%d,off=%d)" i off
-  | CANCEL (i, off, len) ->
-    sprintf "CANCEL(i=%d,off=%d,len=%d)" i off len
-  | PORT port ->
-    sprintf "PORT(port=%d)" port
-  | HAVE_ALL ->
-    "HAVE_ALL"
-  | HAVE_NONE ->
-    "HAVE_NONE"
-  | SUGGEST i ->
-    sprintf "SUGGEST_PIECE(i=%d)" i
-  | REJECT (i, off, len) ->
-    sprintf "REJECT_PIECE(i=%d,off=%d,len=%d)" i off len
-  | ALLOWED pieces ->
-    sprintf "ALLOWED_FAST(%s)" (String.concat "," (List.map string_of_int pieces))
-  | EXTENDED (id, _) ->
-    sprintf "EXTENDED(id=%d)" id
+let strl f l =
+  "[" ^ String.concat " " (List.map f l) ^ "]"
 
-let sprint m () =
-  string_of_message m
+let string_of_message = function
+  | KEEP_ALIVE -> "keep alive"
+  | CHOKE -> "choke"
+  | UNCHOKE -> "unchoke"
+  | INTERESTED -> "interested"
+  | NOT_INTERESTED -> "not interested"
+  | HAVE i -> sprintf "have %d" i
+  | BITFIELD b -> sprintf "bitfield with %d/%d pieces" (Bits.count b) (Bits.length b)
+  | REQUEST (i, off, len) -> sprintf "request %d off:%d len:%d" i off len
+  | PIECE (i, off, _) -> sprintf "piece %d off:%d" i off
+  | CANCEL (i, off, len) -> sprintf "cancel %d off:%d len:%d" i off len
+  | PORT port -> sprintf "port %d" port
+  | HAVE_ALL -> "have all"
+  | HAVE_NONE -> "have none"
+  | SUGGEST i -> sprintf "suggest %d" i
+  | REJECT (i, off, len) -> sprintf "reject %d off:%d len:%d" i off len
+  | ALLOWED pieces -> sprintf "allowed %s" (strl string_of_int pieces)
+  | EXTENDED (id, _) -> sprintf "extended %d" id
 
 let put' = function
   | KEEP_ALIVE ->

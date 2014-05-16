@@ -22,8 +22,6 @@
 let section = Log.make_section "Torrent"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-let info ?exn fmt = Log.info section ?exn fmt
-let notice ?exn fmt = Log.notice section ?exn fmt
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -73,7 +71,7 @@ let create meta handle =
   let start_time = Unix.gettimeofday () in
   loop 0 (Metadata.total_length dl.meta) 0 >>= fun (good, amount_left) ->
   let end_time = Unix.gettimeofday () in
-  notice "torrent initialisation complete (good=%d,total=%d,left=%Ld,secs=%.0f)"
+  debug "loaded, %d/%d good pieces, %Ld bytes left, in %.0fs"
     good numpieces amount_left (end_time -. start_time);
   dl.amount_left <- amount_left;
   Lwt.return dl
@@ -119,7 +117,7 @@ let got_block t peer idx b s =
     Lwt.async doit
   end
   else
-    info "received a block that we already have"
+    debug "received a block we already have"
   
 let down self =
   self.down

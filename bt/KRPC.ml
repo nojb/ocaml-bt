@@ -21,7 +21,7 @@
 
 let section = Log.make_section "KRPC"
 
-let error ?exn fmt = Log.error section ?exn fmt
+let debug ?exn fmt = Log.debug section ?exn fmt
 
 let (>>=) = Lwt.(>>=)
 
@@ -121,7 +121,7 @@ let read_one_packet krpc =
   | Error (code, msg) ->
     begin match Assoc2.find krpc.pending addr t with
     | None -> 
-      error "no t:%S for %s" t (Addr.to_string addr)
+      debug "no t:%S for %s" t (Addr.to_string addr)
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;
       Lwt.wakeup w Error
@@ -133,7 +133,7 @@ let read_one_packet krpc =
   | Response args ->
     begin match Assoc2.find krpc.pending addr t with
     | None ->
-      error "no t:%S for %s" t (Addr.to_string addr);
+      debug "no t:%S for %s" t (Addr.to_string addr);
       Lwt.return ()
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;

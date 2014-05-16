@@ -22,8 +22,6 @@
 let section = Log.make_section "Kademlia"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-let error ?exn fmt = Log.error section ?exn fmt
-let info ?exn fmt = Log.info section ?exn fmt
 
 type node_info = SHA1.t * Addr.t
 
@@ -114,7 +112,7 @@ let update_bucket_node b status id addr i n =
     touch b;
     raise Exit
   | true, false | false, true ->
-    info "conflict [%s] with %s %s, replacing"
+    debug "conflict [%s] with %s %s, replacing"
       (string_of_node n) (SHA1.to_hex_short id) (Addr.to_string addr);
     b.nodes.(i) <- make_node id addr status;
     touch b;
@@ -198,10 +196,10 @@ let insert_node table node =
       Array.iter begin fun n ->
         match SHA1.compare n.id node.id = 0, n.addr = node.addr with
         | true, true ->
-          info "insert_node: duplicate entry %s" (string_of_node n);
+          debug "insert_node: duplicate entry %s" (string_of_node n);
           raise Exit
         | true, false | false, true ->
-          info "insert_node: conflict [%s] with [%s]" (string_of_node n) (string_of_node node);
+          debug "insert_node: conflict [%s] with [%s]" (string_of_node n) (string_of_node node);
           raise Exit
         | _ -> ()
       end b.nodes;
@@ -228,7 +226,7 @@ let insert_node table node =
         N (L n1, mid, L n2)
       end
       else begin
-        info "insert_node: bucket full [%s]" (string_of_node node);
+        debug "insert_node: bucket full [%s]" (string_of_node node);
         raise Exit
       end
   in

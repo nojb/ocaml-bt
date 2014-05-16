@@ -50,3 +50,6 @@ val info_hash : t -> SHA1.t
                        
 val length : t -> int
 (** The length of the bencoded metainfo dictionary. *)
+
+val piece_count : t -> int
+(** The total number of pieces. *)

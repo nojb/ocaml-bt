@@ -38,10 +38,7 @@ type message =
   | ALLOWED of int list
   | EXTENDED of int * string
 
-(* exception BadMsg of int * int *)
-
 val string_of_message : message -> string
-val sprint : message -> unit -> string
 val read : Lwt_io.input_channel -> message Lwt.t
 val write : Lwt_io.output_channel -> message -> unit Lwt.t
 

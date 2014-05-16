@@ -22,7 +22,6 @@
 let section = Log.make_section "DHT"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-let info ?exn fmt = Log.info section ?exn fmt
     
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -534,12 +533,12 @@ let query_peers dht id k =
 let bootstrap dht addr =
   ping dht addr >>= function
   | Some n ->
-    info "bootstrap node %s (%s) is up" (string_of_node n) (Addr.to_string addr);
+    debug "bootstrap node %s (%s) is up" (string_of_node n) (Addr.to_string addr);
     lookup_node dht ~nodes:[n] dht.id >>= fun l ->
     debug "bootstrap via %s : found %s" (Addr.to_string addr) (strl string_of_node l);
     Lwt.return (List.length l >= Kademlia.bucket_nodes)
   | None ->
-    info "bootstrap node %s is down" (Addr.to_string addr);
+    debug "bootstrap node %s is down" (Addr.to_string addr);
     Lwt.return false
 
 let bootstrap dht (host, port) =

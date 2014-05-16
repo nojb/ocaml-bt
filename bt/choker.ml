@@ -21,7 +21,7 @@
 
 let section = Log.make_section "Choker"
 
-let info ?exn fmt = Log.info section ?exn fmt
+let debug ?exn fmt = Log.debug section ?exn fmt
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -87,7 +87,6 @@ let rechoke_downloads bt =
   PeerMgr.iter_peers doit bt.peer_mgr
   
 let rec rechoke_pulse bt optimistic rateiter =
-  info "rechoking (optimistic=%d,rateiter=%d)" optimistic rateiter;
   let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
   let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in
   unchoke_peers bt (optimistic = 0);

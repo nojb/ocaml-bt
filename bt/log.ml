@@ -21,27 +21,11 @@
 
 type section = string
 
-type level =
-  | Debug
-  | Info
-  | Notice
-  | Warning
-  | Error
-  | Fatal
-
-let string_of_level = function
-  | Debug -> "debug"
-  | Info -> "info"
-  | Notice -> "notice"
-  | Warning -> "warning"
-  | Error -> "error"
-  | Fatal -> "fatal"
-
 let make_section name = name
 
-let log_level = ref Debug
-    
-let render template level section ?exn msg =
+let active = ref true
+
+let render template section ?exn msg =
   let now = Unix.gettimeofday () in
   let msecs, now = modf now in
   let tm = Unix.localtime now in
@@ -56,8 +40,6 @@ let render template level section ?exn msg =
     | "time" ->
       Printf.sprintf "%02d:%02d:%02d.%03d"
         tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec (truncate (msecs *. 1000.0))
-    | "level" ->
-      string_of_level level
     | "section" ->
       section
     | "exn" ->
@@ -70,16 +52,8 @@ let render template level section ?exn msg =
   end template;
   Buffer.contents b
 
-let log level section ?exn fmt =
-  let template = "[$(date) $(time)] $(section): $(level): $(message)$(exn)" in
-  Printf.ksprintf begin fun msg ->
-    if level >= !log_level then
-      prerr_endline (render template level section ?exn msg)
-  end fmt
-
-let debug section ?exn fmt = log Debug section ?exn fmt
-let info section ?exn fmt = log Info section ?exn fmt
-let notice section ?exn fmt = log Notice section ?exn fmt
-let warning section ?exn fmt = log Warning section ?exn fmt
-let error section ?exn fmt = log Error section ?exn fmt
-let fatal section ?exn fmt = log Fatal section ?exn fmt
+let debug section ?exn fmt =
+  let template = "[$(date) $(time)] $(section): $(message)$(exn)" in
+  Printf.ksprintf
+    (fun msg -> if !active then prerr_endline (render template section ?exn msg))
+    fmt

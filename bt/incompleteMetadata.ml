@@ -94,3 +94,5 @@ let is_complete p =
 let info_hash { ih } = ih
 
 let length { length } = length
+
+let piece_count m = Array.length m.pieces_needed

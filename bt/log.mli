@@ -19,43 +19,17 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(** Simple Log system. Messages are printed out only if their level (see
-    {!level}) is higher than the value of {!log_level}. *)
+(** Simple Log system.  Messages are printed if {!debug} is [true]. *)
 
 type section
 (** Sections.  These are printed as headers in the log message. *)
-
-(** Log levels *)
-type level =
-  | Debug
-  | Info
-  | Notice
-  | Warning
-  | Error
-  | Fatal
 
 val make_section : string -> section
 (** Make a section with the given name.  The name will appear in the header of
     the log message. *)
 
-val log_level : level ref
-(** The current log level.  Messages with a level at least this will get printed
-    on [stderr]. *)
+val active : bool ref
+(** Whether to print debug messages on [stderr] or not. *)
 
 val debug : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
 (** Log a debug message. *)
-  
-val info : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
-(** Log an informational message. *)
-  
-val notice : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
-(** Log an informational message. *)
-  
-val warning : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
-(** Log a warning. *)
-  
-val error : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
-(** Log an error. *)
-  
-val fatal : section -> ?exn:exn -> ('a, unit, string, unit) format4 -> 'a
-(** Log a fatal message. *)

@@ -190,3 +190,6 @@ val send_pex : t -> Addr.t list -> unit
 
 val is_snubbing : t -> bool
 (** Whether the peer has sent any block in the last 30 seconds. *)
+
+val to_string : t -> string
+(** Print out the peer's id (in shortened form) and address. *)

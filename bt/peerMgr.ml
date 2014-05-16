@@ -22,10 +22,6 @@
 let section = Log.make_section "PeerMgr"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-let error ?exn fmt = Log.error section ?exn fmt
-let info ?exn fmt = Log.info section ?exn fmt
-let notice ?exn fmt = Log.notice section ?exn fmt
-let warning ?exn fmt = Log.warning section ?exn fmt
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -102,13 +98,13 @@ let handshake_done bt sock res =
   Hashtbl.remove bt.connecting (IO.addr sock);
   match res with
   | Handshake.Success (id, exts) ->
-    notice "handshake [%s] successful (addr=%s,ih=%s,id=%s)"
+    debug "%s handshake with %s (%s) successful, ih %s"
       (if IO.is_encrypted sock then "encrypted" else "plain")
-      (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih) (SHA1.to_hex_short id);
+      (SHA1.to_hex_short id) (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih);
     peer_joined bt sock (IO.addr sock) bt.ih id exts
   | Handshake.Failed ->
     Lwt.async (fun () -> IO.close sock);
-    error "handshake failed"
+    debug "handshake failed"
 
 let rec connect_peer bt addr =
   let sock = IO.create addr in
@@ -119,21 +115,21 @@ let rec connect_peer bt addr =
            Handshake.(Crypto Prefer) sock (handshake_done bt sock)
        in
        Lwt.return ())
-    (fun e ->
-       error ~exn:e "%s: could not connect" (Addr.to_string addr);
+    (fun exn ->
+       debug ~exn "could not connect to %s" (Addr.to_string addr);
        Hashtbl.remove bt.connecting addr;
        IO.close sock)
       (* Lwt.return ()) *)
 
 let peer_finished bt p =
-  info "peer disconnected (addr=%s)" (Addr.to_string (Peer.addr p));
+  debug "peer %s disconnected" (Peer.to_string p);
   (* Peer.close p; *)
   Hashtbl.remove bt.peers (Peer.addr p)
 
 let handle_incoming_peer bt sock addr =
   if not (know_peer bt addr) then
     if need_more_peers bt then begin
-      info "contacting incoming peer (addr=%s)" (Addr.to_string addr);
+      debug "will contact incoming peer %s" (Addr.to_string addr);
       Hashtbl.add bt.connecting addr ();
       let hs =
         Handshake.incoming ~id:bt.id ~ih:bt.ih Handshake.(Crypto Prefer) sock
@@ -141,14 +137,13 @@ let handle_incoming_peer bt sock addr =
       in
       ()
     end else begin
-      warning "too many peers; saving incoming peer for later (addr=%s)" (Addr.to_string addr);
+      debug "too many peers, disconnecting and saving incoming peer %s" (Addr.to_string addr);
       bt.saved <- addr :: bt.saved;
       Lwt.async (fun () -> IO.close sock)
     end
 
 let handle_received_peer bt addr =
   if not (know_peer bt addr) then begin
-    warning "saving outgoing peer for later (addr=%s)" (Addr.to_string addr);
     bt.saved <- addr :: bt.saved
   end
 
@@ -174,7 +169,7 @@ let max_upload_idle_secs = 60.0 *. 5.0
 
 let is_bad_peer pm p =
   if is_seed pm && Peer.is_seed p then begin
-    debug "closing peer %s because we are both seeds" (Addr.to_string (Peer.addr p));
+    debug "closing peer %s because we are both seeds" (Peer.to_string p);
     true (* FIXME pex *)
   end
   else
@@ -188,8 +183,8 @@ let is_bad_peer pm p =
                 ((max_upload_idle_secs -. min_upload_idle_secs) *. strictness) in
     let idle_time = Unix.time () -. max (Peer.time p) (Peer.piece_data_time p) in
     if idle_time > limit then begin
-      debug "closing peer %s because it's been %d secs since we shared anything"
-        (Addr.to_string (Peer.addr p)) (truncate idle_time);
+      debug "closing peer %s because it's been %ds since we shared anything"
+        (Peer.to_string p) (truncate idle_time);
       true
     end
     else
@@ -203,7 +198,7 @@ let reconnect_pulse_delay = 0.5
 let rec reconnect_pulse bt =
   close_bad_peers bt;
   if need_more_peers bt then
-    info "reconnect_pulse: trying to connect to %d peers"
+    debug "reconnect_pulse: will try to connect to %d peers"
       (max_peer_count - (Hashtbl.length bt.peers + Hashtbl.length bt.connecting));
   while need_more_peers bt && List.length bt.saved > 0 do
     let addr = List.hd bt.saved in
