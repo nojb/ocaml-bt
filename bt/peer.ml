@@ -48,6 +48,7 @@ type event =
   | GotMetaPiece of int * string
   | RejectMetaPiece of int
   | GotPEX of (Addr.t * pex_flags) list * Addr.t list
+  | DHTPort of int
 
 type event_callback = event -> unit
 type get_metadata_func = unit -> int option
@@ -324,7 +325,10 @@ let got_request p idx off len =
     signal p (BlockRequested (idx, b))
   | _ ->
     ()
-    (* FIXME send REJECT if fast extension is supported *)
+(* FIXME send REJECT if fast extension is supported *)
+
+let got_port p i =
+  signal p (DHTPort i)
 
 let got_message p m =
   match m with
@@ -342,6 +346,7 @@ let got_message p m =
   (* | Wire.HAVE_NONE -> raise (InvalidProtocol m) *)
   | Wire.EXTENDED (0, s) -> got_extended_handshake p (Bcode.decode s)
   | Wire.EXTENDED (id, s) -> got_extended p id s
+  | Wire.PORT i -> got_port p i
   | _ -> assert false
 
 let reader_loop p =
@@ -473,6 +478,9 @@ let send_cancel p (i, j) =
     Lwt_condition.broadcast p.on_can_request ()
   | NoMeta _ ->
     failwith "send_cancel: no meta info"
+
+let send_port p i =
+  send_message p (Wire.PORT i)
 
 let request_meta_piece p idx =
   assert (idx >= 0);

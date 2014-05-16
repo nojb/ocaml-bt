@@ -88,7 +88,8 @@ let peer_joined bt sock addr ih id exts =
   in
   Peer.start !!p;
   Hashtbl.add bt.peers addr !!p;
-  if Bits.is_set exts Wire.lt_extension_bit then Peer.send_extended_handshake !!p;
+  if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake !!p;
+  if Bits.is_set exts Wire.dht_bit then Peer.send_port !!p 6881; (* FIXME fixed port *)
   match bt.info with
   | HasMeta (_, tor, _) -> Peer.send_have_bitfield !!p (Torrent.have tor)
   | NoMeta _ -> ()
@@ -197,9 +198,9 @@ let reconnect_pulse_delay = 0.5
 
 let rec reconnect_pulse bt =
   close_bad_peers bt;
-  if need_more_peers bt then
-    debug "reconnect_pulse: will try to connect to %d peers"
-      (max_peer_count - (Hashtbl.length bt.peers + Hashtbl.length bt.connecting));
+  (* if need_more_peers bt then *)
+  (* debug "reconnect_pulse: will try to connect to %d peers" *)
+  (* (max_peer_count - (Hashtbl.length bt.peers + Hashtbl.length bt.connecting)); *)
   while need_more_peers bt && List.length bt.saved > 0 do
     let addr = List.hd bt.saved in
     bt.saved <- List.tl bt.saved;

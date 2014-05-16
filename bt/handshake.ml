@@ -141,7 +141,8 @@ let proto = "BitTorrent protocol"
 
 let extended_bits =
   let bits = Bits.create (8 * 8) in
-  Bits.set bits Wire.lt_extension_bit;
+  Bits.set bits Wire.ltep_bit;
+  Bits.set bits Wire.dht_bit;
   bits
 
 let handshake_message id ih =

@@ -66,7 +66,7 @@ let download magnet =
   let bt = Bt.Client.create (Bt.Magnet.of_string magnet) in
   let rec print_stats_loop bt =
     print_stats (Bt.Client.stats bt);
-    Lwt_unix.sleep 1.0 >>= fun () -> print_stats_loop bt
+    Lwt_unix.sleep 10.0 >>= fun () -> print_stats_loop bt
   in
   Lwt.catch
     (fun () ->

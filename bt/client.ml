@@ -58,7 +58,8 @@ type t = {
   chan : event Lwt_stream.t;
   push : event -> unit;
   mutable stage : stage;
-  mutable port : int
+  mutable port : int;
+  dht : DHT.t
 }
 
 exception Cant_listen
@@ -201,6 +202,16 @@ let handle_peer_event bt p e =
     debug "got pex from %s added %d dropped %d" (Peer.to_string p)
       (List.length added) (List.length dropped);
     List.iter (fun (a, _) -> PeerMgr.handle_received_peer bt.peer_mgr a) added
+  | Peer.DHTPort i ->
+    debug "got dht port %d from %s" i (Peer.to_string p);
+    let addr, _ = Peer.addr p in
+    Lwt.async begin fun () ->
+      DHT.ping bt.dht (addr, i) >|= function
+      | Some (id, addr) ->
+        DHT.update bt.dht Kademlia.Good id addr
+      | None ->
+        debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i
+    end
   
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
@@ -296,8 +307,22 @@ let start bt =
   let port = 5000 in
   bt.port <- port;
   (* debug "starting"; *)
-  List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
+  (* List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers; *)
   PeerMgr.start bt.peer_mgr;
+  DHT.start bt.dht;
+  Lwt.async begin fun () ->
+    DHT.bootstrap bt.dht DHT.bootstrap_nodes >>= fun () ->
+    DHT.query_peers bt.dht bt.ih begin fun (id, addr) token peers ->
+      bt.push (PeersReceived peers);
+      Lwt.async begin fun () ->
+        Lwt.catch
+          (fun () -> DHT.announce bt.dht addr 6881 token bt.ih >>= fun _ -> Lwt.return ())
+          (fun exn ->
+             debug ~exn "dht announce to %s (%s) failed" (SHA1.to_hex_short id) (Addr.to_string addr);
+             Lwt.return ())
+      end
+    end
+  end;
   event_loop bt
 
 let create mg =
@@ -317,7 +342,8 @@ let create mg =
                 (fun p e -> handle_peer_event !!cl p e)
                 (fun p () -> get_next_metadata_request !!cl p ());
       stage = NoMeta NoMetaLength;
-      port = -1 }
+      port = -1;
+      dht = DHT.create 6881 }
   in
   !!cl
 

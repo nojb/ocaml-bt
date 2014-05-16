@@ -528,10 +528,10 @@ let query_peers dht id k =
   Lwt_list.iter_p begin fun n ->
     Lwt.catch
       (fun () ->
-         get_peers dht (snd n) id >>= fun (node, token, peers, nodes) ->
+         get_peers dht (snd n) id >|= fun (node, token, peers, nodes) ->
          debug "query_peers: got %d peers and %d nodes from %s with token %S"
            (List.length peers) (List.length nodes) (string_of_node node) token;
-         k token peers)
+         k n token peers)
       (fun exn ->
          debug ~exn "query_peers: get_peers error from %s" (string_of_node n);
          Lwt.return ())

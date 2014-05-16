@@ -183,4 +183,5 @@ let read input =
   in
   Lwt.catch doit Lwt.fail
 
-let lt_extension_bit = 43 (* 20-th bit from the right *)
+let ltep_bit = 43 (* 20-th bit from the right *)
+let dht_bit = 63 (* last bit of the extension bitfield *)

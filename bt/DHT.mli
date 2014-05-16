@@ -38,10 +38,12 @@ val ping : t -> Addr.t -> node_info option Lwt.t
 val find_node : t -> Addr.t -> SHA1.t -> (node_info * node_info list) Lwt.t
 val get_peers : t -> Addr.t -> SHA1.t -> (node_info * string * Addr.t list * node_info list) Lwt.t
 val announce : t -> Addr.t -> int -> string -> SHA1.t -> node_info Lwt.t
-val query_peers : t -> SHA1.t -> (string -> Addr.t list -> unit Lwt.t) -> unit Lwt.t
+val query_peers : t -> SHA1.t -> (node_info -> string -> Addr.t list -> unit) -> unit Lwt.t
     
 val create : int -> t
 val start : t -> unit
-val bootstrap : t -> (string * int) list ->unit Lwt.t
+val bootstrap : t -> (string * int) list -> unit Lwt.t
+
+val update : t -> Kademlia.status -> SHA1.t -> Addr.t -> unit
 
 val bootstrap_nodes : (string * int) list

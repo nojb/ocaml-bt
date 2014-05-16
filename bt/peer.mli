@@ -62,6 +62,8 @@ type event =
   (** The peer has rejected a request for metadata information from us. *)
   | GotPEX of (Addr.t * pex_flags) list * Addr.t list
   (** The peer has sent us ut_pex data: added peers, dropped peers. *)
+  | DHTPort of int
+  (** The peer's DHT node is using this port. *)
 
 type event_callback = event -> unit
 type get_metadata_func = unit -> int option
@@ -142,6 +144,9 @@ val send_have_bitfield : t -> Bits.t -> unit
   
 val send_cancel : t -> int * int -> unit
 (** Send a CANCEL message. *)
+
+val send_port : t -> int -> unit
+(** Send a PORT message (used for DHT). *)
   
 val send_reject_meta : t -> int -> unit
 (** Reject a request for a metainfo piece. *)
