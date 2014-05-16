@@ -26,7 +26,7 @@ let main _ =
     Lwt_unix.sleep 5.0 >>=
     loop
   in
-  Lwt_main.run (Bt.DHT.bootstrap dht Bt.DHT.bootstrap_nodes >>= loop)
+  Lwt_main.run (Bt.DHT.auto_bootstrap dht Bt.DHT.bootstrap_nodes >>= loop)
 
 let _ =
   main ()

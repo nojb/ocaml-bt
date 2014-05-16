@@ -63,13 +63,13 @@ val create : int -> t
 val start : t -> unit
 (** Start the event loop. *)
   
-val bootstrap : t -> (string * int) list -> unit Lwt.t
-(** Bootstrap the DHT node from a list of pairs [(host, port)].  These nodes
-    will not be added to the routing table. *)
-
 val update : t -> Kademlia.status -> SHA1.t -> Addr.t -> unit
 (** [update dht st id addr] updates the status of the DHT node with contact
     information [(id, addr)] to be [st].  If the node does not exist, it is added. *)
+  
+val auto_bootstrap : t -> (string * int) list -> unit Lwt.t
+(** Bootstrap the DHT node from a list of pairs [(host, port)].  These nodes
+    will not be added to the routing table. *)
   
 val bootstrap_nodes : (string * int) list
 (** A list of predefined bootstrap noes. *)

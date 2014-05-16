@@ -555,10 +555,22 @@ let bootstrap dht (host, port) =
     (fun () -> Addr.Ip.of_string_noblock host >>= fun ip -> bootstrap dht (ip, port))
     (fun exn -> debug ~exn "bootstrap error"; Lwt.return false)
 
-let bootstrap dht routers =
-  (* lookup_node dht dht.id >>= fun l -> *)
-  (* debug "auto bootstrap : found %s" (strl string_of_node l); *)
-  Lwt_list.iter_p (fun addr -> bootstrap dht addr >>= fun _ -> Lwt.return ()) routers
+let rec auto_bootstrap dht routers =
+  lookup_node dht dht.id >>= fun l ->
+  debug "auto bootstrap : found %s" (strl string_of_node l);
+  let rec loop l ok =
+    match l, ok with
+    | _, true ->
+      debug "bootstrap ok, total nodes : %d" (Kademlia.size dht.rt);
+      Lwt.return ()
+    | [], false ->
+      debug "bootstrap failed, total nodes : %d; retrying" (Kademlia.size dht.rt);
+      auto_bootstrap dht routers
+    | n :: ns, false ->
+      bootstrap dht n >>= loop ns
+  in
+  loop routers (List.length l >= Kademlia.bucket_nodes)
+  (* Lwt_list.iter_p (fun addr -> bootstrap dht addr >>= fun _ -> Lwt.return ()) routers *)
   (* let rec loop l = *)
     
   (*   match l, ok with *)

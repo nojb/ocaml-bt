@@ -311,7 +311,7 @@ let start bt =
   PeerMgr.start bt.peer_mgr;
   DHT.start bt.dht;
   Lwt.async begin fun () ->
-    DHT.bootstrap bt.dht DHT.bootstrap_nodes >>= fun () ->
+    DHT.auto_bootstrap bt.dht DHT.bootstrap_nodes >>= fun () ->
     DHT.query_peers bt.dht bt.ih begin fun (id, addr) token peers ->
       bt.push (PeersReceived peers);
       Lwt.async begin fun () ->
