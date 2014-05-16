@@ -225,12 +225,14 @@ let query dht addr q =
     Lwt.fail (Failure "dht error")
 
 let ping dht addr =
-  query dht addr Ping >>= fun (n, r) ->
-  match r with
-  | Pong ->
-    Lwt.return (Some n)
-  | _ ->
-    Lwt.return None
+  Lwt.catch begin fun () ->
+    query dht addr Ping >>= fun (n, r) ->
+    match r with
+    | Pong ->
+      Lwt.return (Some n)
+    | _ ->
+      Lwt.return None
+  end begin fun _ -> Lwt.return None end
 
 let find_node dht addr id =
   query dht addr (FindNode id) >>= fun (n, r) ->
