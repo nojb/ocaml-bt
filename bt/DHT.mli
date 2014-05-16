@@ -19,7 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(** Distributed Hash Table (DHT). *)
+(** Distributed Hash Table (DHT).  Shamelessly based on MLdonkey's
+    implementation <http://mldonkey.sourceforge.net>. *)
 
 type node_info = SHA1.t * Addr.t
 
@@ -72,4 +73,4 @@ val auto_bootstrap : t -> (string * int) list -> unit Lwt.t
     will not be added to the routing table. *)
   
 val bootstrap_nodes : (string * int) list
-(** A list of predefined bootstrap noes. *)
+(** A list of predefined bootstrap nodes. *)

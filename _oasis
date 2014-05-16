@@ -14,7 +14,7 @@ Library bt
   FindlibName: bt
   Modules: Bcode, SHA1, Bits, IncompleteMetadata, Metadata, Stats, KRPC,
            Magnet, Peer, Store, Tracker, Util, Torrent, PeerMgr, Choker,
-           Client, Rate, Addr, Udp, Wire, IO, Handshake, Requester,
+           Client, Rate, Addr, UDP, Wire, IO, Handshake, Requester,
            DHT, Kademlia, Log
   BuildDepends: lwt, uri, cohttp, cohttp.lwt, lwt.unix,
                 cryptokit, zarith, qcheck, bitstring, bitstring.syntax

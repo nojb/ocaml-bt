@@ -106,16 +106,16 @@ type rpc =
   | Response of Addr.t * (string * Bcode.t) list
 
 type t = {
-  sock : Udp.socket;
+  sock : UDP.socket;
   answer : answer_func;
   pending : (Addr.t, string, rpc Lwt.u * float) Assoc2.t
 }
 
 let create answer port =
-  { sock = Udp.create_socket ~port (); answer; pending = Assoc2.create () }
+  { sock = UDP.create_socket ~port (); answer; pending = Assoc2.create () }
 
 let read_one_packet krpc =
-  Udp.recv krpc.sock >>= fun (s, addr) ->
+  UDP.recv krpc.sock >>= fun (s, addr) ->
   let (t, msg) = decode s in
   match msg with
   | Error (code, msg) ->
@@ -129,7 +129,7 @@ let read_one_packet krpc =
     Lwt.return ()
   | Query (name, args) ->
     let ret = krpc.answer addr name args in
-    Udp.send krpc.sock (encode t ret) addr
+    UDP.send krpc.sock (encode t ret) addr
   | Response args ->
     begin match Assoc2.find krpc.pending addr t with
     | None ->
@@ -174,4 +174,4 @@ let send_msg krpc msg addr =
   let t = fresh_txn () in (* FIXME only outstanding queries need be unique *)
   let wait, w = Lwt.wait () in
   Assoc2.add krpc.pending addr t (w, Unix.time () +. timeout_delay);
-  Udp.send krpc.sock (encode t msg) addr >>= fun () -> wait
+  UDP.send krpc.sock (encode t msg) addr >>= fun () -> wait

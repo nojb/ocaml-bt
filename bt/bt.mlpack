@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 78cafb5c72c426d47b37ef6ebff8ad4b)
+# DO NOT EDIT (digest: 64f38b98153579587e1fa9d46929f7f7)
 Bcode
 SHA1
 Bits
@@ -18,7 +18,7 @@ Choker
 Client
 Rate
 Addr
-Udp
+UDP
 Wire
 IO
 Handshake

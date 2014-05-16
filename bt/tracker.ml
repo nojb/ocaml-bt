@@ -106,8 +106,8 @@ module UdpTracker = struct
     let rec loop = function
       | Connect_request n ->
         let trans_id = fresh_transaction_id () in
-        Udp.send_bitstring fd (connect_request trans_id) addr >>= fun () ->
-        Udp.set_timeout fd (15.0 *. 2.0 ** float n);
+        UDP.send_bitstring fd (connect_request trans_id) addr >>= fun () ->
+        UDP.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
           (fun () -> loop (Connect_response trans_id))
           (function
@@ -121,7 +121,7 @@ module UdpTracker = struct
               end
             | exn -> Lwt.fail exn)
       | Connect_response trans_id ->
-        Udp.recv fd >>= fun (s, _) ->
+        UDP.recv fd >>= fun (s, _) ->
         begin match connect_response trans_id s with
         | `Error msg -> Lwt.fail (Error msg)
         | `Ok conn_id -> loop (Announce_request (conn_id, 0))
@@ -129,8 +129,8 @@ module UdpTracker = struct
       | Announce_request (conn_id, n) ->
         let trans_id = fresh_transaction_id () in
         let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event port id in
-        Udp.send_bitstring fd create_packet addr >>= fun () ->
-        Udp.set_timeout fd (15.0 *. 2.0 ** float n);
+        UDP.send_bitstring fd create_packet addr >>= fun () ->
+        UDP.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
           (fun () -> loop (Announce_response trans_id))
           (function
@@ -145,7 +145,7 @@ module UdpTracker = struct
               Lwt.fail exn)
       | Announce_response trans_id ->
         let doit () =
-          Udp.recv fd >>= fun (s, _) ->
+          UDP.recv fd >>= fun (s, _) ->
           match announce_response trans_id s with
           | `Error msg -> Lwt.fail (Error msg)
           | `Ok resp -> Lwt.return resp
@@ -165,7 +165,7 @@ module UdpTracker = struct
       | Some port -> port
     in
     let addr = (Addr.Ip.of_string host, port) in
-    let fd = Udp.create_socket () in
+    let fd = UDP.create_socket () in
     do_announce fd addr ih ?up ?down ?left ?event port id
 end
 

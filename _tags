@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 7e9aace2c4dada1585fc8143299d5f58)
+# DO NOT EDIT (digest: dba172c9e195d56827dca9a9cbf1a644)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -33,7 +33,7 @@
 "bt/client.cmx": for-pack(Bt)
 "bt/rate.cmx": for-pack(Bt)
 "bt/addr.cmx": for-pack(Bt)
-"bt/udp.cmx": for-pack(Bt)
+"bt/UDP.cmx": for-pack(Bt)
 "bt/wire.cmx": for-pack(Bt)
 "bt/IO.cmx": for-pack(Bt)
 "bt/handshake.cmx": for-pack(Bt)
