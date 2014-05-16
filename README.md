@@ -33,11 +33,11 @@ otorrent "magnet:?xt=urn:btih:e3811b9539cacff680e418124272177c47477157&dn=Ubuntu
 
 ### TODO
 
-- DHT
+- DHT - DONE
 - uTP
 - Fast Resume
-- <del>Encryption</del>
-- <del>PEX</del>
+- Encryption - DONE
+- PEX - DONE
 - LPD
 - UPnP
 - NAT-PMP
