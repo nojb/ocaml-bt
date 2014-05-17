@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 64f38b98153579587e1fa9d46929f7f7)
+# DO NOT EDIT (digest: 2ab028c947a98b556acebc13ad6ae4db)
 Bcode
 SHA1
 Bits
@@ -26,4 +26,5 @@ Requester
 DHT
 Kademlia
 Log
+Listener
 # OASIS_STOP

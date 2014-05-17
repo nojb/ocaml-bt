@@ -56,7 +56,7 @@ val peer_finished : t -> Peer.t -> unit
 (** Called when a peer disconnects. It removes the peer from the connected
     set. *)
 
-val handle_incoming_peer : t -> IO.t -> Addr.t -> unit
+val handle_incoming_peer : t -> IO.t -> unit
 (** Called when receiving an incoming peer connection.  It negotiates the
     handshake and starts sharing, or closes the connection and saves the address
     for later if too many peers are already connected. *)

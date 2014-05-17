@@ -68,6 +68,10 @@ let really_write fd buf off len =
 let write_fully fd s =
   really_write fd s 0 (String.length s)
 
+let string_of_sockaddr = function
+  | Unix.ADDR_INET (a, p) -> Printf.sprintf "%s:%u" (Unix.string_of_inet_addr a) p
+  | Unix.ADDR_UNIX s -> s
+
 let shuffle_array a =
   for i = Array.length a - 1 downto 1 do
     let j = Random.int (i+1) in

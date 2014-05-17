@@ -127,7 +127,8 @@ let peer_finished bt p =
   (* Peer.close p; *)
   Hashtbl.remove bt.peers (Peer.addr p)
 
-let handle_incoming_peer bt sock addr =
+let handle_incoming_peer bt sock =
+  let addr = IO.addr sock in
   if not (know_peer bt addr) then
     if need_more_peers bt then begin
       debug "will contact incoming peer %s" (Addr.to_string addr);

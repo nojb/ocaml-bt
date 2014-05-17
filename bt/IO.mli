@@ -92,6 +92,9 @@ val is_encrypted : t -> bool
 
 val create : Addr.t -> t
 (** Creates a socket to connect to a given address. *)
+
+val of_file_descr : Lwt_unix.file_descr -> t
+(** Creates a socket from a connected TCP socket. *)
   
 val connect : t -> unit Lwt.t
 (** Connect the socket. *)

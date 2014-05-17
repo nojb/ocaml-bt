@@ -165,6 +165,13 @@ let create addr =
     dec = None;
     addr;
     fd }
+
+let of_file_descr fd =
+  { on_write = Lwt_condition.create ();
+    enc = None;
+    dec = None;
+    addr = Addr.of_sockaddr (Lwt_unix.getpeername fd);
+    fd }
   
 let connect sock =
   Lwt_unix.connect sock.fd (Addr.to_sockaddr sock.addr)

@@ -29,7 +29,6 @@ let (>|=) = Lwt.(>|=)
 let listen_ports = [50000]
 
 type event =
-  | IncomingPeer of IO.t * Addr.t
   | PeersReceived of Addr.t list
   | GotMetadata of Metadata.t
   | TorrentLoaded of Torrent.t
@@ -58,28 +57,9 @@ type t = {
   chan : event Lwt_stream.t;
   push : event -> unit;
   mutable stage : stage;
-  mutable port : int;
+  listener : Listener.t;
   dht : DHT.t
 }
-
-exception Cant_listen
-
-(* let create_server handle = *)
-(*   let sock = Tcp.create_socket () in *)
-(*   let rec loop = function *)
-(*     | [] -> *)
-(*       raise Cant_listen *)
-(*     | p :: ports -> *)
-(*       try *)
-(*         let stop = Tcp.listen sock p handle in *)
-(*         Log.info "listening on port %d" p; *)
-(*         p, stop *)
-(*       with _ -> loop ports *)
-(*   in *)
-(*   loop listen_ports *)
-
-let push_incoming_peer bt sock addr =
-  bt.push (IncomingPeer (sock, addr))
 
 let push_peers_received bt xs =
   bt.push (PeersReceived xs)
@@ -250,8 +230,8 @@ let handle_event bt = function
     bt.stage <- NoMeta (PartialMeta m)
   | GotBadMeta ->
     bt.stage <- NoMeta NoMetaLength
-  | IncomingPeer (sock, addr) ->
-    PeerMgr.handle_incoming_peer bt.peer_mgr sock addr
+  (* | IncomingPeer (sock, addr) -> *)
+  (*   PeerMgr.handle_incoming_peer bt.peer_mgr sock addr *)
   | PeersReceived addrs ->
     debug "received %d peers" (List.length addrs);
     List.iter (PeerMgr.handle_received_peer bt.peer_mgr) addrs
@@ -287,7 +267,8 @@ let handle_event bt = function
     end
   | Announce (tier, event) ->
     let doit () =
-      Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:bt.port ~id:bt.id >>= fun resp ->
+      (* FIXME port *)
+      Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:(-1) ~id:bt.id >>= fun resp ->
       debug "announce on %s successful, reannouncing in %ds"
         (Tracker.Tier.show tier) resp.Tracker.interval;
       push_peers_received bt resp.Tracker.peers;
@@ -303,11 +284,8 @@ let rec event_loop bt =
   Lwt_stream.next bt.chan >|= handle_event bt >>= fun () -> event_loop bt
 
 let start bt =
-  (* let port, _ = create_server (push_incoming_peer bt) in *)
-  let port = 5000 in
-  bt.port <- port;
-  (* debug "starting"; *)
   (* List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers; *)
+  Listener.start bt.listener ();
   PeerMgr.start bt.peer_mgr;
   DHT.start bt.dht;
   Lwt.async begin fun () ->
@@ -330,20 +308,23 @@ let create mg =
   let push x = push (Some x) in
   let trackers =
     List.map (fun tr ->
-        let tier = Tracker.Tier.create () in
-        Tracker.Tier.add_tracker tier tr;
-        tier) mg.Magnet.tr
+      let tier = Tracker.Tier.create () in
+      Tracker.Tier.add_tracker tier tr;
+      tier) mg.Magnet.tr
   in
   let id = SHA1.peer_id "OCTO" in
   let ih = mg.Magnet.xt in
   let rec cl = lazy
     { id; ih; trackers; chan;
-      push; peer_mgr = PeerMgr.create_no_meta id ih
-                (fun p e -> handle_peer_event !!cl p e)
-                (fun p () -> get_next_metadata_request !!cl p ());
+      push; peer_mgr = !!peer_mgr;
       stage = NoMeta NoMetaLength;
-      port = -1;
+      listener = Listener.create
+          (fun fd _ -> PeerMgr.handle_incoming_peer !!peer_mgr (IO.of_file_descr fd));
       dht = DHT.create 6881 }
+  and peer_mgr =
+    lazy (PeerMgr.create_no_meta id ih
+        (fun p e -> handle_peer_event !!cl p e)
+        (fun p () -> get_next_metadata_request !!cl p ()))
   in
   !!cl
 
