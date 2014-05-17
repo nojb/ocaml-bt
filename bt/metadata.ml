@@ -89,11 +89,10 @@ let split_at n s =
   Array.init (l/n) (fun i -> String.sub s (n*i) n)
 
 let hashes bc =
-  Bcode.find "pieces" bc |> Bcode.to_string |>
-  split_at 20 |> Array.map SHA1.from_bin
+  Bcode.find "pieces" bc |> Bcode.to_string |> split_at 20 |> Array.map SHA1.of_bin
 
 let info_hash (bc : Bcode.t) =
-  SHA1.digest_of_string (Bcode.encode bc)  (* |> Put.run |> Word160.digest_of_string *)
+  SHA1.string (Bcode.encode bc)
 
 let piece_length bc =
   Bcode.find "piece length" bc |> Bcode.to_int

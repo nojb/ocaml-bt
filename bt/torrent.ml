@@ -62,7 +62,7 @@ let create meta handle =
     else
       let off = Metadata.piece_offset dl.meta i in
       Store.read dl.store off (plen i) >>= fun s ->
-      if SHA1.digest_of_string s |> SHA1.equal (Metadata.hash dl.meta i) then begin
+      if SHA1.equal (SHA1.string s) (Metadata.hash dl.meta i) then begin
         Bits.set_all dl.completed.(i);
         loop (good+1) (Int64.(sub acc (of_int (plen i)))) (i+1)
       end else
@@ -101,7 +101,7 @@ let got_block t peer idx b s =
       if Bits.has_all t.completed.(idx) then begin
         Store.read t.store (Metadata.piece_offset t.meta idx)
           (Metadata.piece_length t.meta idx) >|= fun s ->
-        if SHA1.digest_of_string s = Metadata.hash t.meta idx then begin
+        if SHA1.equal (SHA1.string s) (Metadata.hash t.meta idx) then begin
           t.amount_left <- Int64.(sub t.amount_left (of_int (Metadata.piece_length t.meta idx)));
           t.handle (PieceVerified idx);
           if is_complete t then t.handle TorrentComplete

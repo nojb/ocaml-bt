@@ -165,8 +165,8 @@ let parse_handshake hs str =
   | { 19 : 8;
       proto : 19 * 8 : string;
       extbits : 8 * 8 : string, bind (Bits.of_bin extbits);
-      ih : 20 * 8 : string, bind (SHA1.from_bin ih);
-      id : 20 * 8 : string, bind (SHA1.from_bin id) } ->
+      ih : 20 * 8 : string, bind (SHA1.of_bin ih);
+      id : 20 * 8 : string, bind (SHA1.of_bin id) } ->
     if SHA1.equal hs.skey ih then
       Lwt.return (id, extbits)
     else

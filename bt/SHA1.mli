@@ -51,20 +51,19 @@ val pp : Format.formatter -> t -> unit
 val to_bin : t -> string
 (** The underlying 20-byte string. *)
   
-val from_bin : string -> t
-(** The hash corresponding to the given 20-byte string.  Raises
-    [Invalid_argument "SHA1.from_bin"] if the string is not of the correct
-    length. *)
+val of_bin : string -> t
+(** The hash corresponding to the given 20-byte string. *)
   
-val digest_of_string : string -> t
+val string : string -> t
 (** Compute the SHA1 digest of a string. *)
   
 val to_z : t -> Z.t
-(** The (large) integer represented by the hash's bits. *)
+(** The (large) integer represented by the hash's bits using big-endian
+    ordering.  *)
     
 val of_z : Z.t -> t
 (** Create a hash from the first 20 bytes from a large integer.  The sign is
-    ignored. *)
+    ignored and it uses a big-endian ordering. *)
   
 val distance : t -> t -> Z.t
 (** The XOR-distance between two hashes.  Used in {!Kademlia}. *)

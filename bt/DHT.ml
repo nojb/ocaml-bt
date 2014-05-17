@@ -67,7 +67,7 @@ let string_of_response r =
       token (strl Addr.to_string peers) (strl string_of_node nodes)
 
 let parse_query name args : SHA1.t * query =
-  let sha1 k args = SHA1.from_bin (Bcode.to_string (List.assoc k args)) in
+  let sha1 k args = SHA1.of_bin (Bcode.to_string (List.assoc k args)) in
   let q = match name with
     | "ping" ->
       Ping
@@ -90,7 +90,7 @@ let parse_nodes s =
   let s = Bitstring.bitstring_of_string s in
   let rec loop s =
     bitmatch s with
-    | { id : 20 * 8 : string, bind (SHA1.from_bin id);
+    | { id : 20 * 8 : string, bind (SHA1.of_bin id);
         addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr);
         rest : -1 : bitstring } ->
       (id, addr) :: loop rest
@@ -114,7 +114,7 @@ let parse_value s =
   (* loop s *)
 
 let parse_response q args =
-  let sha1 k args = SHA1.from_bin (Bcode.to_string (List.assoc k args)) in
+  let sha1 k args = SHA1.of_bin (Bcode.to_string (List.assoc k args)) in
   let r = match q with
     | Ping ->
       Pong

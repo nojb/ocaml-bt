@@ -54,27 +54,38 @@ let pp fmt s =
 let to_bin x =
   x
     
-let from_bin x =
-  if String.length x <> 20 then invalid_arg "SHA1.from_bin";
+let of_bin x =
+  assert (String.length x = 20);
   x
       
-let digest_of_string s =
+let string s =
   Cryptokit.hash_string (Cryptokit.Hash.sha1 ()) s
     
 let to_z s =
-  (* [s] is little-endian ? FIXME *)
-  Z.of_bits s
+  let rec loop n i =
+    if i >= String.length s then n
+    else
+      let c = Char.code s.[i] in
+      loop Z.(~$c + ~$256 * n) (i+1)
+  in
+  loop Z.zero 0
 
 let of_z z =
   let s = String.create 20 in
-  let zs = Z.to_bits z in
-  let l = String.length zs in
-  (* [zs] is little-endian *)
-  String.blit (Z.to_bits z) 0 s 0 (min 20 l);
+  let rec loop n i =
+    if i < 0 then
+      assert (Z.compare n Z.zero = 0)
+    else begin
+      let d, m = Z.(ediv_rem n ~$256) in
+      s.[i] <- Char.chr (Z.to_int m);
+      loop d (i-1)
+    end
+  in
+  loop z (String.length s - 1);
   s
 
 let distance s1 s2 : Z.t =
-  Z.(logxor (of_bits s1) (of_bits s2))
+  Z.logxor (to_z s1) (to_z s2)
 
 let _ = Random.self_init ()
 

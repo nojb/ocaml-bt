@@ -77,7 +77,7 @@ let get_next_metadata_request p =
   loop 0
       
 let verify p =
-  if SHA1.digest_of_string p.raw = p.ih then
+  if SHA1.string p.raw = p.ih then
     Some (String.copy p.raw)
   else
     None
