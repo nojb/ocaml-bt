@@ -269,8 +269,8 @@ let handle_event bt = function
     let doit () =
       (* FIXME port *)
       Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
-      debug "announce on %s successful, reannouncing in %ds"
-        (Tracker.Tier.show tier) resp.Tracker.interval;
+      debug "announce to %s successful, reannouncing in %ds"
+        (Tracker.Tier.to_string tier) resp.Tracker.interval;
       push_peers_received bt resp.Tracker.peers;
       Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
       bt.push (Announce (tier, None))
@@ -306,12 +306,7 @@ let start bt =
 let create mg =
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
-  let trackers =
-    List.map (fun tr ->
-      let tier = Tracker.Tier.create () in
-      Tracker.Tier.add_tracker tier tr;
-      tier) mg.Magnet.tr
-  in
+  let trackers = List.map (fun tr -> Tracker.Tier.create [tr]) mg.Magnet.tr in
   let id = SHA1.peer_id "OCTO" in
   let ih = mg.Magnet.xt in
   let rec cl = lazy

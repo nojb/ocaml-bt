@@ -253,38 +253,36 @@ let query tr ~ih ?up ?down ?left ?event ?port ~id =
     failwith_lwt "missing tracker url scheme"
 
 module Tier = struct
-  type t = Uri.t list ref
+  type t = Uri.t array
 
-  exception No_valid_tracker
-
-  let create () =
-    ref []
-
-  let shuffle tier =
-    let a = Array.of_list !tier in
+  let create tier =
+    let a = Array.of_list tier in
     Util.shuffle_array a;
-    tier := Array.to_list a
-
-  let add_tracker seq tr =
-    seq := tr :: !seq
+    a
 
   let query tier ~ih ?up ?down ?left ?event ?port ~id =
-    let rec loop failtrs = function
-      | [] -> Lwt.fail No_valid_tracker
-      | tr :: rest ->
-        try
+    let rec loop i =
+      if i >= Array.length tier then Lwt.fail (Failure "all trackers in tier failed")
+      else
+        let tr = tier.(i) in
+        Lwt.catch begin fun () ->
           query tr ~ih ?up ?down ?left ?event ?port ~id >>= fun resp ->
-          tier := tr :: List.rev_append failtrs rest;
+          if i > 0 then begin
+            (* move the first successful tracker to the front of the tier *)
+            Array.blit tier 0 tier 1 i;
+            tier.(0) <- tr;
+          end;
           Lwt.return resp
-        with
-        | exn ->
-          debug ~exn "error while announcing on %S" (Uri.to_string tr);
-          loop (tr :: failtrs) rest
+        end begin fun exn ->
+          debug ~exn "error announcing to %S" (Uri.to_string tr);
+          loop (i+1)
+        end
     in
-    loop [] !tier
+    loop 0
 
-  let show tier =
-    match !tier with
-    | [] -> "(no trackers)"
-    | tr :: _ -> Uri.to_string tr
+  let strl f l =
+    "[" ^ String.concat " " (List.map f l) ^ "]"
+
+  let to_string tier =
+    strl Uri.to_string (Array.to_list tier)
 end

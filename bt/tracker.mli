@@ -59,22 +59,14 @@ val query :
 module Tier : sig
   type t
 
-  exception No_valid_tracker
-
-  val create : unit -> t
-  (** Create an empty tier. *)
-    
-  val shuffle : t -> unit
-  (** Shuffle a tier randomly. *)
-    
-  val add_tracker : t -> Uri.t -> unit
-  (** Add a tracker to a tier. *)
+  val create : Uri.t list -> t
+  (** Create a tier with the given list of trackers. *)
     
   val query : t -> ih:SHA1.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
     ?port:int -> id:SHA1.t -> response Lwt.t
   (** Query a tier.  All the trackers are tried in turn, until one that works is
       found. *)
       
-  val show : t -> string
+  val to_string : t -> string
   (** First tracker in the tier. *)
 end
