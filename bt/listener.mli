@@ -38,6 +38,6 @@ val start : t -> ?port:int -> unit -> unit
 val stop : t -> unit
 (** Stop the accept loop. *)
   
-val port : t -> int
-(** The port on which we are listening for incoming connections.  Fails if the
-    server is not running. *)
+val port : t -> int option
+(** The port on which we are listening for incoming connections.  Returns
+    [None] if the server is not running. *)

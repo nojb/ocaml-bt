@@ -83,5 +83,5 @@ let stop lstnr =
 
 let port lstnr =
   match lstnr.stage with
-  | Stopped -> failwith "Listener.port: not running"
-  | Running r -> r.port
+  | Stopped -> None
+  | Running r -> Some r.port

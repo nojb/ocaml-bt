@@ -63,7 +63,7 @@ module UdpTracker = struct
   let connect_request trans_id =
     BITSTRING { 0x41727101980L : 64; 0l : 32; trans_id : 32 }
 
-  let announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event port id =
+  let announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event ?port id =
     let event = match event with
       | None -> 0l
       | Some COMPLETED -> 1l
@@ -75,7 +75,7 @@ module UdpTracker = struct
                 SHA1.to_bin id : 20 * 8 : string;
                 down : 64; left : 64; up : 64;
                 event : 32; 0l : 32; 0l : 32; -1l : 32;
-                port : 16 }                
+                (match port with None -> 0 | Some p -> p) : 16 }                
 
   let announce_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
@@ -102,7 +102,7 @@ module UdpTracker = struct
     | Announce_request of int64 * int
     | Announce_response of int32
 
-  let do_announce fd addr ih ?up ?down ?left ?event port id : response Lwt.t =
+  let do_announce fd addr ih ?up ?down ?left ?event ?port id : response Lwt.t =
     let rec loop = function
       | Connect_request n ->
         let trans_id = fresh_transaction_id () in
@@ -128,7 +128,7 @@ module UdpTracker = struct
         end
       | Announce_request (conn_id, n) ->
         let trans_id = fresh_transaction_id () in
-        let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event port id in
+        let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event ?port id in
         UDP.send_bitstring fd create_packet addr >>= fun () ->
         UDP.set_timeout fd (15.0 *. 2.0 ** float n);
         Lwt.catch
@@ -154,19 +154,19 @@ module UdpTracker = struct
     in
     loop (Connect_request 0)
 
-  let announce tr ih ?up ?down ?left ?event port id =
+  let announce tr ih ?up ?down ?left ?event ?port id =
     let url = tr in
     let host = match Uri.host url with
       | None -> failwith "Empty Hostname"
       | Some host -> host
     in
-    let port = match Uri.port url with
+    let p = match Uri.port url with
       | None -> failwith "Empty Port"
       | Some port -> port
     in
-    let addr = (Addr.Ip.of_string host, port) in
+    let addr = (Addr.Ip.of_string host, p) in
     let fd = UDP.create_socket () in
-    do_announce fd addr ih ?up ?down ?left ?event port id
+    do_announce fd addr ih ?up ?down ?left ?event ?port id
 end
 
 module HttpTracker = struct
@@ -216,21 +216,22 @@ module HttpTracker = struct
     in
     either warning (either error success) ()
 
-  let announce tr ih ?up ?down ?left ?event port id =
-    let add_param_maybe uri name f = function
-      | None -> uri
-      | Some x -> Uri.add_query_param' uri (name, f x)
+  let announce tr ih ?up ?down ?left ?event ?port id =
+    let uri = ref tr in
+    let add name x = uri := Uri.add_query_param' !uri (name, x) in    
+    let add_opt name f = function
+      | None -> ()
+      | Some x -> uri := Uri.add_query_param' !uri (name, f x)
     in
-    let uri = tr in
-    let uri = Uri.add_query_param' uri ("info_hash", SHA1.to_bin ih) in
-    let uri = Uri.add_query_param' uri ("peer_id", SHA1.to_bin id) in
-    let uri = add_param_maybe uri "uploaded" Int64.to_string up in
-    let uri = add_param_maybe uri "downloaded" Int64.to_string down in
-    let uri = add_param_maybe uri "left" Int64.to_string left in
-    let uri = Uri.add_query_param' uri ("port", string_of_int port) in
-    let uri = Uri.add_query_param' uri ("compact", "1") in
-    let uri = add_param_maybe uri "event" string_of_event event in
-    Cohttp_lwt_unix.Client.get uri >>= fun (_, body) ->
+    add "info_hash" (SHA1.to_bin ih);
+    add "peer_id" (SHA1.to_bin id);
+    add_opt "uploaded" Int64.to_string up;
+    add_opt "downloaded" Int64.to_string down;
+    add_opt "left" Int64.to_string left;
+    add_opt "port" string_of_int port;
+    add "compact" "1";
+    add_opt "event" string_of_event event;
+    Cohttp_lwt_unix.Client.get !uri >>= fun (_, body) ->
     Cohttp_lwt_body.to_string body >>= fun body ->
     debug "received response from http tracker: %S" body;
     try
@@ -239,13 +240,13 @@ module HttpTracker = struct
       Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn))
 end
 
-let query tr ~ih ?up ?down ?left ?event ~port ~id =
+let query tr ~ih ?up ?down ?left ?event ?port ~id =
   debug "announcing on %S" (Uri.to_string tr);
   match Uri.scheme tr with
   | Some "http" | Some "https" ->
-    HttpTracker.announce tr ih ?up ?down ?left ?event port id
+    HttpTracker.announce tr ih ?up ?down ?left ?event ?port id
   | Some "udp" ->
-    UdpTracker.announce tr ih ?up ?down ?left ?event port id
+    UdpTracker.announce tr ih ?up ?down ?left ?event ?port id
   | Some sch ->
     failwith_lwt "unknown tracker url scheme: %S" sch
   | None ->
@@ -267,12 +268,12 @@ module Tier = struct
   let add_tracker seq tr =
     seq := tr :: !seq
 
-  let query tier ~ih ?up ?down ?left ?event ~port ~id =
+  let query tier ~ih ?up ?down ?left ?event ?port ~id =
     let rec loop failtrs = function
       | [] -> Lwt.fail No_valid_tracker
       | tr :: rest ->
         try
-          query tr ~ih ?up ?down ?left ?event ~port ~id >>= fun resp ->
+          query tr ~ih ?up ?down ?left ?event ?port ~id >>= fun resp ->
           tier := tr :: List.rev_append failtrs rest;
           Lwt.return resp
         with

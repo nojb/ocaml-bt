@@ -268,7 +268,7 @@ let handle_event bt = function
   | Announce (tier, event) ->
     let doit () =
       (* FIXME port *)
-      Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ~port:(-1) ~id:bt.id >>= fun resp ->
+      Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
       debug "announce on %s successful, reannouncing in %ds"
         (Tracker.Tier.show tier) resp.Tracker.interval;
       push_peers_received bt resp.Tracker.peers;

@@ -47,7 +47,7 @@ val query :
   ?down:int64 ->
   ?left:int64 ->
   ?event:event ->
-  port:int ->
+  ?port:int ->
   id:SHA1.t -> response Lwt.t
 (** [query url ih up down left event port id] announces a torrent with info-hash
     [ih] to the tracker [url].  [up] is the number of bytes uploaded since we last
@@ -71,7 +71,7 @@ module Tier : sig
   (** Add a tracker to a tier. *)
     
   val query : t -> ih:SHA1.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
-    port:int -> id:SHA1.t -> response Lwt.t
+    ?port:int -> id:SHA1.t -> response Lwt.t
   (** Query a tier.  All the trackers are tried in turn, until one that works is
       found. *)
       
