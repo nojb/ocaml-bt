@@ -284,7 +284,7 @@ let rec event_loop bt =
   Lwt_stream.next bt.chan >|= handle_event bt >>= fun () -> event_loop bt
 
 let start bt =
-  (* List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers; *)
+  List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
   Listener.start bt.listener ();
   PeerMgr.start bt.peer_mgr;
   DHT.start bt.dht;

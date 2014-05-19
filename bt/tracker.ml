@@ -53,31 +53,32 @@ module UdpTracker = struct
   let fresh_transaction_id () =
     Random.int32 Int32.max_int
 
-  let connect_response trans_id s =
+  let parse_connect_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
     | { 3l : 32; msg : -1 : string } ->
       `Error msg
     | { n : 32; trans_id' : 32 : check (trans_id = trans_id'); conn_id : 64 } ->
       `Ok conn_id
 
-  let connect_request trans_id =
+  let make_connect_request trans_id =
     BITSTRING { 0x41727101980L : 64; 0l : 32; trans_id : 32 }
 
-  let announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event ?port id =
+  let make_announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event ?port id =
     let event = match event with
       | None -> 0l
       | Some COMPLETED -> 1l
       | Some STARTED -> 2l
       | Some STOPPED -> 3l
     in
-    BITSTRING { conn_id : 64; 1l : 32; trans_id : 32;
-                SHA1.to_bin ih : 20 * 8 : string;
-                SHA1.to_bin id : 20 * 8 : string;
-                down : 64; left : 64; up : 64;
-                event : 32; 0l : 32; 0l : 32; -1l : 32;
-                (match port with None -> 0 | Some p -> p) : 16 }                
+    BITSTRING
+      { conn_id : 64; 1l : 32; trans_id : 32;
+        SHA1.to_bin ih : 20 * 8 : string;
+        SHA1.to_bin id : 20 * 8 : string;
+        down : 64; left : 64; up : 64;
+        event : 32; 0l : 32; 0l : 32; -1l : 32;
+        (match port with None -> 0 | Some p -> p) : 16 }                
 
-  let announce_response trans_id s =
+  let parse_announce_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
     | { 3l : 32; msg : -1 : string } ->
       `Error msg
@@ -96,63 +97,120 @@ module UdpTracker = struct
       let peers = loop peers in
       `Ok {peers; leechers = Some leechers; seeders = Some seeders; interval}
 
-  type udp_stage =
-    | Connect_request of int
-    | Connect_response of int32
-    | Announce_request of int64 * int
-    | Announce_response of int32
+  let send_connect_request fd addr =
+    let trans_id = fresh_transaction_id () in
+    UDP.send_bitstring fd (make_connect_request trans_id) addr >>= fun () ->
+    Lwt.return trans_id
 
+  let read_connect_response fd trans_id =
+    UDP.recv fd >>= fun (s, _) ->
+    match parse_connect_response trans_id s with
+    | `Error msg ->
+      Lwt.fail (Error msg)
+    | `Ok conn_id ->
+      Lwt.return conn_id
+
+  let send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id =
+    let trans_id = fresh_transaction_id () in
+    let create_packet = make_announce_request conn_id trans_id ih ?up ?down ?left event ?port id in
+    UDP.send_bitstring fd create_packet addr >>= fun () ->
+    Lwt.return trans_id
+
+  let read_announce_response fd trans_id =
+    Lwt.catch begin fun () ->
+      UDP.recv fd >>= fun (s, _) ->
+      match parse_announce_response trans_id s with
+      | `Error msg -> Lwt.fail (Error msg)
+      | `Ok resp -> Lwt.return resp
+    end Lwt.fail
+  
   let do_announce fd addr ih ?up ?down ?left ?event ?port id : response Lwt.t =
-    let rec loop = function
-      | Connect_request n ->
-        let trans_id = fresh_transaction_id () in
-        UDP.send_bitstring fd (connect_request trans_id) addr >>= fun () ->
-        UDP.set_timeout fd (15.0 *. 2.0 ** float n);
-        Lwt.catch
-          (fun () -> loop (Connect_response trans_id))
-          (function
-            | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-              if n >= 8 then
-                failwith_lwt "connect_request: too many retries"
-              else begin
-                debug "udp connect request timeout after %ds; retrying..."
-                  (truncate (15.0 *. 2.0 ** float n));
-                loop (Connect_request (n+1))
-              end
-            | exn -> Lwt.fail exn)
-      | Connect_response trans_id ->
-        UDP.recv fd >>= fun (s, _) ->
-        begin match connect_response trans_id s with
-        | `Error msg -> Lwt.fail (Error msg)
-        | `Ok conn_id -> loop (Announce_request (conn_id, 0))
+    let rec try_connect n =
+      send_connect_request fd addr >>= fun trans_id ->
+      UDP.set_timeout fd (15.0 *. 2.0 ** float n);
+      Lwt.catch begin fun () ->
+        read_connect_response fd trans_id >>=
+        try_announce 0
+      end begin function
+      | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
+        if n >= 8 then
+          Lwt.fail (Failure "connect_request: too many retries")
+        else begin
+          debug "udp connect request timeout after %.0fs; retrying..." (15.0 *. 2.0 ** float n);
+          try_connect (n+1)
         end
-      | Announce_request (conn_id, n) ->
-        let trans_id = fresh_transaction_id () in
-        let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event ?port id in
-        UDP.send_bitstring fd create_packet addr >>= fun () ->
-        UDP.set_timeout fd (15.0 *. 2.0 ** float n);
-        Lwt.catch
-          (fun () -> loop (Announce_response trans_id))
-          (function
-            | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-              debug "udp announce request timeout after %ds; retrying..."
-                (truncate (15.0 *. 2.0 ** float n));
-              if n >= 2 then
-                loop (Connect_request (n+1))
-              else
-                loop (Announce_request (conn_id, n+1))
-            | exn ->
-              Lwt.fail exn)
-      | Announce_response trans_id ->
-        let doit () =
-          UDP.recv fd >>= fun (s, _) ->
-          match announce_response trans_id s with
-          | `Error msg -> Lwt.fail (Error msg)
-          | `Ok resp -> Lwt.return resp
-        in
-        Lwt.catch doit Lwt.fail
+      | exn ->
+        Lwt.fail exn
+      end
+    and try_announce n conn_id =
+      send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id >>= fun trans_id ->
+      UDP.set_timeout fd (15.0 *. 2.0 ** float n);
+      Lwt.catch begin fun () ->
+        read_announce_response fd trans_id
+      end begin function
+      | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
+        debug "udp announce request timeout after %.0fs; retrying..." (15.0 *. 2.0 ** float n);
+        if n >= 2 then
+          try_connect (n+1)
+        else
+          try_announce (n+1) conn_id
+      | exn ->
+        Lwt.fail exn
+      end
     in
-    loop (Connect_request 0)
+    try_connect 0
+        
+    (* let rec loop = function *)
+    (*   | Connect_request n -> *)
+    (*     let trans_id = fresh_transaction_id () in *)
+    (*     UDP.send_bitstring fd (connect_request trans_id) addr >>= fun () -> *)
+    (*     UDP.set_timeout fd (15.0 *. 2.0 ** float n); *)
+    (*     Lwt.catch begin fun () -> *)
+    (*       loop (Connect_response trans_id) *)
+    (*     end begin function *)
+    (*     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) -> *)
+    (*       if n >= 8 then *)
+    (*         failwith_lwt "connect_request: too many retries" *)
+    (*       else begin *)
+    (*         debug "udp connect request timeout after %ds; retrying..." *)
+    (*           (truncate (15.0 *. 2.0 ** float n)); *)
+    (*         loop (Connect_request (n+1)) *)
+    (*       end *)
+    (*     | exn -> Lwt.fail exn *)
+    (*     end *)
+    (*   | Connect_response trans_id -> *)
+    (*     UDP.recv fd >>= fun (s, _) -> *)
+    (*     begin match connect_response trans_id s with *)
+    (*     | `Error msg -> Lwt.fail (Error msg) *)
+    (*     | `Ok conn_id -> loop (Announce_request (conn_id, 0)) *)
+    (*     end *)
+    (*   | Announce_request (conn_id, n) -> *)
+    (*     let trans_id = fresh_transaction_id () in *)
+    (*     let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event ?port id in *)
+    (*     UDP.send_bitstring fd create_packet addr >>= fun () -> *)
+    (*     UDP.set_timeout fd (15.0 *. 2.0 ** float n); *)
+    (*     Lwt.catch begin fun () -> *)
+    (*       loop (Announce_response trans_id) *)
+    (*     end begin function *)
+    (*     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) -> *)
+    (*       debug "udp announce request timeout after %ds; retrying..." *)
+    (*         (truncate (15.0 *. 2.0 ** float n)); *)
+    (*       if n >= 2 then *)
+    (*         loop (Connect_request (n+1)) *)
+    (*       else *)
+    (*         loop (Announce_request (conn_id, n+1)) *)
+    (*     | exn -> *)
+    (*       Lwt.fail exn *)
+    (*     end *)
+    (*   | Announce_response trans_id -> *)
+    (*     Lwt.catch begin fun () -> *)
+    (*       UDP.recv fd >>= fun (s, _) -> *)
+    (*       match announce_response trans_id s with *)
+    (*       | `Error msg -> Lwt.fail (Error msg) *)
+    (*       | `Ok resp -> Lwt.return resp *)
+    (*     end Lwt.fail *)
+    (* in *)
+    (* loop (Connect_request 0) *)
 
   let announce tr ih ?up ?down ?left ?event ?port id =
     let url = tr in
