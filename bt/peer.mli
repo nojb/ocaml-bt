@@ -23,6 +23,10 @@
 
 type t
 
+val keepalive_delay : int
+
+exception Timeout
+
 type pex_flags = {
   pex_encryption : bool;
   pex_seed : bool;
@@ -103,66 +107,66 @@ val send_extended_handshake : t -> unit
 
 val peer_choking : t -> bool
 (** Whether the peer is choking us. *)
-  
+
 val peer_interested : t -> bool
 (** Whether the peer is interested in us. *)
-  
+
 val am_choking : t -> bool
 (** Whether we are choking this peer. *)
-  
+
 val client_interested : t -> bool
 (** Whether we are interested in this peer. *)
-  
+
 val has_piece : t -> int -> bool
 (** Whether this peer has a particular piece. *)
-  
+
 val have : t -> Bits.t
 (** The bitfield of pieces this peer has. *)
-                  
+
 val send_choke : t -> unit
 (** Send a CHOKE message.  If the peer is already choked, do not send
     anything. *)
-  
+
 val send_unchoke : t -> unit
 (** Send an UNCHOKE message.  If the peer is already unchoked, do not send
     anything. *)
-  
+
 val send_interested : t -> unit
 (** Send a INTERESTED command.  If we are already interested in this peer, do
     not send anything. *)
-  
+
 val send_not_interested : t -> unit
 (** Send a NOT_INTERESTED message.  If we are already not interested in this
     peer, do not send anything. *)
-  
+
 val send_have : t -> int -> unit
 (** Send a HAVE message.  If this peer already has the piece, do not send
     anything. *)
-  
+
 val send_have_bitfield : t -> Bits.t -> unit
 (** Send a BITFIELD message. *)
-  
+
 val send_cancel : t -> int * int -> unit
 (** Send a CANCEL message. *)
 
 val send_port : t -> int -> unit
 (** Send a PORT message (used for DHT). *)
-  
+
 val send_reject_meta : t -> int -> unit
 (** Reject a request for a metainfo piece. *)
-  
+
 val send_meta_piece : t -> int -> int * string -> unit
 (** Send a metainfo piece. *)
 
 val send_block : t -> int -> int -> string -> unit
 (** Send a block. *)
-  
+
 val upload_rate : t -> float
 (** The current upload speed. *)
-  
+
 val download_rate : t -> float
 (** The current download speed. *)
-  
+
 val reset_rates : t -> unit
 (** Reset the download/upload speed computation. *)
 
@@ -172,7 +176,7 @@ val got_metadata : t -> Metadata.t -> get_block_func -> unit
 
 val worked_on_piece : t -> int -> bool
 (** Whether this peer has sent us blocks of a particular piece. *)
-  
+
 val strike : t -> int
 (** Mark this peer as having participated in a piece that failed its SHA1 hash
     check.  Returns the updated number of strikes. *)
@@ -182,12 +186,14 @@ val is_seed : t -> bool
 
 val time : t -> float
 (** Peer creation time. *)
-  
+
 val piece_data_time : t -> float
 (** The last time this peer sent us a block. *)
-  
+
 val close : t -> unit
 (** Disconnect this peer. *)
+
+val got_message : t -> Wire.message -> unit
 
 val send_pex : t -> Addr.t list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
@@ -198,3 +204,5 @@ val is_snubbing : t -> bool
 
 val to_string : t -> string
 (** Print out the peer's id (in shortened form) and address. *)
+
+val sock : t -> IO.t

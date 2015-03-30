@@ -22,7 +22,7 @@
 let section = Log.make_section "Peer"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-    
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
@@ -89,7 +89,7 @@ type t = {
   node : SHA1.t * Addr.t;
   sock : IO.t;
   output : Lwt_io.output_channel;
-  input : Lwt_io.input_channel;
+  (* input : Lwt_io.input_channel; *)
   (* mutable id : SHA1.t; *)
   mutable am_choking : bool;
   mutable am_interested : bool;
@@ -97,10 +97,10 @@ type t = {
   mutable peer_interested : bool;
   extbits : Bits.t;
   extensions : (string, int) Hashtbl.t;
-  
+
   mutable act_reqs : int;
   mutable strikes : int;
-  
+
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
 
@@ -110,7 +110,7 @@ type t = {
   on_can_request : unit Lwt_condition.t;
   on_ltep_handshake : unit Lwt_condition.t;
   on_stop : unit Lwt_condition.t;
-  
+
   handle : event -> unit;
 
   mutable info : meta_info;
@@ -278,7 +278,7 @@ let got_have p idx =
       n.have <- idx :: n.have;
       signal p (Have idx)
     end
-  
+
 let got_cancel p i ofs len =
   Lwt_sequence.iter_node_l (fun n ->
       match Lwt_sequence.get n with
@@ -348,24 +348,6 @@ let got_message p m =
   | Wire.EXTENDED (id, s) -> got_extended p id s
   | Wire.PORT i -> got_port p i
   | _ -> assert false
-
-let reader_loop p =
-  let input = Lwt_stream.from
-      (fun () -> Wire.read p.input >>= fun msg ->
-        debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg);
-        Lwt.return (Some msg))
-  in
-  let rec loop f =
-    Lwt.pick
-      [(Lwt_stream.next input >|= fun x -> `Ok x);
-       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
-       (Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout)]
-    >>= function
-    | `Ok x -> f x; loop f
-    (* | `Stop -> Lwt.return () *)
-    | `Timeout -> Lwt.fail Timeout
-  in
-  loop (got_message p)
 
 let send_request p (i, ofs, len) =
   p.act_reqs <- p.act_reqs + 1;
@@ -469,7 +451,7 @@ let send_have p idx =
 
 let send_have_bitfield p bits =
   send_message p (Wire.BITFIELD bits)
-  
+
 let send_cancel p (i, j) =
   match p.info with
   | HasMeta n ->
@@ -491,7 +473,7 @@ let request_meta_piece p idx =
       "piece", Bcode.Int (Int64.of_int idx) ]
   in
   Bcode.encode (Bcode.Dict d) |> send_extended p id
-    
+
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download
 
@@ -540,7 +522,7 @@ let start p =
   let run_loop () =
     let wrap t = Lwt.pick [t; Lwt_condition.wait p.on_stop] in
     Lwt.catch
-      (fun () -> Lwt.join [wrap (reader_loop p);
+      (fun () -> Lwt.join [(* wrap (reader_loop p); *)
                            wrap (writer_loop p);
                            wrap (request_metadata_loop p);
                            wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
@@ -576,15 +558,15 @@ let got_metadata p m get_next_requests =
     failwith "Peer.got_metadata: already has meta"
 
 let create sock addr id handle_event info =
-  let input, output = IO.in_channel sock, IO.out_channel sock in
+  let (* input, *) output = (* IO.in_channel sock, *) IO.out_channel sock in
   let extensions = Hashtbl.create 17 in
   let p =
-    { sock; node = (id, addr); input; output;
+    { sock; node = (id, addr); (* input; *) output;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
       extbits = Bits.create (8 * 8);
       extensions;
-      act_reqs = 0; 
+      act_reqs = 0;
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
       handle = handle_event;
@@ -608,7 +590,7 @@ let create_no_meta sock addr id handle_event get_next_metadata_request =
   let info = NoMeta { have = []; has_all = false; request = get_next_metadata_request } in
   let p = create sock addr id handle_event info in
   p
-  
+
 let create_has_meta sock addr id handle_event m get_next_requests =
   let npieces = Metadata.piece_count m in
   let info = HasMeta
@@ -675,3 +657,6 @@ let is_snubbing p =
 
 let to_string p =
   string_of_node p.node
+
+let sock p =
+  p.sock

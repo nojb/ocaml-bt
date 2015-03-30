@@ -44,11 +44,11 @@ type has_meta_stage =
   | Loading
   | Leeching of Torrent.t * Choker.t * Requester.t
   | Seeding of Torrent.t * Choker.t
-                             
+
 type stage =
   | NoMeta of no_meta_stage
   | HasMeta of Metadata.t * has_meta_stage
-        
+
 type t = {
   id : SHA1.t;
   ih : SHA1.t;
@@ -81,6 +81,25 @@ let get_next_metadata_request bt p () =
     IncompleteMetadata.get_next_metadata_request m
   | _ ->
     None
+
+let reader_loop p =
+  let ic = IO.in_channel (Peer.sock p) in
+  let input = Lwt_stream.from
+      (fun () -> Wire.read ic >>= fun msg ->
+        (* debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg); *)
+        Lwt.return (Some msg))
+  in
+  let rec loop f =
+    Lwt.pick
+      [(Lwt_stream.next input >|= fun x -> `Ok x);
+       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
+       (Lwt_unix.sleep (float Peer.keepalive_delay) >|= fun () -> `Timeout)]
+    >>= function
+    | `Ok x -> f x; loop f
+    (* | `Stop -> Lwt.return () *)
+    | `Timeout -> Lwt.fail Peer.Timeout
+  in
+  loop (Peer.got_message p)
 
 let handle_peer_event bt p e =
   match e with
@@ -192,7 +211,7 @@ let handle_peer_event bt p e =
       | None ->
         debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i
     end
-  
+
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
     debug "piece %d verified and written to disk" i;
