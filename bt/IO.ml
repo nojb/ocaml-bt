@@ -69,7 +69,7 @@ let write sock str pos len =
     c#transform str pos buf 0 len;
     really_write_raw sock buf 0 len >>= fun () ->
     Lwt.return len
-      
+
 let close sock =
   begin match sock.enc with Some c -> c#wipe | _ -> () end;
   begin match sock.dec with Some c -> c#wipe | _ -> () end;
@@ -90,22 +90,22 @@ let read_char sock =
   let buf = String.create 1 in
   really_read sock buf 0 1 >>= fun () ->
   Lwt.return buf.[0]
-    
+
 let read_string sock len =
   let str = String.create len in
   really_read sock str 0 len >>= fun () ->
   Lwt.return str
-    
+
 let read_int16 sock =
   read_string sock 2 >>= fun s ->
   bitmatch Bitstring.bitstring_of_string s with
   | { n : 16 } -> Lwt.return n
-                    
+
 let read_int32 sock =
   read_string sock 4 >>= fun s ->
   bitmatch Bitstring.bitstring_of_string s with
   | { n : 32 } -> Lwt.return n
-                    
+
 let really_write sock str pos len =
   let rec loop pos len =
     if len <= 0 then
@@ -115,38 +115,38 @@ let really_write sock str pos len =
       loop (pos + n) (len - n)
   in
   loop pos len
-    
+
 let write_string sock str =
   really_write sock str 0 (String.length str)
-    
+
 let write_bitstring sock (s, ofs, len) =
   assert (ofs land 7 = 0 && len land 7 = 0);
   really_write sock s (ofs lsr 3) (len lsr 3)
-    
+
 let write_int16 sock n =
   write_bitstring sock (BITSTRING { n :  16 })
-    
+
 let write_int32 sock n =
   write_bitstring sock (BITSTRING { n : 32 })
 
 let on_write sock =
   Lwt_condition.wait sock.on_write
-  
+
 let enable_encryption sock c =
   match sock.enc with
   | None -> sock.enc <- Some c
   | Some _ -> assert false
-    
+
 let disable_encryption sock =
   match sock.enc with
   | None -> assert false
   | Some _ -> sock.enc <- None
-      
+
 let enable_decryption sock c =
   match sock.dec with
   | None -> sock.dec <- Some c
   | Some _ -> assert false
-    
+
 let disable_decryption sock =
   match sock.dec with
   | Some _ -> sock.dec <- None
@@ -157,7 +157,7 @@ let is_encrypted sock =
   | None, None -> false
   | Some _, _
   | _, Some _ -> true
-    
+
 let create addr =
   let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   { on_write = Lwt_condition.create ();
@@ -172,7 +172,7 @@ let of_file_descr fd =
     dec = None;
     addr = Addr.of_sockaddr (Lwt_unix.getpeername fd);
     fd }
-  
+
 let connect sock =
   Lwt_unix.connect sock.fd (Addr.to_sockaddr sock.addr)
 
@@ -182,16 +182,16 @@ let reconnect sock =
   Lwt_unix.close sock.fd >>= fun () ->
   sock.fd <- Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0;
   Lwt_unix.connect sock.fd (Addr.to_sockaddr sock.addr)
-    
+
 let addr sock =
   sock.addr
 
 let default_buffer_size = 32 * 1024
-  
+
 let out_channel ?(buffer_size = default_buffer_size) sock =
   let write_bytes b ofs len =
     let str = String.create len in
-    Lwt_bytes.blit_bytes_string b ofs str 0 len;
+    Lwt_bytes.blit_to_bytes b ofs str 0 len;
     really_write sock str 0 len >>= fun () ->
     Lwt.return len
   in
@@ -199,12 +199,12 @@ let out_channel ?(buffer_size = default_buffer_size) sock =
     ~mode:Lwt_io.Output
     ~close:(fun () -> close sock)
     write_bytes
-                              
+
 let in_channel ?(buffer_size = default_buffer_size) sock =
   let read_bytes b ofs len =
     let str = String.create len in
     read sock str 0 len >>= fun n ->
-    Lwt_bytes.blit_string_bytes str 0 b ofs n;
+    Lwt_bytes.blit_from_bytes str 0 b ofs n;
     Lwt.return n
   in
   Lwt_io.make ~buffer_size
