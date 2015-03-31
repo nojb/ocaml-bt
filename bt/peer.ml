@@ -50,10 +50,6 @@ type event =
   | GotPEX of (Addr.t * pex_flags) list * Addr.t list
   | DHTPort of int
 
-type event_callback = event -> unit
-type get_metadata_func = unit -> int option
-type get_block_func = int -> (int * int) list
-
 let kilobyte n = n * 1024
 let keepalive_delay = 20 (* FIXME *)
 let request_pipeline_max = 5
@@ -69,23 +65,17 @@ type has_meta_info = {
   meta : Metadata.t
 }
 
-type no_meta_info = {
+and no_meta_info = {
   mutable have : int list;
   mutable has_all : bool;
   request : get_metadata_func
 }
 
-type meta_info =
+and meta_info =
   | HasMeta of has_meta_info
   | NoMeta of no_meta_info
 
-let string_of_node (id, addr) =
-  Printf.sprintf "%s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr)
-
-let strl f l =
-  "[" ^ String.concat " " (List.map f l) ^ "]"
-
-type t = {
+and t = {
   node : SHA1.t * Addr.t;
   sock : IO.t;
   output : Lwt_io.output_channel;
@@ -111,7 +101,7 @@ type t = {
   on_ltep_handshake : unit Lwt_condition.t;
   on_stop : unit Lwt_condition.t;
 
-  push : event -> unit;
+  push : t -> event -> unit;
 
   mutable info : meta_info;
 
@@ -123,6 +113,16 @@ type t = {
 
   mutable last_pex : Addr.t list
 }
+
+and event_callback = t -> event -> unit
+and get_metadata_func = t -> int option
+and get_block_func = t -> int -> (int * int) list
+
+let string_of_node (id, addr) =
+  Printf.sprintf "%s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr)
+
+let strl f l =
+  "[" ^ String.concat " " (List.map f l) ^ "]"
 
 let next_to_send p =
   if Lwt_sequence.length p.send_queue > 0 then
@@ -139,7 +139,7 @@ let send_message p m =
     ignore (Lwt_sequence.add_r m p.send_queue)
 
 let signal p e =
-  p.push e
+  p.push p e
 
 let send_extended p id s =
   send_message p (Wire.EXTENDED (id, s))
@@ -486,7 +486,7 @@ let request_metadata_loop p =
       Lwt.return ()
     | NoMeta nfo ->
       if supports_ut_metadata p then begin
-        begin match nfo.request () with
+        begin match nfo.request p with
         | Some i -> request_meta_piece p i
         | None -> ()
         end;
@@ -502,7 +502,7 @@ let request_blocks_loop p =
   | HasMeta nfo ->
     let rec loop () =
       (* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *)
-      let ps = nfo.request (request_pipeline_max - p.act_reqs) in
+      let ps = nfo.request p (request_pipeline_max - p.act_reqs) in
       List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
       Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest);
                 (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>=

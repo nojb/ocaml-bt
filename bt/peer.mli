@@ -69,9 +69,9 @@ type event =
   | DHTPort of int
   (** The peer's DHT node is using this port. *)
 
-type event_callback = event -> unit
-type get_metadata_func = unit -> int option
-type get_block_func = int -> (int * int) list
+type event_callback = t -> event -> unit
+type get_metadata_func = t -> int option
+type get_block_func = t -> int -> (int * int) list
 
 val create_has_meta : IO.t -> Addr.t -> SHA1.t -> event_callback -> Metadata.t
   -> get_block_func -> t

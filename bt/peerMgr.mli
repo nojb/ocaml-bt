@@ -26,7 +26,7 @@
 type t
 
 val create_no_meta : SHA1.t -> SHA1.t -> (IO.t -> SHA1.t -> Bits.t -> unit) ->
-  (Peer.t -> Peer.get_metadata_func) -> t
+  Peer.get_metadata_func -> t
 (** [create_no_meta id ih cb r] creates a peer manager without metainfo
     information.  [id] is the client ID, [ih] is the torrent info-hash, [cb] is
     the callback to invoke on important peer events (see {!Peer.event}) and [r]

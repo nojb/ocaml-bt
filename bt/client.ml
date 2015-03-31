@@ -77,7 +77,7 @@ let get_next_requests bt p n =
   | HasMeta _ -> []
   | NoMeta _ -> []
 
-let get_next_metadata_request bt p () =
+let get_next_metadata_request bt p =
   match bt.stage with
   | NoMeta (PartialMeta m) ->
     IncompleteMetadata.get_next_metadata_request m
@@ -303,28 +303,21 @@ let handle_event bt = function
   | PeerEvent (p, e) ->
       handle_peer_event bt p e
   | PeerJoined (sock, id, exts) ->
-      let p =
-        match bt.stage with
+      let p = match bt.stage with
         | HasMeta (m, _) ->
-            let rec p =
-              lazy (Peer.create_has_meta sock (IO.addr sock) id
-                  (fun e -> bt.push (PeerEvent (!!p, e))) m (fun n -> get_next_requests bt !!p n))
-            in
-            p
+            Peer.create_has_meta sock (IO.addr sock) id
+              (fun p e -> bt.push (PeerEvent (p, e))) m (get_next_requests bt)
         | NoMeta r ->
-            let rec p =
-              lazy (Peer.create_no_meta sock (IO.addr sock) id
-                  (fun e -> bt.push (PeerEvent (!!p, e))) (fun () -> get_next_metadata_request bt !!p ()))
-            in
-            p
+            Peer.create_no_meta sock (IO.addr sock) id
+              (fun p e -> bt.push (PeerEvent (p, e))) (get_next_metadata_request bt)
       in
-      Peer.start !!p;
+      Peer.start p;
       (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
-      if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake !!p;
-      if Bits.is_set exts Wire.dht_bit then Peer.send_port !!p 6881; (* FIXME fixed port *)
+      if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
+      if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
       begin match bt.stage with
       | HasMeta (_, Leeching (tor, _, _))
-      | HasMeta (_, Seeding (tor, _)) -> Peer.send_have_bitfield !!p (Torrent.have tor)
+      | HasMeta (_, Seeding (tor, _)) -> Peer.send_have_bitfield p (Torrent.have tor)
       | HasMeta (_, Loading)
       | NoMeta _ -> ()
       end
@@ -369,7 +362,7 @@ let create mg =
     lazy (PeerMgr.create_no_meta id ih
         (fun sock id ext -> !!cl.push (PeerJoined (sock, id, ext)))
         (* (fun p e -> handle_peer_event !!cl p e) *)
-        (fun p () -> get_next_metadata_request !!cl p ()))
+        (fun p -> get_next_metadata_request !!cl p))
   in
   !!cl
 
