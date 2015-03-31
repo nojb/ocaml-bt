@@ -35,7 +35,7 @@ type event =
   | Announce of Tracker.Tier.t * Tracker.event option
   | GotMetaLength of IncompleteMetadata.t
   | GotBadMeta
-  | PeerEvent of Peer.t * Peer.event
+  | PeerEvent of Peer.event
   | PeerJoined of IO.t * SHA1.t * Bits.t
 
 type no_meta_stage =
@@ -84,9 +84,9 @@ let get_next_metadata_request bt p =
   | _ ->
       None
 
-let handle_peer_event bt p e =
+let handle_peer_event bt e =
   match e with
-  | Peer.Finished ->
+  | Peer.Finished p ->
       PeerMgr.peer_finished bt.peer_mgr p;
       begin match bt.stage with
       | HasMeta (_, Leeching (_, ch, r)) ->
@@ -97,7 +97,7 @@ let handle_peer_event bt p e =
           if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
       | _ -> ()
       end
-  | Peer.AvailableMetadata len ->
+  | Peer.AvailableMetadata (p, len) ->
       debug "%s offered %d bytes of metadata" (Peer.to_string p) len;
       begin match bt.stage with
       | NoMeta NoMetaLength ->
@@ -105,15 +105,15 @@ let handle_peer_event bt p e =
       | _ ->
           ()
       end
-  | Peer.Choked ->
+  | Peer.Choked p ->
       begin match bt.stage with
       | HasMeta (_, Leeching (_, _, r)) ->
           Requester.peer_declined_all_requests r p
       | _ ->
           ()
       end
-  | Peer.Interested
-  | Peer.NotInterested ->
+  | Peer.Interested p
+  | Peer.NotInterested p ->
       begin match bt.stage with
       | HasMeta (_, Leeching (_, ch, _))
       | HasMeta (_, Seeding (_, ch)) ->
@@ -121,26 +121,26 @@ let handle_peer_event bt p e =
       | _ ->
           ()
       end
-  | Peer.Have i ->
+  | Peer.Have (p, i) ->
       begin match bt.stage with
       | HasMeta (_, Leeching (_, _, r)) ->
           Requester.got_have r i
       | _ -> ()
       end
-  | Peer.HaveBitfield b ->
+  | Peer.HaveBitfield (p, b) ->
       begin match bt.stage with
       | HasMeta (_, Leeching (_, _, r)) ->
           Requester.got_bitfield r b
       | _ -> ()
       end
-  | Peer.MetaRequested i ->
+  | Peer.MetaRequested (p, i) ->
       begin match bt.stage with
       | NoMeta _ ->
           Peer.send_reject_meta p i
       | HasMeta (meta, _) ->
           Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i)
       end
-  | Peer.GotMetaPiece (i, s) ->
+  | Peer.GotMetaPiece (p, i, s) ->
       begin match bt.stage with
       | NoMeta (PartialMeta meta) ->
           debug "got metadata piece %d/%d from %s" i
@@ -157,9 +157,9 @@ let handle_peer_event bt p e =
       | _ ->
           ()
       end
-  | Peer.RejectMetaPiece i ->
+  | Peer.RejectMetaPiece (p, i) ->
       debug "%s rejected request for metadata piece %d" (Peer.to_string p) i
-  | Peer.BlockRequested (idx, b) ->
+  | Peer.BlockRequested (p, idx, b) ->
       begin match bt.stage with
       | HasMeta (_, Leeching (dl, _, _))
       | HasMeta (_, Seeding (dl, _)) ->
@@ -169,7 +169,7 @@ let handle_peer_event bt p e =
       | _ ->
           ()
       end
-  | Peer.BlockReceived (idx, b, s) ->
+  | Peer.BlockReceived (p, idx, b, s) ->
       begin match bt.stage with
       | HasMeta (meta, Leeching (t, _, r)) ->
           debug "got block %d/%d (piece %d) from %s" b
@@ -180,11 +180,11 @@ let handle_peer_event bt p e =
       | _ ->
           ()
       end
-  | Peer.GotPEX (added, dropped) ->
+  | Peer.GotPEX (p, added, dropped) ->
       debug "got pex from %s added %d dropped %d" (Peer.to_string p)
         (List.length added) (List.length dropped);
       List.iter (fun (a, _) -> PeerMgr.handle_received_peer bt.peer_mgr a) added
-  | Peer.DHTPort i ->
+  | Peer.DHTPort (p, i) ->
       debug "got dht port %d from %s" i (Peer.to_string p);
       let addr, _ = Peer.addr p in
       Lwt.async begin fun () ->
@@ -212,8 +212,8 @@ let reader_loop bt p =
         begin match f x with
         | None ->
             loop f
-        | Some (p, e) ->
-            handle_peer_event bt p e;
+        | Some e ->
+            handle_peer_event bt e;
             loop f
         end
         (* let () = f x in loop f *)
@@ -306,16 +306,16 @@ let handle_event bt = function
         Lwt.catch doit (fun exn -> debug ~exn "announce failure"; Lwt.return ())
       in
       Lwt.async safe_doit
-  | PeerEvent (p, e) ->
-      handle_peer_event bt p e
+  | PeerEvent e ->
+      handle_peer_event bt e
   | PeerJoined (sock, id, exts) ->
       let p = match bt.stage with
         | HasMeta (m, _) ->
             Peer.create_has_meta sock (IO.addr sock) id
-              (fun p e -> bt.push (PeerEvent (p, e))) m (get_next_requests bt)
+              (fun e -> bt.push (PeerEvent e)) m (get_next_requests bt)
         | NoMeta r ->
             Peer.create_no_meta sock (IO.addr sock) id
-              (fun p e -> bt.push (PeerEvent (p, e))) (get_next_metadata_request bt)
+              (fun e -> bt.push (PeerEvent e)) (get_next_metadata_request bt)
       in
       Lwt.async (fun () -> reader_loop bt p);
       Peer.start p;

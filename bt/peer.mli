@@ -39,38 +39,38 @@ type pex_flags = {
     {!Client.handle_peer_event} and there they are re-routed to the relevant objects
     (Peer manager, Torrent, Choker, Requester, etc.). *)
 type event =
-  | Choked
-  | Unchoked
+  | Choked of t
+  | Unchoked of t
   (** The peer has choked us. *)
-  | Interested
+  | Interested of t
   (** The peer is interested in us. *)
-  | NotInterested
+  | NotInterested of t
   (** The peer is no longer interested in us. *)
-  | Have of int
+  | Have of t * int
   (** The peer has sent us a HAVE message. *)
-  | HaveBitfield of Bits.t
+  | HaveBitfield of t * Bits.t
   (** The peer has sent us a BITFIELD message. *)
-  | BlockRequested of int * int
+  | BlockRequested of t * int * int
   (** The peer has requested a block from us. *)
-  | BlockReceived of int * int * string
+  | BlockReceived of t * int * int * string
   (** The peer has sent us a block. *)
-  | Finished
+  | Finished of t
   (** The peer connection has closed. *)
-  | AvailableMetadata of int
+  | AvailableMetadata of t * int
   (** The peer has notified us that they are willing to transmit metadata
       informatio via ut_metadata method. *)
-  | MetaRequested of int
+  | MetaRequested of t * int
   (** The peer has requested a metadata piece from us. *)
-  | GotMetaPiece of int * string
+  | GotMetaPiece of t * int * string
   (** The peer has sent us a metadata piece. *)
-  | RejectMetaPiece of int
+  | RejectMetaPiece of t * int
   (** The peer has rejected a request for metadata information from us. *)
-  | GotPEX of (Addr.t * pex_flags) list * Addr.t list
+  | GotPEX of t * (Addr.t * pex_flags) list * Addr.t list
   (** The peer has sent us ut_pex data: added peers, dropped peers. *)
-  | DHTPort of int
+  | DHTPort of t * int
   (** The peer's DHT node is using this port. *)
 
-type event_callback = t -> event -> unit
+type event_callback = event -> unit
 type get_metadata_func = t -> int option
 type get_block_func = t -> int -> (int * int) list
 
@@ -194,7 +194,7 @@ val piece_data_time : t -> float
 val close : t -> unit
 (** Disconnect this peer. *)
 
-val got_message : t -> Wire.message -> (t * event) option
+val got_message : t -> Wire.message -> event option
 
 val send_pex : t -> Addr.t list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
