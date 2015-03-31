@@ -32,7 +32,7 @@ type event =
 
   | Announce of Tracker.Tier.t * Tracker.event option
 
-  | PeerConnected of IO.t * SHA1.t * Bits.t
+  | PeerConnected of Lwt_unix.file_descr * SHA1.t * Bits.t
 
   | PieceVerified of int
 

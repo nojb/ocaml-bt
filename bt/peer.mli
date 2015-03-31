@@ -33,8 +33,7 @@ type event_callback = event -> unit
 type get_metadata_func = t -> int option
 type get_block_func = t -> int -> (int * int) list
 
-val create_has_meta : IO.t -> Addr.t -> SHA1.t -> event_callback -> Metadata.t
-  -> get_block_func -> t
+val create_has_meta : SHA1.t -> event_callback -> Metadata.t -> get_block_func -> t
 (** [create_has_meta sock addr id cb m r] creates a peer in the block-requesting
     stage.  [sock] is the socket used to communicate with the peer, [addr] is
     its address, [id] is its ID, [cb] is the callback invoked on important
@@ -42,8 +41,7 @@ val create_has_meta : IO.t -> Addr.t -> SHA1.t -> event_callback -> Metadata.t
     metainfo dictionary, and [r] is the function used to pick blocks to request
     from this peer (see {!Requester.get_next_requests}). *)
 
-val create_no_meta : IO.t -> Addr.t -> SHA1.t -> event_callback -> get_metadata_func ->
-  t
+val create_no_meta : SHA1.t -> event_callback -> get_metadata_func -> t
 (** [create_no_meta sock addr id cb r] creates a peer in the metainfo-requesting
     stage.  [sock] is the socket used to communicate with this peer, [addr] is
     its address, [id] is its ID, [cb] is the callback invoked on important
@@ -58,7 +56,7 @@ val start : t -> unit
 val id : t -> SHA1.t
 (** The peer ID. *)
 
-val addr : t -> Addr.t
+(* val addr : t -> Addr.t *)
 (** The peer address. *)
 
 val send_extended_handshake : t -> unit
@@ -153,7 +151,7 @@ val piece_data_time : t -> float
 val close : t -> unit
 (** Disconnect this peer. *)
 
-val got_message : t -> Wire.message -> event option
+val got_message : t -> Wire.message -> event
 
 val send_pex : t -> Addr.t list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
@@ -165,4 +163,4 @@ val is_snubbing : t -> bool
 val to_string : t -> string
 (** Print out the peer's id (in shortened form) and address. *)
 
-val sock : t -> IO.t
+(* val sock : t -> IO.t *)

@@ -28,7 +28,7 @@ type message =
   | HAVE of int
   | BITFIELD of Bits.t
   | REQUEST of int * int * int
-  | PIECE of int * int * string
+  | PIECE of int * int * Cstruct.t
   | CANCEL of int * int * int
   | PORT of int
   | HAVE_ALL
@@ -36,11 +36,17 @@ type message =
   | SUGGEST of int
   | REJECT of int * int * int
   | ALLOWED of int list
-  | EXTENDED of int * string
+  | EXTENDED of int * Cstruct.t
 
 val string_of_message : message -> string
-val read : Lwt_io.input_channel -> message Lwt.t
+(* val read : Lwt_io.input_channel -> message Lwt.t *)
 val write : Lwt_io.output_channel -> message -> unit Lwt.t
 
 val ltep_bit : int
 val dht_bit : int
+
+module R : sig
+  type state
+  val empty : state
+  val handle : state -> Cstruct.t -> state * message list
+end

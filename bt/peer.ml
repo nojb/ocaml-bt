@@ -54,10 +54,9 @@ and meta_info =
   | NoMeta of no_meta_info
 
 and t = {
-  node : SHA1.t * Addr.t;
   id : SHA1.t;
-  sock : IO.t;
-  output : Lwt_io.output_channel;
+  (* sock : IO.t; *)
+  (* output : Lwt_io.output_channel; *)
   (* input : Lwt_io.input_channel; *)
   (* mutable id : SHA1.t; *)
   mutable am_choking : bool;
@@ -128,7 +127,7 @@ let send_block p i b s =
   | HasMeta info ->
       let i, o, l = Metadata.block info.meta i b in
       assert (l = String.length s);
-      send_message p (Wire.PIECE (i, o, s))
+      send_message p (Wire.PIECE (i, o, Cstruct.of_string s))
   | _ ->
       assert false
 
@@ -139,13 +138,13 @@ let got_ut_metadata p data =
   let data = String.sub data data_start (String.length data - data_start) in
   match msg_type with
   | 0 -> (* request *)
-      Some (MetaRequested (p.id, piece))
+      MetaRequested (p.id, piece)
   | 1 -> (* data *)
-      Some (GotMetaPiece (p.id, piece, data))
+      GotMetaPiece (p.id, piece, data)
   | 2 -> (* reject *)
-      Some (RejectMetaPiece (p.id, piece))
+      RejectMetaPiece (p.id, piece)
   | _ ->
-      None
+      NoEvent
 
 let send_reject_meta p piece =
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -153,7 +152,7 @@ let send_reject_meta p piece =
     let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
     Bcode.encode (Bcode.Dict d)
   in
-  send_extended p id m
+  send_extended p id (Cstruct.of_string m)
 
 let send_meta_piece p piece (len, s) =
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -164,7 +163,7 @@ let send_meta_piece p piece (len, s) =
         "total_size", Bcode.Int (Int64.of_int len) ] in
     Bcode.encode (Bcode.Dict d) ^ s
   in
-  send_extended p id m
+  send_extended p id (Cstruct.of_string m)
 
 let got_ut_pex p data =
   (* FIXME support for IPv6 *)
@@ -195,7 +194,7 @@ let got_ut_pex p data =
     loop 0
   in
   let dropped = loop (Bitstring.bitstring_of_string dropped) in
-  Some (GotPEX (p.id, List.combine added added_f, dropped))
+  GotPEX (p.id, List.combine added added_f, dropped)
 
 let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata);
@@ -206,41 +205,41 @@ let got_choke p =
     p.peer_choking <- true;
     p.act_reqs <- 0;
     (* signal p Choked; *)
-    Some (Choked p.id)
+    Choked p.id
     (* Lwt_condition.broadcast p.on_choke () *)
   end else
-    None
+    NoEvent
 
 let got_unchoke p =
   if p.peer_choking then begin
-    debug "%s is no longer choking us" (string_of_node p.node);
+    (* debug "%s is no longer choking us" (string_of_node p.node); *)
     p.peer_choking <- false;
-    Some (Unchoked p.id)
+    Unchoked p.id
     (* Lwt_condition.broadcast p.on_unchoke () *)
   end else
-    None
+    NoEvent
 
 let got_interested p =
   if not p.peer_interested then begin
-    debug "%s is interested in us" (string_of_node p.node);
+    (* debug "%s is interested in us" (string_of_node p.node); *)
     p.peer_interested <- true;
-    Some (Interested p.id)
+    Interested p.id
   end else
-    None
+    NoEvent
 
 let got_not_interested p =
   if p.peer_interested then begin
-    debug "%s is no longer interested in us" (string_of_node p.node);
+    (* debug "%s is no longer interested in us" (string_of_node p.node); *)
     p.peer_interested <- false;
-    Some (NotInterested p.id)
+    NotInterested p.id
   end else
-    None
+    NoEvent
 
 let got_have_bitfield p b =
   begin match p.info with
   | HasMeta n ->
       Bits.blit b 0 n.have 0 (Bits.length n.have);
-      Some (HaveBitfield (p.id, n.have))
+      HaveBitfield (p.id, n.have)
   | NoMeta n ->
       let rec loop acc i =
         if i >= Bits.length b then List.rev acc else
@@ -248,7 +247,7 @@ let got_have_bitfield p b =
         else loop acc (i+1)
       in
       n.have <- loop [] 0;
-      Some (HaveBitfield (p.id, b))
+      HaveBitfield (p.id, b)
   end
 
 let got_have p idx =
@@ -256,34 +255,34 @@ let got_have p idx =
   | HasMeta nfo ->
       if not (Bits.is_set nfo.have idx) then begin
         Bits.set nfo.have idx;
-        Some (Have (p.id, idx))
+        Have (p.id, idx)
       end else
-        None
+        NoEvent
   | NoMeta n ->
       if not (List.mem idx n.have) && not n.has_all then begin
         n.have <- idx :: n.have;
-        Some (Have (p.id, idx))
+        Have (p.id, idx)
       end else
-        None
+        NoEvent
 
 let got_cancel p i ofs len =
   Lwt_sequence.iter_node_l (fun n ->
     match Lwt_sequence.get n with
-    | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && String.length s = len ->
+    | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && Cstruct.len s = len ->
         Lwt_sequence.remove n
     | _ ->
         ()) p.send_queue;
-  None
+  NoEvent
 
 let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
   p.piece_data_time <- Unix.time ();
-  Rate.add p.download (String.length s);
+  Rate.add p.download (Cstruct.len s);
   Lwt_condition.broadcast p.on_can_request ();
   match p.info with
   | HasMeta info ->
       Bits.set info.blame idx;
-      Some (BlockReceived (p.id, idx, Metadata.block_number info.meta idx off, s))
+      BlockReceived (p.id, idx, Metadata.block_number info.meta idx off, Cstruct.to_string s)
   | NoMeta _ ->
       failwith "Peer.got_piece: no meta info"
 
@@ -295,12 +294,12 @@ let got_extended_handshake p bc =
   List.iter (fun (name, id) ->
     if id = 0 then Hashtbl.remove p.extensions name
     else Hashtbl.replace p.extensions name id) m;
-  debug "%s supports %s" (string_of_node p.node) (strl fst m);
+  (* debug "%s supports %s" (string_of_node p.node) (strl fst m); *)
   Lwt_condition.broadcast p.on_ltep_handshake ();
   if Hashtbl.mem p.extensions "ut_metadata" then
-    Some (AvailableMetadata (p.id, Bcode.find "metadata_size" bc |> Bcode.to_int))
+    AvailableMetadata (p.id, Bcode.find "metadata_size" bc |> Bcode.to_int)
   else
-    None
+    NoEvent
 
 let got_extended p id data =
   let (_, f) = List.assoc id supported_extensions in
@@ -312,17 +311,17 @@ let got_request p idx off len =
       let b = Metadata.block_number info.meta idx off in
       let _, _, l = Metadata.block info.meta idx b in
       assert (l = len);
-      Some (BlockRequested (p.id, idx, b))
+      BlockRequested (p.id, idx, b)
   | _ ->
-      None
+      NoEvent
 (* FIXME send REJECT if fast extension is supported *)
 
 let got_port p i =
-  Some (DHTPort (p.id, i))
+  DHTPort (p.id, i)
 
 let got_message p m =
   match m with
-  | Wire.KEEP_ALIVE -> None
+  | Wire.KEEP_ALIVE -> NoEvent
   | Wire.CHOKE -> got_choke p
   | Wire.UNCHOKE -> got_unchoke p
   | Wire.INTERESTED -> got_interested p
@@ -334,35 +333,35 @@ let got_message p m =
   | Wire.CANCEL (idx, off, len) -> got_cancel p idx off len
   (* | Wire.HAVE_ALL *)
   (* | Wire.HAVE_NONE -> raise (InvalidProtocol m) *)
-  | Wire.EXTENDED (0, s) -> got_extended_handshake p (Bcode.decode s)
-  | Wire.EXTENDED (id, s) -> got_extended p id s
+  | Wire.EXTENDED (0, s) -> got_extended_handshake p (Bcode.decode (Cstruct.to_string s))
+  | Wire.EXTENDED (id, s) -> got_extended p id (Cstruct.to_string s)
   | Wire.PORT i -> got_port p i
-  | _ -> None
+  | _ -> NoEvent
 
 let send_request p (i, ofs, len) =
   p.act_reqs <- p.act_reqs + 1;
   send_message p (Wire.REQUEST (i, ofs, len))
 
-let writer_loop p =
-  let rec loop () =
-    Lwt.pick
-      [(Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout);
-       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
-       (next_to_send p >|= fun msg -> `Ready msg)]
-    >>= function
-    | `Timeout ->
-        Wire.write p.output Wire.KEEP_ALIVE >>= fun () ->
-        Lwt_io.flush p.output >>= loop
-    (* | `Stop -> *)
-    (* Lwt.return_unit *)
-    | `Ready m ->
-        Wire.write p.output m >>= fun () ->
-        Lwt_io.flush p.output >>= fun () ->
-        debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m);
-        (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
-        loop ()
-  in
-  loop ()
+(* let writer_loop p = *)
+(*   let rec loop () = *)
+(*     Lwt.pick *)
+(*       [(Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout); *)
+(*        (\* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *\) *)
+(*        (next_to_send p >|= fun msg -> `Ready msg)] *)
+(*     >>= function *)
+(*     | `Timeout -> *)
+(*         Wire.write p.output Wire.KEEP_ALIVE >>= fun () -> *)
+(*         Lwt_io.flush p.output >>= loop *)
+(*     (\* | `Stop -> *\) *)
+(*     (\* Lwt.return_unit *\) *)
+(*     | `Ready m -> *)
+(*         Wire.write p.output m >>= fun () -> *)
+(*         Lwt_io.flush p.output >>= fun () -> *)
+(*         debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m); *)
+(*         (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (Cstruct.len s) | _ -> ()); *)
+(*         loop () *)
+(*   in *)
+(*   loop () *)
 
 let supports_ut_metadata p =
   Hashtbl.mem p.extensions "ut_metadata"
@@ -371,10 +370,11 @@ let supports_ut_pex p =
   Hashtbl.mem p.extensions "ut_pex"
 
 let id p =
-  fst p.node
+  p.id
+(*   fst p.node *)
 
-let addr p =
-  snd p.node
+(* let addr p = *)
+(*   snd p.node *)
 
 let send_extended_handshake p =
   let m =
@@ -382,7 +382,7 @@ let send_extended_handshake p =
       name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.Dict ["m", Bcode.Dict m] in
-  send_extended p 0 (Bcode.encode m)
+  send_extended p 0 (Cstruct.of_string (Bcode.encode m))
 
 let peer_choking p =
   p.peer_choking
@@ -410,28 +410,28 @@ let client_interested p =
 let send_choke p =
   if not p.am_choking then begin
     p.am_choking <- true;
-    debug "choking %s" (string_of_node p.node);
+    (* debug "choking %s" (string_of_node p.node); *)
     send_message p Wire.CHOKE
   end
 
 let send_unchoke p =
   if p.am_choking then begin
     p.am_choking <- false;
-    debug "no longer choking %s" (string_of_node p.node);
+    (* debug "no longer choking %s" (string_of_node p.node); *)
     send_message p Wire.UNCHOKE
   end
 
 let send_interested p =
   if not p.am_interested then begin
     p.am_interested <- true;
-    debug "interested in %s" (string_of_node p.node);
+    (* debug "interested in %s" (string_of_node p.node); *)
     send_message p Wire.INTERESTED
   end
 
 let send_not_interested p =
   if p.am_interested then begin
     p.am_interested <- false;
-    debug "no longer interested in %s" (string_of_node p.node);
+    (* debug "no longer interested in %s" (string_of_node p.node); *)
     send_message p Wire.NOT_INTERESTED
   end
 
@@ -462,7 +462,7 @@ let request_meta_piece p idx =
     [ "msg_type", Bcode.Int 0L;
       "piece", Bcode.Int (Int64.of_int idx) ]
   in
-  Bcode.encode (Bcode.Dict d) |> send_extended p id
+  Bcode.encode (Bcode.Dict d) |> Cstruct.of_string |> send_extended p id
 
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download
@@ -509,23 +509,24 @@ let request_blocks_loop p =
 (*             (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)] *)
 
 let start p =
-  let run_loop () =
-    let wrap t = Lwt.pick [t; Lwt_condition.wait p.on_stop] in
-    Lwt.catch
-      (fun () -> Lwt.join [(* wrap (reader_loop p); *)
-           wrap (writer_loop p);
-           wrap (request_metadata_loop p);
-           wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
-      (fun exn ->
-         debug ~exn "%s read/write error" (string_of_node p.node);
-         Lwt.return ())
-    >>= fun () ->
-    IO.close p.sock >|= fun () ->
-    signal p (PeerDisconnected p.id)
-    (* ignore (IO.close p.sock); (\* FIXME *\) *)
-    (* Lwt.return () *)
-  in
-  Lwt.async run_loop;
+  (* let run_loop () = *)
+  (*   let wrap t = Lwt.pick [t; Lwt_condition.wait p.on_stop] in *)
+  (*   Lwt.catch *)
+  (*     (fun () -> Lwt.join [(\* wrap (reader_loop p); *\) *)
+  (*          wrap (writer_loop p); *)
+  (*          wrap (request_metadata_loop p); *)
+  (*          wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)]) *)
+  (*     (fun exn -> *)
+  (*        debug ~exn "%s read/write error" (string_of_node p.node); *)
+  (*        Lwt.return ()) *)
+  (*   >>= fun () -> *)
+  (*   IO.close p.sock >|= fun () -> *)
+  (*   signal p (PeerDisconnected p.id) *)
+  (*   (\* ignore (IO.close p.sock); (\\* FIXME *\\) *\) *)
+  (*   (\* Lwt.return () *\) *)
+  (* in *)
+  (* Lwt.async run_loop; *)
+  (* FIXME FIXME *)
   match p.info with
   | HasMeta _ -> Lwt_condition.broadcast p.on_meta ()
   | NoMeta _ -> ()
@@ -547,11 +548,11 @@ let got_metadata p m get_next_requests =
   | HasMeta _ ->
       failwith "Peer.got_metadata: already has meta"
 
-let create sock addr id push info =
-  let output = IO.out_channel sock in
+let create id push info =
+  (* let output = IO.out_channel sock in *)
   let extensions = Hashtbl.create 17 in
   let p =
-    { sock; node = (id, addr); id; output;
+    { id;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
       extbits = Bits.create (8 * 8);
@@ -576,19 +577,19 @@ let create sock addr id push info =
   in
   p
 
-let create_no_meta sock addr id push get_next_metadata_request =
+let create_no_meta id push get_next_metadata_request =
   let info = NoMeta { have = []; has_all = false; request = get_next_metadata_request } in
-  let p = create sock addr id push info in
+  let p = create id push info in
   p
 
-let create_has_meta sock addr id push m get_next_requests =
+let create_has_meta id push m get_next_requests =
   let npieces = Metadata.piece_count m in
   let info = HasMeta
       { have = Bits.create npieces;
         blame = Bits.create npieces;
         request = get_next_requests; meta = m }
   in
-  let p = create sock addr id push info in
+  let p = create id push info in
   (* Lwt_condition.broadcast p.on_meta (); *)
   p
 
@@ -629,9 +630,9 @@ let send_ut_pex p added dropped =
       "added.f", Bcode.String (String.make (List.length added) '\000');
       "dropped", Bcode.String (c dropped) ]
   in
-  send_extended p id (Bcode.encode (Bcode.Dict d));
-  debug "sent pex to %s added %d dropped %d" (string_of_node p.node)
-    (List.length added) (List.length dropped)
+  send_extended p id (Cstruct.of_string (Bcode.encode (Bcode.Dict d)))
+  (* debug "sent pex to %s added %d dropped %d" (string_of_node p.node) *)
+    (* (List.length added) (List.length dropped) *)
 
 let send_pex p pex =
   if supports_ut_pex p then begin
@@ -646,7 +647,8 @@ let is_snubbing p =
   now -. p.piece_data_time <= 30.0
 
 let to_string p =
-  string_of_node p.node
+  SHA1.to_hex_short p.id
+  (* string_of_node p.node *)
 
-let sock p =
-  p.sock
+(* let sock p = *)
+(*   p.sock *)

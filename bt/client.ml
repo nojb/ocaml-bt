@@ -59,31 +59,46 @@ let push_peers_received bt xs =
 (*   | _ -> *)
 (*       None *)
 
-let reader_loop bt p =
-  let ic = IO.in_channel (Peer.sock p) in
-  let input = Lwt_stream.from
-      (fun () -> Wire.read ic >>= fun msg ->
+let buf_size = 1024
+
+let reader_loop push fd p =
+  (* let ic = IO.in_channel (Peer.sock p) in *)
+  let buf = Cstruct.create buf_size in
+  (* let fill ic = *)
+    (* IO.in_ *)
+  (* let input = Lwt_stream.from *)
+      (* (fun () -> Wire.read ic >>= fun msg -> *)
         (* debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg); *)
-        Lwt.return (Some msg))
+        (* Lwt.return (Some msg)) *)
+  (* in *)
+  let rec loop r =
+    Lwt_cstruct.read fd buf >>= function
+    | 0 ->
+        failwith "eof"
+    | n ->
+        let r, msgs = Wire.R.handle r (Cstruct.sub buf 0 n) in
+        List.iter (fun msg -> push (Peer.got_message p msg)) msgs;
+        loop r
   in
-  let rec loop f =
-    Lwt.pick
-      [(Lwt_stream.next input >|= fun x -> `Ok x);
-       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
-       (Lwt_unix.sleep (float Peer.keepalive_delay) >|= fun () -> `Timeout)]
-    >>= function
-    | `Ok x ->
-        begin match f x with
-        | None ->
-            loop f
-        | Some e ->
-            bt.push e;
-            loop f
-        end
-    (* | `Stop -> Lwt.return () *)
-    | `Timeout -> Lwt.fail Peer.Timeout
-  in
-  loop (Peer.got_message p)
+  loop Wire.R.empty
+
+  (*   Lwt.pick *)
+  (*     [(Lwt_stream.next input >|= fun x -> `Ok x); *)
+  (*      (\* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *\) *)
+  (*      (Lwt_unix.sleep (float Peer.keepalive_delay) >|= fun () -> `Timeout)] *)
+  (*   >>= function *)
+  (*   | `Ok x -> *)
+  (*       begin match f x with *)
+  (*       | None -> *)
+  (*           loop f *)
+  (*       | Some e -> *)
+  (*           bt.push e; *)
+  (*           loop f *)
+  (*       end *)
+  (*   (\* | `Stop -> Lwt.return () *\) *)
+  (*   | `Timeout -> Lwt.fail Peer.Timeout *)
+  (* in *)
+  (* loop (Peer.got_message p) *)
 
 (* let handle_torrent_event bt = function *)
 (*   | Torrent.TorrentComplete -> *)
@@ -248,9 +263,9 @@ let share_torrent bt meta dl peers =
 
     | PeerConnected (sock, id, exts) ->
         let p =
-          Peer.create_has_meta sock (IO.addr sock) id bt.push meta (Requester.get_next_requests r)
+          Peer.create_has_meta id bt.push meta (Requester.get_next_requests r)
         in
-        Lwt.async (fun () -> reader_loop bt p);
+        Lwt.async (fun () -> reader_loop bt.push sock p);
         Peer.start p;
         (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
         if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
@@ -301,11 +316,8 @@ let rec fetch_metadata bt =
         loop peers m
 
     | PeerConnected (sock, id, exts) ->
-        let p =
-          Peer.create_no_meta sock (IO.addr sock) id bt.push
-            (fun _ -> None (* FIXME FIXME *))
-        in
-        Lwt.async (fun () -> reader_loop bt p);
+        let p = Peer.create_no_meta id bt.push (fun _ -> None (* FIXME FIXME *)) in
+        Lwt.async (fun () -> reader_loop bt.push sock p);
         Peer.start p;
         (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
         if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;

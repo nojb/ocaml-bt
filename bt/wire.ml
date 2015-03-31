@@ -30,7 +30,7 @@ type message =
   | HAVE of int
   | BITFIELD of Bits.t
   | REQUEST of int * int * int
-  | PIECE of int * int * string
+  | PIECE of int * int * Cstruct.t
   | CANCEL of int * int * int
   | PORT of int
   | HAVE_ALL
@@ -38,7 +38,7 @@ type message =
   | SUGGEST of int
   | REJECT of int * int * int
   | ALLOWED of int list
-  | EXTENDED of int * string
+  | EXTENDED of int * Cstruct.t
 
 let strl f l =
   "[" ^ String.concat " " (List.map f l) ^ "]"
@@ -80,7 +80,7 @@ let put' = function
   | REQUEST (i, off, len) ->
     BITSTRING { 6 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
   | PIECE (i, off, s) ->
-    BITSTRING { 7 : 8; Int32.of_int i : 32; Int32.of_int off : 32; s : -1 : string }
+    BITSTRING { 7 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Cstruct.to_string s : -1 : string }
   | CANCEL (i, off, len) ->
     BITSTRING { 8 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
   | PORT i ->
@@ -100,7 +100,7 @@ let put' = function
     in
     BITSTRING { 17 : 8; loop pieces : -1 : bitstring }
   | EXTENDED (id, s) ->
-    BITSTRING { 20 : 8; id : 8; s : -1 : string }
+    BITSTRING { 20 : 8; id : 8; Cstruct.to_string s : -1 : string }
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -117,71 +117,100 @@ let write output msg =
   in
   Lwt.catch doit Lwt.fail
 
-let parse s =
-  bitmatch Bitstring.bitstring_of_string s with
-  | { 0 : 8 } ->
-    CHOKE
-  | { 1 : 8 } ->
-    UNCHOKE
-  | { 2 : 8 } ->
-    INTERESTED
-  | { 3 : 8 } ->
-    NOT_INTERESTED
-  | { 4 : 8; i : 32 : bind (Int32.to_int i) } ->
-    HAVE i
-  | { 5 : 8; s : -1 : string, bind (Bits.of_bin s) } ->
-    BITFIELD s
-  | { 6 : 8; i : 32 : bind (Int32.to_int i);
-      off : 32 : bind (Int32.to_int off);
-      len : 32 : bind (Int32.to_int len) } ->
-    REQUEST (i, off, len)
-  | { 7 : 8; i : 32 : bind (Int32.to_int i);
-      off : 32 : bind (Int32.to_int off);
-      s : -1 : string } ->
-    PIECE (i, off, s)
-  | { 8 : 8; i : 32 : bind (Int32.to_int i);
-      off : 32 : bind (Int32.to_int off);
-      len : 32 : bind (Int32.to_int len) } ->
-    CANCEL (i, off, len)
-  | { 9 : 8; port : 16 } ->
-    PORT port
-  | { 13 : 8; i : 32 : bind (Int32.to_int i) } ->
-    SUGGEST i
-  | { 14 : 8 } ->
-    HAVE_ALL
-  | { 15 : 8 } ->
-    HAVE_NONE
-  | { 16 : 8; i : 32 : bind (Int32.to_int i);
-      off : 32 : bind (Int32.to_int off);
-      len : 32 : bind (Int32.to_int len) } ->
-    REJECT (i, off, len)
-  | { 17 : 8; pieces : -1 : bitstring } ->
-    let rec loop bs =
-      bitmatch bs with
-      | { p : 32; bs : -1 : bitstring } -> Int32.to_int p :: loop bs
-      | { } -> []
-    in
-    ALLOWED (loop pieces)
-  | { 20 : 8; id : 8; s : -1 : string } ->
-    EXTENDED (id, s)
-  | { _ } ->
-    failwith "can't parse msg"
-    (* fail (\* fail (BadMsg (len, id)) *\) *)
+let parse cs =
+  let int cs o = Int32.to_int @@ Cstruct.BE.get_uint32 cs o in
+  match Cstruct.get_uint8 cs 0 with
+  | 0 ->
+      CHOKE
+  | 1 ->
+      UNCHOKE
+  | 2 ->
+      INTERESTED
+  | 3 ->
+      NOT_INTERESTED
+  | 4 ->
+      HAVE (int cs 1)
+  | 5 ->
+      BITFIELD (Bits.of_bin @@ Cstruct.to_string @@ Cstruct.shift cs 1)
+  | 6 ->
+      REQUEST (int cs 1, int cs 5, int cs 9)
+  | 7 ->
+      PIECE (int cs 1, int cs 5, Cstruct.shift cs 9)
+  | 8 ->
+      CANCEL (int cs 1, int cs 5, int cs 9)
+  | 9 ->
+      PORT (Cstruct.BE.get_uint16 cs 1)
+  | 13 ->
+      SUGGEST (int cs 1)
+  | 14 ->
+      HAVE_ALL
+  | 15 ->
+      HAVE_NONE
+  | 16 ->
+      REJECT (int cs 1, int cs 5, int cs 9)
+  | 17->
+      let rec loop cs =
+        if Cstruct.len cs >= 4 then
+          let p, cs = Cstruct.split cs 4 in
+          int p 0 :: loop cs
+        else
+          []
+      in
+      ALLOWED (loop @@ Cstruct.shift cs 1)
+  | 20 ->
+      EXTENDED (Cstruct.get_uint8 cs 1, Cstruct.shift cs 2)
+  | _ ->
+      failwith "can't parse msg"
+(* fail (\* fail (BadMsg (len, id)) *\) *)
+
+let parse cs =
+  if Cstruct.len cs = 0 then
+    KEEP_ALIVE
+  else
+    parse cs
 
 let max_packet_len = 32 * 1024
 
-let read input =
-  let doit () =
-    Lwt_io.BE.read_int input >>= fun len ->
-    assert (len <= max_packet_len);
-    if len = 0 then
-      Lwt.return KEEP_ALIVE
-    else
-      let buf = String.create len in
-      Lwt_io.read_into_exactly input buf 0 len >|= fun () -> parse buf
-      (* Bitstring.hexdump_bitstring stderr s; *)
-  in
-  Lwt.catch doit Lwt.fail
+(* let read input = *)
+(*   let doit () = *)
+(*     Lwt_io.BE.read_int input >>= fun len -> *)
+(*     assert (len <= max_packet_len); *)
+(*     if len = 0 then *)
+(*       Lwt.return KEEP_ALIVE *)
+(*     else *)
+(*       let buf = String.create len in *)
+(*       Lwt_io.read_into_exactly input buf 0 len >|= fun () -> parse buf *)
+(*       (\* Bitstring.hexdump_bitstring stderr s; *\) *)
+(*   in *)
+(*   Lwt.catch doit Lwt.fail *)
 
 let ltep_bit = 43 (* 20-th bit from the right *)
 let dht_bit = 63 (* last bit of the extension bitfield *)
+
+module Cs = Nocrypto.Uncommon.Cs
+
+module R = struct
+
+  type state = Cstruct.t
+
+  let empty = Cs.empty
+
+  let (<+>) = Cs.(<+>)
+
+  let handle state buf =
+    let rec loop cs =
+      if Cstruct.len cs > 4 then
+        let l = Int32.to_int @@ Cstruct.BE.get_uint32 cs 0 in
+        if l + 4 >= Cstruct.len cs then
+          let packet, cs = Cstruct.split (Cstruct.shift cs 4) l in
+          let cs, packets = loop cs in
+          let packet = parse packet in
+          cs, packet :: packets
+        else
+          cs, []
+      else
+        cs, []
+    in
+    loop (state <+> buf)
+
+end
