@@ -26,14 +26,6 @@ let debug ?exn fmt = Log.debug section ?exn fmt
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-type pex_flags = {
-  pex_encryption : bool;
-  pex_seed : bool;
-  pex_utp : bool;
-  pex_holepunch : bool;
-  pex_outgoing : bool
-}
-
 let kilobyte n = n * 1024
 let keepalive_delay = 20 (* FIXME *)
 let request_pipeline_max = 5
@@ -41,6 +33,8 @@ let info_piece_size = kilobyte 16
 let default_block_size = kilobyte 16
 
 exception Timeout
+
+open Event
 
 type has_meta_info = {
   have : Bits.t;
@@ -61,6 +55,7 @@ and meta_info =
 
 and t = {
   node : SHA1.t * Addr.t;
+  id : SHA1.t;
   sock : IO.t;
   output : Lwt_io.output_channel;
   (* input : Lwt_io.input_channel; *)
@@ -97,23 +92,6 @@ and t = {
 
   mutable last_pex : Addr.t list
 }
-
-and event =
-  | Choked of t
-  | Unchoked of t
-  | Interested of t
-  | NotInterested of t
-  | Have of t * int
-  | HaveBitfield of t * Bits.t
-  | BlockRequested of t * int * int
-  | BlockReceived of t * int * int * string
-  | Finished of t
-  | AvailableMetadata of t * int
-  | MetaRequested of t * int
-  | GotMetaPiece of t * int * string
-  | RejectMetaPiece of t * int
-  | GotPEX of t * (Addr.t * pex_flags) list * Addr.t list
-  | DHTPort of t * int
 
 and event_callback = event -> unit
 and get_metadata_func = t -> int option
@@ -161,17 +139,13 @@ let got_ut_metadata p data =
   let data = String.sub data data_start (String.length data - data_start) in
   match msg_type with
   | 0 -> (* request *)
-      Some (MetaRequested (p, piece))
-  (* signal p (MetaRequested piece) *)
+      Some (MetaRequested (p.id, piece))
   | 1 -> (* data *)
-      Some (GotMetaPiece (p, piece, data))
-  (* signal p (GotMetaPiece (piece, data)) *)
+      Some (GotMetaPiece (p.id, piece, data))
   | 2 -> (* reject *)
-      Some (RejectMetaPiece (p, piece))
-  (* signal p (RejectMetaPiece piece) *)
+      Some (RejectMetaPiece (p.id, piece))
   | _ ->
       None
-(* () *)
 
 let send_reject_meta p piece =
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -221,8 +195,7 @@ let got_ut_pex p data =
     loop 0
   in
   let dropped = loop (Bitstring.bitstring_of_string dropped) in
-  (* signal p (GotPEX (List.combine added added_f, dropped)) *)
-  Some (GotPEX (p, List.combine added added_f, dropped))
+  Some (GotPEX (p.id, List.combine added added_f, dropped))
 
 let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata);
@@ -233,7 +206,7 @@ let got_choke p =
     p.peer_choking <- true;
     p.act_reqs <- 0;
     (* signal p Choked; *)
-    Some (Choked p)
+    Some (Choked p.id)
     (* Lwt_condition.broadcast p.on_choke () *)
   end else
     None
@@ -242,7 +215,7 @@ let got_unchoke p =
   if p.peer_choking then begin
     debug "%s is no longer choking us" (string_of_node p.node);
     p.peer_choking <- false;
-    Some (Unchoked p)
+    Some (Unchoked p.id)
     (* Lwt_condition.broadcast p.on_unchoke () *)
   end else
     None
@@ -251,8 +224,7 @@ let got_interested p =
   if not p.peer_interested then begin
     debug "%s is interested in us" (string_of_node p.node);
     p.peer_interested <- true;
-    Some (Interested p)
-    (* signal p Interested *)
+    Some (Interested p.id)
   end else
     None
 
@@ -260,8 +232,7 @@ let got_not_interested p =
   if p.peer_interested then begin
     debug "%s is no longer interested in us" (string_of_node p.node);
     p.peer_interested <- false;
-    Some (NotInterested p)
-    (* signal p NotInterested *)
+    Some (NotInterested p.id)
   end else
     None
 
@@ -269,8 +240,7 @@ let got_have_bitfield p b =
   begin match p.info with
   | HasMeta n ->
       Bits.blit b 0 n.have 0 (Bits.length n.have);
-      Some (HaveBitfield (p, n.have))
-  (* signal p (HaveBitfield n.have) *)
+      Some (HaveBitfield (p.id, n.have))
   | NoMeta n ->
       let rec loop acc i =
         if i >= Bits.length b then List.rev acc else
@@ -278,8 +248,7 @@ let got_have_bitfield p b =
         else loop acc (i+1)
       in
       n.have <- loop [] 0;
-      Some (HaveBitfield (p, b))
-      (* signal p (HaveBitfield b) *)
+      Some (HaveBitfield (p.id, b))
   end
 
 let got_have p idx =
@@ -287,15 +256,13 @@ let got_have p idx =
   | HasMeta nfo ->
       if not (Bits.is_set nfo.have idx) then begin
         Bits.set nfo.have idx;
-        Some (Have (p, idx))
-        (* signal p (Have idx) *)
+        Some (Have (p.id, idx))
       end else
         None
   | NoMeta n ->
       if not (List.mem idx n.have) && not n.has_all then begin
         n.have <- idx :: n.have;
-        Some (Have (p, idx))
-        (* signal p (Have idx) *)
+        Some (Have (p.id, idx))
       end else
         None
 
@@ -316,8 +283,7 @@ let got_piece p idx off s =
   match p.info with
   | HasMeta info ->
       Bits.set info.blame idx;
-      (* signal p (BlockReceived (idx, Metadata.block_number info.meta idx off, s)) *)
-      Some (BlockReceived (p, idx, Metadata.block_number info.meta idx off, s))
+      Some (BlockReceived (p.id, idx, Metadata.block_number info.meta idx off, s))
   | NoMeta _ ->
       failwith "Peer.got_piece: no meta info"
 
@@ -332,8 +298,7 @@ let got_extended_handshake p bc =
   debug "%s supports %s" (string_of_node p.node) (strl fst m);
   Lwt_condition.broadcast p.on_ltep_handshake ();
   if Hashtbl.mem p.extensions "ut_metadata" then
-    (* signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)); *)
-    Some (AvailableMetadata (p, Bcode.find "metadata_size" bc |> Bcode.to_int))
+    Some (AvailableMetadata (p.id, Bcode.find "metadata_size" bc |> Bcode.to_int))
   else
     None
 
@@ -347,15 +312,13 @@ let got_request p idx off len =
       let b = Metadata.block_number info.meta idx off in
       let _, _, l = Metadata.block info.meta idx b in
       assert (l = len);
-      Some (BlockRequested (p, idx, b))
-  (* signal p (BlockRequested (idx, b)) *)
+      Some (BlockRequested (p.id, idx, b))
   | _ ->
       None
 (* FIXME send REJECT if fast extension is supported *)
 
 let got_port p i =
-  Some (DHTPort (p, i))
-(* signal p (DHTPort i) *)
+  Some (DHTPort (p.id, i))
 
 let got_message p m =
   match m with
@@ -558,7 +521,7 @@ let start p =
          Lwt.return ())
     >>= fun () ->
     IO.close p.sock >|= fun () ->
-    signal p (Finished p)
+    signal p (PeerDisconnected p.id)
     (* ignore (IO.close p.sock); (\* FIXME *\) *)
     (* Lwt.return () *)
   in
@@ -585,10 +548,10 @@ let got_metadata p m get_next_requests =
       failwith "Peer.got_metadata: already has meta"
 
 let create sock addr id push info =
-  let (* input, *) output = (* IO.in_channel sock, *) IO.out_channel sock in
+  let output = IO.out_channel sock in
   let extensions = Hashtbl.create 17 in
   let p =
-    { sock; node = (id, addr); (* input; *) output;
+    { sock; node = (id, addr); id; output;
       am_choking = true; am_interested = false;
       peer_choking = true; peer_interested = false;
       extbits = Bits.create (8 * 8);

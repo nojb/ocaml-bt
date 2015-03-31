@@ -27,7 +27,7 @@ let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
 type t = {
-  peer_mgr : PeerMgr.t;
+  peer_mgr : PeerMgr.swarm;
   torrent : Torrent.t;
   on_manual : unit Lwt_condition.t
 }
@@ -42,8 +42,8 @@ let rate_computation_iterations = 2
 
 let unchoke_peers bt optimistic =
   let aux compare_peers =
-    let peers =
-      PeerMgr.fold_peers (fun p l -> if Peer.is_snubbing p then l else p :: l) bt.peer_mgr []
+    let peers = [] (* FIXME FIXME *)
+      (* PeerMgr.fold_peers (fun p l -> if Peer.is_snubbing p then l else p :: l) bt.peer_mgr [] *)
     in
     let peers = List.sort compare_peers peers in
     let rec loop n = function
@@ -73,7 +73,9 @@ let unchoke_peers bt optimistic =
     aux (fun a b -> compare (Peer.download_rate b) (Peer.download_rate a))
 
 let reset_peer_rates bt =
-  PeerMgr.iter_peers Peer.reset_rates bt.peer_mgr
+  ()
+(* FIXME FIXME *)
+  (* PeerMgr.iter_peers Peer.reset_rates bt.peer_mgr *)
 
 let rechoke_downloads bt =
   let h = Torrent.have bt.torrent in
@@ -84,8 +86,9 @@ let rechoke_downloads bt =
     in
     if loop 0 then Peer.send_interested p else Peer.send_not_interested p
   in
-  PeerMgr.iter_peers doit bt.peer_mgr
-  
+  () (* FIXME FIXME *)
+  (* PeerMgr.iter_peers doit bt.peer_mgr *)
+
 let rec rechoke_pulse bt optimistic rateiter =
   let optimistic = if optimistic = 0 then optimistic_unchoke_iterations else optimistic - 1 in
   let rateiter = if rateiter = 0 then rate_computation_iterations else rateiter - 1 in

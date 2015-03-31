@@ -27,48 +27,7 @@ val keepalive_delay : int
 
 exception Timeout
 
-type pex_flags = {
-  pex_encryption : bool;
-  pex_seed : bool;
-  pex_utp : bool;
-  pex_holepunch : bool;
-  pex_outgoing : bool
-}
-
-(** Important peer events.  They are broadcast and handled in
-    {!Client.handle_peer_event} and there they are re-routed to the relevant objects
-    (Peer manager, Torrent, Choker, Requester, etc.). *)
-type event =
-  | Choked of t
-  | Unchoked of t
-  (** The peer has choked us. *)
-  | Interested of t
-  (** The peer is interested in us. *)
-  | NotInterested of t
-  (** The peer is no longer interested in us. *)
-  | Have of t * int
-  (** The peer has sent us a HAVE message. *)
-  | HaveBitfield of t * Bits.t
-  (** The peer has sent us a BITFIELD message. *)
-  | BlockRequested of t * int * int
-  (** The peer has requested a block from us. *)
-  | BlockReceived of t * int * int * string
-  (** The peer has sent us a block. *)
-  | Finished of t
-  (** The peer connection has closed. *)
-  | AvailableMetadata of t * int
-  (** The peer has notified us that they are willing to transmit metadata
-      informatio via ut_metadata method. *)
-  | MetaRequested of t * int
-  (** The peer has requested a metadata piece from us. *)
-  | GotMetaPiece of t * int * string
-  (** The peer has sent us a metadata piece. *)
-  | RejectMetaPiece of t * int
-  (** The peer has rejected a request for metadata information from us. *)
-  | GotPEX of t * (Addr.t * pex_flags) list * Addr.t list
-  (** The peer has sent us ut_pex data: added peers, dropped peers. *)
-  | DHTPort of t * int
-  (** The peer's DHT node is using this port. *)
+open Event
 
 type event_callback = event -> unit
 type get_metadata_func = t -> int option

@@ -26,10 +26,7 @@ let debug ?exn fmt = Log.debug section ?exn fmt
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-type event =
-  | PieceVerified of int
-  | PieceFailed of int
-  | TorrentComplete
+open Event
 
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
@@ -89,7 +86,7 @@ let is_complete self =
     else false
   in
   loop 0
-  
+
 let got_block t peer idx b s =
   (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
   if not (Bits.is_set t.completed.(idx) b) then begin
@@ -118,7 +115,7 @@ let got_block t peer idx b s =
   end
   else
     debug "received a block we already have"
-  
+
 let down self =
   self.down
 

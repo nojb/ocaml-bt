@@ -19,20 +19,59 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(** Peer Manager.  Apart from general manteinance, it takes care of
-    disconnecting peers who do not send us piece information for too long
-    (currently, 90 seconds). *)
+type pex_flags = {
+  pex_encryption : bool;
+  pex_seed : bool;
+  pex_utp : bool;
+  pex_holepunch : bool;
+  pex_outgoing : bool
+}
 
-open Event
+type event =
+  | PeersReceived of Addr.t list
 
-type swarm
+  | Announce of Tracker.Tier.t * Tracker.event option
 
-val create : ?size:int -> unit -> swarm
+  | PeerConnected of IO.t * SHA1.t * Bits.t
 
-val add : swarm -> Addr.t -> event
+  | PieceVerified of int
 
-val peer_disconnected : swarm -> SHA1.t -> event
+  | PieceFailed of int
 
-val handshake_ok : swarm -> Addr.t -> SHA1.t -> unit
+  | TorrentComplete
 
-val handshake_failed : swarm -> Addr.t -> event
+  | Choked of SHA1.t
+
+  | Unchoked of SHA1.t
+
+  | Interested of SHA1.t
+
+  | NotInterested of SHA1.t
+
+  | Have of SHA1.t * int
+
+  | HaveBitfield of SHA1.t * Bits.t
+
+  | BlockRequested of SHA1.t * int * int
+
+  | BlockReceived of SHA1.t * int * int * string
+
+  | HandshakeFailed of Addr.t
+
+  | PeerDisconnected of SHA1.t
+
+  | AvailableMetadata of SHA1.t * int
+
+  | MetaRequested of SHA1.t * int
+
+  | GotMetaPiece of SHA1.t * int * string
+
+  | RejectMetaPiece of SHA1.t * int
+
+  | GotPEX of SHA1.t * (Addr.t * pex_flags) list * Addr.t list
+
+  | DHTPort of SHA1.t * int
+
+  | ConnectPeer of Addr.t * float
+
+  | NoEvent

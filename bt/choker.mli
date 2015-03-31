@@ -24,9 +24,9 @@
 
 type t
 
-val create : PeerMgr.t -> Torrent.t -> t
+val create : PeerMgr.swarm -> Torrent.t -> t
 (** Creates a choker. *)
-  
+
 val start : t -> unit
 (** Starts the choker event loop. *)
 
