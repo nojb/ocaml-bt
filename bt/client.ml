@@ -62,17 +62,10 @@ let push_peers_received bt xs =
 let buf_size = 1024
 
 let reader_loop push fd p =
-  (* let ic = IO.in_channel (Peer.sock p) in *)
   let buf = Cstruct.create buf_size in
-  (* let fill ic = *)
-    (* IO.in_ *)
-  (* let input = Lwt_stream.from *)
-      (* (fun () -> Wire.read ic >>= fun msg -> *)
-        (* debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg); *)
-        (* Lwt.return (Some msg)) *)
-  (* in *)
   let rec loop r =
-    Lwt_cstruct.read fd buf >>= function
+    Lwt_unix.with_timeout (float Peer.keepalive_delay)
+      (fun () -> Lwt_cstruct.read fd buf) >>= function
     | 0 ->
         failwith "eof"
     | n ->
@@ -80,7 +73,13 @@ let reader_loop push fd p =
         List.iter (fun msg -> push (Peer.got_message p msg)) msgs;
         loop r
   in
-  loop Wire.R.empty
+  Lwt.catch
+    (fun () -> loop Wire.R.empty)
+    (fun e ->
+       Printf.eprintf "unexpected exc: %S\n%!" (Printexc.to_string e);
+       Lwt_unix.close fd;
+       push (PeerDisconnected (Peer.id p));
+       Lwt.return_unit)
 
   (*   Lwt.pick *)
   (*     [(Lwt_stream.next input >|= fun x -> `Ok x); *)
