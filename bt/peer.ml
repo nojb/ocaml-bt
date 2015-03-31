@@ -111,7 +111,7 @@ type t = {
   on_ltep_handshake : unit Lwt_condition.t;
   on_stop : unit Lwt_condition.t;
 
-  handle : event -> unit;
+  push : event -> unit;
 
   mutable info : meta_info;
 
@@ -139,7 +139,7 @@ let send_message p m =
     ignore (Lwt_sequence.add_r m p.send_queue)
 
 let signal p e =
-  p.handle e
+  p.push e
 
 let send_extended p id s =
   send_message p (Wire.EXTENDED (id, s))
@@ -557,7 +557,7 @@ let got_metadata p m get_next_requests =
   | HasMeta _ ->
     failwith "Peer.got_metadata: already has meta"
 
-let create sock addr id handle_event info =
+let create sock addr id push info =
   let (* input, *) output = (* IO.in_channel sock, *) IO.out_channel sock in
   let extensions = Hashtbl.create 17 in
   let p =
@@ -569,7 +569,7 @@ let create sock addr id handle_event info =
       act_reqs = 0;
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
-      handle = handle_event;
+      push;
       on_meta = Lwt_condition.create ();
       on_unchoke = Lwt_condition.create ();
       on_choke = Lwt_condition.create ();
@@ -586,19 +586,19 @@ let create sock addr id handle_event info =
   in
   p
 
-let create_no_meta sock addr id handle_event get_next_metadata_request =
+let create_no_meta sock addr id push get_next_metadata_request =
   let info = NoMeta { have = []; has_all = false; request = get_next_metadata_request } in
-  let p = create sock addr id handle_event info in
+  let p = create sock addr id push info in
   p
 
-let create_has_meta sock addr id handle_event m get_next_requests =
+let create_has_meta sock addr id push m get_next_requests =
   let npieces = Metadata.piece_count m in
   let info = HasMeta
       { have = Bits.create npieces;
         blame = Bits.create npieces;
         request = get_next_requests; meta = m }
   in
-  let p = create sock addr id handle_event info in
+  let p = create sock addr id push info in
   (* Lwt_condition.broadcast p.on_meta (); *)
   p
 

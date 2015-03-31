@@ -25,7 +25,7 @@
 
 type t
 
-val create_no_meta : SHA1.t -> SHA1.t -> (Peer.t -> Peer.event_callback) ->
+val create_no_meta : SHA1.t -> SHA1.t -> (IO.t -> SHA1.t -> Bits.t -> unit) ->
   (Peer.t -> Peer.get_metadata_func) -> t
 (** [create_no_meta id ih cb r] creates a peer manager without metainfo
     information.  [id] is the client ID, [ih] is the torrent info-hash, [cb] is
@@ -33,8 +33,8 @@ val create_no_meta : SHA1.t -> SHA1.t -> (Peer.t -> Peer.event_callback) ->
     is the function used to select missing pieces from the metadata to request
     from other peers. *)
 
-val create_has_meta : SHA1.t -> SHA1.t -> (Peer.t -> Peer.event_callback) ->
-  Metadata.t -> Torrent.t -> (Peer.t -> Peer.get_block_func) -> t
+(* val create_has_meta : SHA1.t -> SHA1.t -> (IO.t -> SHA1.t -> Bits.t -> unit) -> *)
+(*   Metadata.t -> Torrent.t -> (Peer.t -> Peer.get_block_func) -> t *)
 (** [create_has_meta id ih cb m t r] creates a peer manager with metainfo
     information.  [id] is the client ID, [ih] is the torrent info-hash, [cb] is the
     callback to invoke on important peer events (see {!Peer.event}), [m] is the
@@ -66,7 +66,7 @@ val handle_received_peer : t -> Addr.t -> unit
     the pool of `known' peers and a connection may be open in the future if more
     peers are necessary. *)
 
-val torrent_loaded : t -> Metadata.t -> Torrent.t -> (Peer.t -> Peer.get_block_func) -> unit
+(* val torrent_loaded : t -> Metadata.t -> Torrent.t -> (Peer.t -> Peer.get_block_func) -> unit *)
 (** Called when the Torrent has finished loading.  It puts the peer manager in
     the block-requesting stage.  This means that all currently connected peers will
     be put in the block-requesting stage, and all future peers will be created in
@@ -88,9 +88,9 @@ val upload_speed : t -> float
 
 val download_speed : t -> float
 (** The speed at which we are receiving data from the connected peers. *)
-  
+
 val num_connected_peers : t -> int
 (** Number of connected peers. *)
-  
+
 val num_total_peers : t -> int
 (** Number of known peers. *)

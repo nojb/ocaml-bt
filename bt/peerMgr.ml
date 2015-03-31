@@ -26,9 +26,9 @@ let debug ?exn fmt = Log.debug section ?exn fmt
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
-type meta_info =
-  | HasMeta of Metadata.t * Torrent.t * (Peer.t -> Peer.get_block_func)
-  | NoMeta of (Peer.t -> Peer.get_metadata_func)
+(* type meta_info = *)
+(*   | HasMeta of Metadata.t * Torrent.t * (Peer.t -> Peer.get_block_func) *)
+(*   | NoMeta of (Peer.t -> Peer.get_metadata_func) *)
 
 type t = {
   id : SHA1.t;
@@ -36,63 +36,34 @@ type t = {
   peers : (Addr.t, Peer.t) Hashtbl.t;
   connecting : (Addr.t, unit) Hashtbl.t;
   mutable saved : Addr.t list;
-  handle_peer_event : Peer.t -> Peer.event_callback;
-  mutable info : meta_info
+  push : IO.t -> SHA1.t -> Bits.t -> unit;
+  (* mutable info : meta_info *)
 }
 
-let handle_peer_event bt p e =
-  bt.handle_peer_event p e
+(* let create_has_meta id ih push m tor request = *)
+(*   { id; ih; peers = Hashtbl.create 3; *)
+(*     connecting = Hashtbl.create 3; *)
+(*     saved = []; push; *)
+(*     info = HasMeta (m, tor, request) } *)
 
-let create_has_meta id ih h m tor request =
+let create_no_meta id ih push get_next_metadata_request =
   { id; ih; peers = Hashtbl.create 3;
     connecting = Hashtbl.create 3;
-    saved = []; handle_peer_event = h;
-    info = HasMeta (m, tor, request) }
-
-let create_no_meta id ih h get_next_metadata_request =
-  { id; ih; peers = Hashtbl.create 3;
-    connecting = Hashtbl.create 3;
-    saved = []; handle_peer_event = h;
-    info = NoMeta get_next_metadata_request }
+    saved = []; push }
+    (* info = NoMeta get_next_metadata_request } *)
 
 let know_peer bt addr =
   Hashtbl.mem bt.peers addr || Hashtbl.mem bt.connecting addr || List.mem addr bt.saved
 
-let is_complete bt =
-  match bt.info with
-  | HasMeta (_, t, _) -> Torrent.is_complete t
-  | NoMeta _ -> false
+(* let is_complete bt = *)
+(*   match bt.info with *)
+(*   | HasMeta (_, t, _) -> Torrent.is_complete t *)
+(*   | NoMeta _ -> false *)
 
 let max_peer_count = 20
 
 let need_more_peers bt =
-  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count) && not (is_complete bt)
-
-let (!!) = Lazy.force
-
-let peer_joined bt sock addr ih id exts =
-  let p =
-    match bt.info with
-    | HasMeta (m, _, r) ->
-      let rec p =
-        lazy (Peer.create_has_meta sock addr id
-                (fun e -> handle_peer_event bt !!p e) m (fun n -> r !!p n))
-      in
-      p
-    | NoMeta r ->
-      let rec p =
-        lazy (Peer.create_no_meta sock addr id
-                (fun e -> handle_peer_event bt !!p e) (fun () -> r !!p ()))
-      in
-      p
-  in
-  Peer.start !!p;
-  Hashtbl.add bt.peers addr !!p;
-  if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake !!p;
-  if Bits.is_set exts Wire.dht_bit then Peer.send_port !!p 6881; (* FIXME fixed port *)
-  match bt.info with
-  | HasMeta (_, tor, _) -> Peer.send_have_bitfield !!p (Torrent.have tor)
-  | NoMeta _ -> ()
+  (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count) (* && not (is_complete bt) *)
 
 let handshake_done bt sock res =
   assert (Hashtbl.mem bt.connecting (IO.addr sock));
@@ -102,7 +73,9 @@ let handshake_done bt sock res =
     debug "%s handshake with %s (%s) successful, ih %s"
       (if IO.is_encrypted sock then "encrypted" else "plain")
       (SHA1.to_hex_short id) (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih);
-    peer_joined bt sock (IO.addr sock) bt.ih id exts
+    (* Hashtbl.add bt.peers (IO.addr sock) !!p; XXX FIXME FIXME *)
+    bt.push sock id exts
+    (* peer_joined bt sock (IO.addr sock) bt.ih id exts *)
   | Handshake.Failed ->
     Lwt.async (fun () -> IO.close sock);
     debug "handshake failed"
@@ -112,7 +85,7 @@ let rec connect_peer bt addr =
   Lwt.try_bind (fun () -> IO.connect sock)
     (fun () ->
        let hs =
-         Handshake.outgoing ~id:bt.id ~ih:bt.ih  
+         Handshake.outgoing ~id:bt.id ~ih:bt.ih
            Handshake.(Crypto Prefer) sock (handshake_done bt sock)
        in
        Lwt.return ())
@@ -158,10 +131,10 @@ let iter_peers f pm =
 let close_peer pm p =
   Peer.close p
 
-let is_seed pm =
-  match pm.info with
-  | HasMeta (_, tor, _) -> Torrent.is_complete tor
-  | NoMeta _ -> false
+(* let is_seed pm = *)
+(*   match pm.info with *)
+(*   | HasMeta (_, tor, _) -> Torrent.is_complete tor *)
+(*   | NoMeta _ -> false *)
 
 let peer_count pm =
   Hashtbl.length pm.peers
@@ -170,7 +143,7 @@ let min_upload_idle_secs = 60.0
 let max_upload_idle_secs = 60.0 *. 5.0
 
 let is_bad_peer pm p =
-  if is_seed pm && Peer.is_seed p then begin
+  if (* is_seed pm && *) Peer.is_seed p then begin
     debug "closing peer %s because we are both seeds" (Peer.to_string p);
     true (* FIXME pex *)
   end
@@ -220,17 +193,17 @@ let rec pex_pulse pm =
 let start pm =
   Lwt.async (fun () -> reconnect_pulse pm);
   Lwt.async (fun () -> pex_pulse pm)
-    
-let torrent_loaded pm m tor get_next_requests =
-  debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor);
-  Hashtbl.iter (fun _ p -> Peer.got_metadata p m (get_next_requests p)) pm.peers;
-  let b = Torrent.have tor in
-  Hashtbl.iter begin fun _ p ->
-    for i = 0 to Bits.length b - 1 do
-      if Bits.is_set b i then Peer.send_have p i
-    done
-  end pm.peers;
-  pm.info <- HasMeta (m, tor, get_next_requests)
+
+(* let torrent_loaded pm m tor get_next_requests = *)
+(*   debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor); *)
+(*   Hashtbl.iter (fun _ p -> Peer.got_metadata p m (get_next_requests p)) pm.peers; *)
+(*   let b = Torrent.have tor in *)
+(*   Hashtbl.iter begin fun _ p -> *)
+(*     for i = 0 to Bits.length b - 1 do *)
+(*       if Bits.is_set b i then Peer.send_have p i *)
+(*     done *)
+(*   end pm.peers; *)
+(*   pm.info <- HasMeta (m, tor, get_next_requests) *)
 
 let max_bad_pieces_per_peer = 5
 

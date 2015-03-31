@@ -35,6 +35,8 @@ type event =
   | Announce of Tracker.Tier.t * Tracker.event option
   | GotMetaLength of IncompleteMetadata.t
   | GotBadMeta
+  | PeerEvent of Peer.t * Peer.event
+  | PeerJoined of IO.t * SHA1.t * Bits.t
 
 type no_meta_stage =
   | NoMetaLength
@@ -271,7 +273,7 @@ let handle_event bt = function
     | HasMeta (meta, Loading) ->
       (* debug "torrent loaded (good=%d,total=%d)" *)
       (*   (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl); *)
-      PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt);
+      (* PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt); FIXME FIXME *)
       let ch = Choker.create bt.peer_mgr dl in
       if Torrent.is_complete dl then
         bt.stage <- HasMeta (meta, Seeding (dl, ch))
@@ -298,6 +300,34 @@ let handle_event bt = function
       Lwt.catch doit (fun exn -> debug ~exn "announce failure"; Lwt.return ())
     in
     Lwt.async safe_doit
+  | PeerEvent (p, e) ->
+      handle_peer_event bt p e
+  | PeerJoined (sock, id, exts) ->
+      let p =
+        match bt.stage with
+        | HasMeta (m, _) ->
+            let rec p =
+              lazy (Peer.create_has_meta sock (IO.addr sock) id
+                  (fun e -> bt.push (PeerEvent (!!p, e))) m (fun n -> get_next_requests bt !!p n))
+            in
+            p
+        | NoMeta r ->
+            let rec p =
+              lazy (Peer.create_no_meta sock (IO.addr sock) id
+                  (fun e -> bt.push (PeerEvent (!!p, e))) (fun () -> get_next_metadata_request bt !!p ()))
+            in
+            p
+      in
+      Peer.start !!p;
+      (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
+      if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake !!p;
+      if Bits.is_set exts Wire.dht_bit then Peer.send_port !!p 6881; (* FIXME fixed port *)
+      begin match bt.stage with
+      | HasMeta (_, Leeching (tor, _, _))
+      | HasMeta (_, Seeding (tor, _)) -> Peer.send_have_bitfield !!p (Torrent.have tor)
+      | HasMeta (_, Loading)
+      | NoMeta _ -> ()
+      end
 
 let rec event_loop bt =
   Lwt_stream.next bt.chan >|= handle_event bt >>= fun () -> event_loop bt
@@ -337,7 +367,8 @@ let create mg =
       dht = DHT.create 6881 }
   and peer_mgr =
     lazy (PeerMgr.create_no_meta id ih
-        (fun p e -> handle_peer_event !!cl p e)
+        (fun sock id ext -> !!cl.push (PeerJoined (sock, id, ext)))
+        (* (fun p e -> handle_peer_event !!cl p e) *)
         (fun p () -> get_next_metadata_request !!cl p ()))
   in
   !!cl
