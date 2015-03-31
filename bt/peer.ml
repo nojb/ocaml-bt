@@ -148,11 +148,11 @@ let send_extended p id s =
 let send_block p i b s =
   match p.info with
   | HasMeta info ->
-    let i, o, l = Metadata.block info.meta i b in
-    assert (l = String.length s);
-    send_message p (Wire.PIECE (i, o, s))
+      let i, o, l = Metadata.block info.meta i b in
+      assert (l = String.length s);
+      send_message p (Wire.PIECE (i, o, s))
   | _ ->
-    assert false
+      assert false
 
 let got_ut_metadata p data =
   let m, data_start = Bcode.decode_partial data in
@@ -162,16 +162,16 @@ let got_ut_metadata p data =
   match msg_type with
   | 0 -> (* request *)
       Some (p, MetaRequested piece)
-    (* signal p (MetaRequested piece) *)
+  (* signal p (MetaRequested piece) *)
   | 1 -> (* data *)
       Some (p, GotMetaPiece (piece, data))
-    (* signal p (GotMetaPiece (piece, data)) *)
+  (* signal p (GotMetaPiece (piece, data)) *)
   | 2 -> (* reject *)
       Some (p, RejectMetaPiece piece)
-    (* signal p (RejectMetaPiece piece) *)
+  (* signal p (RejectMetaPiece piece) *)
   | _ ->
       None
-    (* () *)
+(* () *)
 
 let send_reject_meta p piece =
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -201,7 +201,7 @@ let got_ut_pex p data =
   let rec loop bs =
     bitmatch bs with
     | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } ->
-      addr :: loop rest
+        addr :: loop rest
     | { _ } -> []
   in
   let flag c =
@@ -268,43 +268,43 @@ let got_not_interested p =
 let got_have_bitfield p b =
   begin match p.info with
   | HasMeta n ->
-    Bits.blit b 0 n.have 0 (Bits.length n.have);
-    Some (p, HaveBitfield n.have)
-    (* signal p (HaveBitfield n.have) *)
+      Bits.blit b 0 n.have 0 (Bits.length n.have);
+      Some (p, HaveBitfield n.have)
+  (* signal p (HaveBitfield n.have) *)
   | NoMeta n ->
-    let rec loop acc i =
-      if i >= Bits.length b then List.rev acc else
-      if Bits.is_set b i then loop (i :: acc) (i+1)
-      else loop acc (i+1)
-    in
-    n.have <- loop [] 0;
-    Some (p, HaveBitfield b)
-    (* signal p (HaveBitfield b) *)
+      let rec loop acc i =
+        if i >= Bits.length b then List.rev acc else
+        if Bits.is_set b i then loop (i :: acc) (i+1)
+        else loop acc (i+1)
+      in
+      n.have <- loop [] 0;
+      Some (p, HaveBitfield b)
+      (* signal p (HaveBitfield b) *)
   end
 
 let got_have p idx =
   match p.info with
   | HasMeta nfo ->
-    if not (Bits.is_set nfo.have idx) then begin
-      Bits.set nfo.have idx;
-      Some (p, Have idx)
-      (* signal p (Have idx) *)
-    end else
-      None
+      if not (Bits.is_set nfo.have idx) then begin
+        Bits.set nfo.have idx;
+        Some (p, Have idx)
+        (* signal p (Have idx) *)
+      end else
+        None
   | NoMeta n ->
-    if not (List.mem idx n.have) && not n.has_all then begin
-      n.have <- idx :: n.have;
-      Some (p, Have idx)
-      (* signal p (Have idx) *)
-    end else
-      None
+      if not (List.mem idx n.have) && not n.has_all then begin
+        n.have <- idx :: n.have;
+        Some (p, Have idx)
+        (* signal p (Have idx) *)
+      end else
+        None
 
 let got_cancel p i ofs len =
   Lwt_sequence.iter_node_l (fun n ->
-      match Lwt_sequence.get n with
-      | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && String.length s = len ->
+    match Lwt_sequence.get n with
+    | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && String.length s = len ->
         Lwt_sequence.remove n
-      | _ ->
+    | _ ->
         ()) p.send_queue;
   None
 
@@ -315,11 +315,11 @@ let got_piece p idx off s =
   Lwt_condition.broadcast p.on_can_request ();
   match p.info with
   | HasMeta info ->
-    Bits.set info.blame idx;
-    (* signal p (BlockReceived (idx, Metadata.block_number info.meta idx off, s)) *)
-    Some (p, BlockReceived (idx, Metadata.block_number info.meta idx off, s))
+      Bits.set info.blame idx;
+      (* signal p (BlockReceived (idx, Metadata.block_number info.meta idx off, s)) *)
+      Some (p, BlockReceived (idx, Metadata.block_number info.meta idx off, s))
   | NoMeta _ ->
-    failwith "Peer.got_piece: no meta info"
+      failwith "Peer.got_piece: no meta info"
 
 let got_extended_handshake p bc =
   let m =
@@ -327,8 +327,8 @@ let got_extended_handshake p bc =
     List.map (fun (name, id) -> (name, Bcode.to_int id))
   in
   List.iter (fun (name, id) ->
-      if id = 0 then Hashtbl.remove p.extensions name
-      else Hashtbl.replace p.extensions name id) m;
+    if id = 0 then Hashtbl.remove p.extensions name
+    else Hashtbl.replace p.extensions name id) m;
   debug "%s supports %s" (string_of_node p.node) (strl fst m);
   Lwt_condition.broadcast p.on_ltep_handshake ();
   if Hashtbl.mem p.extensions "ut_metadata" then
@@ -344,18 +344,18 @@ let got_extended p id data =
 let got_request p idx off len =
   match p.info with
   | HasMeta info ->
-    let b = Metadata.block_number info.meta idx off in
-    let _, _, l = Metadata.block info.meta idx b in
-    assert (l = len);
-    Some (p, BlockRequested (idx, b))
-    (* signal p (BlockRequested (idx, b)) *)
+      let b = Metadata.block_number info.meta idx off in
+      let _, _, l = Metadata.block info.meta idx b in
+      assert (l = len);
+      Some (p, BlockRequested (idx, b))
+  (* signal p (BlockRequested (idx, b)) *)
   | _ ->
-    None
+      None
 (* FIXME send REJECT if fast extension is supported *)
 
 let got_port p i =
   Some (p, DHTPort i)
-  (* signal p (DHTPort i) *)
+(* signal p (DHTPort i) *)
 
 let got_message p m =
   match m with
@@ -388,16 +388,16 @@ let writer_loop p =
        (next_to_send p >|= fun msg -> `Ready msg)]
     >>= function
     | `Timeout ->
-      Wire.write p.output Wire.KEEP_ALIVE >>= fun () ->
-      Lwt_io.flush p.output >>= loop
+        Wire.write p.output Wire.KEEP_ALIVE >>= fun () ->
+        Lwt_io.flush p.output >>= loop
     (* | `Stop -> *)
-      (* Lwt.return_unit *)
+    (* Lwt.return_unit *)
     | `Ready m ->
-      Wire.write p.output m >>= fun () ->
-      Lwt_io.flush p.output >>= fun () ->
-      debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m);
-      (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
-      loop ()
+        Wire.write p.output m >>= fun () ->
+        Lwt_io.flush p.output >>= fun () ->
+        debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m);
+        (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (String.length s) | _ -> ());
+        loop ()
   in
   loop ()
 
@@ -416,7 +416,7 @@ let addr p =
 let send_extended_handshake p =
   let m =
     List.map (fun (id, (name, _)) ->
-        name, Bcode.Int (Int64.of_int id)) supported_extensions
+      name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.Dict ["m", Bcode.Dict m] in
   send_extended p 0 (Bcode.encode m)
@@ -482,11 +482,11 @@ let send_have_bitfield p bits =
 let send_cancel p (i, j) =
   match p.info with
   | HasMeta n ->
-    let i, ofs, len = Metadata.block n.meta i j in
-    send_message p (Wire.CANCEL (i, ofs, len));
-    Lwt_condition.broadcast p.on_can_request ()
+      let i, ofs, len = Metadata.block n.meta i j in
+      send_message p (Wire.CANCEL (i, ofs, len));
+      Lwt_condition.broadcast p.on_can_request ()
   | NoMeta _ ->
-    failwith "send_cancel: no meta info"
+      failwith "send_cancel: no meta info"
 
 let send_port p i =
   send_message p (Wire.PORT i)
@@ -510,36 +510,36 @@ let request_metadata_loop p =
   let rec loop () =
     match p.info with
     | HasMeta _ ->
-      Lwt.return ()
+        Lwt.return ()
     | NoMeta nfo ->
-      if supports_ut_metadata p then begin
-        begin match nfo.request p with
-        | Some i -> request_meta_piece p i
-        | None -> ()
-        end;
-        Lwt_unix.sleep 1.0 >>= loop
-      end
-      else
-        Lwt_condition.wait p.on_ltep_handshake >>= loop
+        if supports_ut_metadata p then begin
+          begin match nfo.request p with
+          | Some i -> request_meta_piece p i
+          | None -> ()
+          end;
+          Lwt_unix.sleep 1.0 >>= loop
+        end
+        else
+          Lwt_condition.wait p.on_ltep_handshake >>= loop
   in
   Lwt.pick [Lwt_condition.wait p.on_meta; loop ()]
 
 let request_blocks_loop p =
   match p.info with
   | HasMeta nfo ->
-    let rec loop () =
-      (* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *)
-      let ps = nfo.request p (request_pipeline_max - p.act_reqs) in
-      List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
-      Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest);
-                (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>=
-      function
-      | `CanRequest -> loop ()
-      | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop
-    in
-    Lwt_condition.wait p.on_unchoke >>= loop
+      let rec loop () =
+        (* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *)
+        let ps = nfo.request p (request_pipeline_max - p.act_reqs) in
+        List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
+        Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest);
+                  (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>=
+        function
+        | `CanRequest -> loop ()
+        | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop
+      in
+      Lwt_condition.wait p.on_unchoke >>= loop
   | NoMeta _ ->
-    failwith "Peer.request_loop: no meta info"
+      failwith "Peer.request_loop: no meta info"
 
 (* let request_loop p = *)
 (*   Lwt.join [(request_metadata_loop p); *)
@@ -550,9 +550,9 @@ let start p =
     let wrap t = Lwt.pick [t; Lwt_condition.wait p.on_stop] in
     Lwt.catch
       (fun () -> Lwt.join [(* wrap (reader_loop p); *)
-                           wrap (writer_loop p);
-                           wrap (request_metadata_loop p);
-                           wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
+           wrap (writer_loop p);
+           wrap (request_metadata_loop p);
+           wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)])
       (fun exn ->
          debug ~exn "%s read/write error" (string_of_node p.node);
          Lwt.return ())
@@ -570,19 +570,19 @@ let start p =
 let got_metadata p m get_next_requests =
   match p.info with
   | NoMeta nfo ->
-    let n = Metadata.piece_count m in
-    let have = Bits.create n in
-    if nfo.has_all then Bits.set_all have else List.iter (Bits.set have) nfo.have;
-    let info =
-      { have;
-        blame = Bits.create n;
-        request = get_next_requests;
-        meta = m }
-    in
-    p.info <- HasMeta info;
-    Lwt_condition.broadcast p.on_meta ()
+      let n = Metadata.piece_count m in
+      let have = Bits.create n in
+      if nfo.has_all then Bits.set_all have else List.iter (Bits.set have) nfo.have;
+      let info =
+        { have;
+          blame = Bits.create n;
+          request = get_next_requests;
+          meta = m }
+      in
+      p.info <- HasMeta info;
+      Lwt_condition.broadcast p.on_meta ()
   | HasMeta _ ->
-    failwith "Peer.got_metadata: already has meta"
+      failwith "Peer.got_metadata: already has meta"
 
 let create sock addr id push info =
   let (* input, *) output = (* IO.in_channel sock, *) IO.out_channel sock in
@@ -632,9 +632,9 @@ let create_has_meta sock addr id push m get_next_requests =
 let worked_on_piece p i =
   match p.info with
   | HasMeta info ->
-    Bits.is_set info.blame i
+      Bits.is_set info.blame i
   | NoMeta _ ->
-    false
+      false
 
 let strike p =
   p.strikes <- p.strikes + 1;
