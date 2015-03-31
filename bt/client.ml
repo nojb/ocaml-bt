@@ -72,17 +72,17 @@ let push_metadata bt info =
 let get_next_requests bt p n =
   match bt.stage with
   | HasMeta (_, Leeching (_, _, r)) ->
-    (* if not (Peer.peer_choking p) then *)Requester.get_next_requests r p n
-    (* else [] *)
+      (* if not (Peer.peer_choking p) then *)Requester.get_next_requests r p n
+  (* else [] *)
   | HasMeta _ -> []
   | NoMeta _ -> []
 
 let get_next_metadata_request bt p =
   match bt.stage with
   | NoMeta (PartialMeta m) ->
-    IncompleteMetadata.get_next_metadata_request m
+      IncompleteMetadata.get_next_metadata_request m
   | _ ->
-    None
+      None
 
 let reader_loop p =
   let ic = IO.in_channel (Peer.sock p) in
@@ -106,200 +106,198 @@ let reader_loop p =
 let handle_peer_event bt p e =
   match e with
   | Peer.Finished ->
-    PeerMgr.peer_finished bt.peer_mgr p;
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, ch, r)) ->
-      Requester.peer_declined_all_requests r p;
-      Requester.lost_bitfield r (Peer.have p);
-      if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
-    | HasMeta (_, Seeding (_, ch)) ->
-      if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
-    | _ -> ()
-    end
+      PeerMgr.peer_finished bt.peer_mgr p;
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, ch, r)) ->
+          Requester.peer_declined_all_requests r p;
+          Requester.lost_bitfield r (Peer.have p);
+          if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
+      | HasMeta (_, Seeding (_, ch)) ->
+          if not (Peer.am_choking p) && Peer.peer_interested p then Choker.rechoke ch
+      | _ -> ()
+      end
   | Peer.AvailableMetadata len ->
-    debug "%s offered %d bytes of metadata" (Peer.to_string p) len;
-    begin match bt.stage with
-    | NoMeta NoMetaLength ->
-      bt.push (GotMetaLength (IncompleteMetadata.create bt.ih len))
-    | _ ->
-      ()
-    end
+      debug "%s offered %d bytes of metadata" (Peer.to_string p) len;
+      begin match bt.stage with
+      | NoMeta NoMetaLength ->
+          bt.push (GotMetaLength (IncompleteMetadata.create bt.ih len))
+      | _ ->
+          ()
+      end
   | Peer.Choked ->
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, _, r)) ->
-      Requester.peer_declined_all_requests r p
-    | _ ->
-      ()
-    end
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, _, r)) ->
+          Requester.peer_declined_all_requests r p
+      | _ ->
+          ()
+      end
   | Peer.Interested
   | Peer.NotInterested ->
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, ch, _))
-    | HasMeta (_, Seeding (_, ch)) ->
-      if not (Peer.am_choking p) then Choker.rechoke ch
-    | _ ->
-      ()
-    end
-  | Peer.Have i ->
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, _, r)) ->
-      Requester.got_have r i
-    | _ -> ()
-    end
-  | Peer.HaveBitfield b ->
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, _, r)) ->
-      Requester.got_bitfield r b
-    | _ -> ()
-    end
-  | Peer.MetaRequested i ->
-    begin match bt.stage with
-    | NoMeta _ ->
-      Peer.send_reject_meta p i
-    | HasMeta (meta, _) ->
-      Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i)
-    end
-  | Peer.GotMetaPiece (i, s) ->
-    begin match bt.stage with
-    | NoMeta (PartialMeta meta) ->
-      debug "got metadata piece %d/%d from %s" i
-        (IncompleteMetadata.piece_count meta) (Peer.to_string p);
-      if IncompleteMetadata.add_piece meta i s then begin
-        match IncompleteMetadata.verify meta with
-        | Some meta ->
-          debug "got full metadata";
-          push_metadata bt (Metadata.create (Bcode.decode meta))
-        | None ->
-          debug "metadata hash check failed; trying again";
-          bt.push GotBadMeta
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, ch, _))
+      | HasMeta (_, Seeding (_, ch)) ->
+          if not (Peer.am_choking p) then Choker.rechoke ch
+      | _ ->
+          ()
       end
-    | _ ->
-      ()
-    end
+  | Peer.Have i ->
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, _, r)) ->
+          Requester.got_have r i
+      | _ -> ()
+      end
+  | Peer.HaveBitfield b ->
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, _, r)) ->
+          Requester.got_bitfield r b
+      | _ -> ()
+      end
+  | Peer.MetaRequested i ->
+      begin match bt.stage with
+      | NoMeta _ ->
+          Peer.send_reject_meta p i
+      | HasMeta (meta, _) ->
+          Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i)
+      end
+  | Peer.GotMetaPiece (i, s) ->
+      begin match bt.stage with
+      | NoMeta (PartialMeta meta) ->
+          debug "got metadata piece %d/%d from %s" i
+            (IncompleteMetadata.piece_count meta) (Peer.to_string p);
+          if IncompleteMetadata.add_piece meta i s then begin
+            match IncompleteMetadata.verify meta with
+            | Some meta ->
+                debug "got full metadata";
+                push_metadata bt (Metadata.create (Bcode.decode meta))
+            | None ->
+                debug "metadata hash check failed; trying again";
+                bt.push GotBadMeta
+          end
+      | _ ->
+          ()
+      end
   | Peer.RejectMetaPiece i ->
-    debug "%s rejected request for metadata piece %d" (Peer.to_string p) i
+      debug "%s rejected request for metadata piece %d" (Peer.to_string p) i
   | Peer.BlockRequested (idx, b) ->
-    begin match bt.stage with
-    | HasMeta (_, Leeching (dl, _, _))
-    | HasMeta (_, Seeding (dl, _)) ->
-      if Torrent.has_piece dl idx then
-        let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in
-        Lwt.async aux
-    | _ ->
-      ()
-    end
+      begin match bt.stage with
+      | HasMeta (_, Leeching (dl, _, _))
+      | HasMeta (_, Seeding (dl, _)) ->
+          if Torrent.has_piece dl idx then
+            let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in
+            Lwt.async aux
+      | _ ->
+          ()
+      end
   | Peer.BlockReceived (idx, b, s) ->
-    begin match bt.stage with
-    | HasMeta (meta, Leeching (t, _, r)) ->
-      debug "got block %d/%d (piece %d) from %s" b
-        (Metadata.block_count meta idx) idx (Peer.to_string p);
-      (* (Util.string_of_file_size (Int64.of_float (Peer.download_rate p))); *)
-      Requester.got_block r p idx b;
-      Torrent.got_block t p idx b s
-    | _ ->
-      ()
-    end
+      begin match bt.stage with
+      | HasMeta (meta, Leeching (t, _, r)) ->
+          debug "got block %d/%d (piece %d) from %s" b
+            (Metadata.block_count meta idx) idx (Peer.to_string p);
+          (* (Util.string_of_file_size (Int64.of_float (Peer.download_rate p))); *)
+          Requester.got_block r p idx b;
+          Torrent.got_block t p idx b s
+      | _ ->
+          ()
+      end
   | Peer.GotPEX (added, dropped) ->
-    debug "got pex from %s added %d dropped %d" (Peer.to_string p)
-      (List.length added) (List.length dropped);
-    List.iter (fun (a, _) -> PeerMgr.handle_received_peer bt.peer_mgr a) added
+      debug "got pex from %s added %d dropped %d" (Peer.to_string p)
+        (List.length added) (List.length dropped);
+      List.iter (fun (a, _) -> PeerMgr.handle_received_peer bt.peer_mgr a) added
   | Peer.DHTPort i ->
-    debug "got dht port %d from %s" i (Peer.to_string p);
-    let addr, _ = Peer.addr p in
-    Lwt.async begin fun () ->
-      DHT.ping bt.dht (addr, i) >|= function
-      | Some (id, addr) ->
-        DHT.update bt.dht Kademlia.Good id addr
-      | None ->
-        debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i
-    end
+      debug "got dht port %d from %s" i (Peer.to_string p);
+      let addr, _ = Peer.addr p in
+      Lwt.async begin fun () ->
+        DHT.ping bt.dht (addr, i) >|= function
+        | Some (id, addr) ->
+            DHT.update bt.dht Kademlia.Good id addr
+        | None ->
+            debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i
+      end
 
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
-    debug "piece %d verified and written to disk" i;
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, _, r)) ->
-      PeerMgr.got_piece bt.peer_mgr i;
-      Requester.got_piece r i
-    | _ ->
-      ()
-    end
+      debug "piece %d verified and written to disk" i;
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, _, r)) ->
+          PeerMgr.got_piece bt.peer_mgr i;
+          Requester.got_piece r i
+      | _ ->
+          ()
+      end
   | Torrent.PieceFailed i ->
-    begin match bt.stage with
-    | HasMeta (_, Leeching (_, _, r)) ->
-      (* Announcer.add_bytes *)
-      debug "piece %d failed hashcheck" i;
-      Requester.got_bad_piece r i;
-      PeerMgr.got_bad_piece bt.peer_mgr i
-    | _ ->
-      ()
-    end
+      begin match bt.stage with
+      | HasMeta (_, Leeching (_, _, r)) ->
+          (* Announcer.add_bytes *)
+          debug "piece %d failed hashcheck" i;
+          Requester.got_bad_piece r i;
+          PeerMgr.got_bad_piece bt.peer_mgr i
+      | _ ->
+          ()
+      end
   | Torrent.TorrentComplete ->
-    debug "torrent completed!";
-    begin match bt.stage with
-    | HasMeta (meta, Leeching (t, ch, _)) ->
-      (* FIXME stop requester ? *)
-      bt.stage <- HasMeta (meta, Seeding (t, ch))
-    | _ ->
-      ()
-    end
-
-let (!!) = Lazy.force
+      debug "torrent completed!";
+      begin match bt.stage with
+      | HasMeta (meta, Leeching (t, ch, _)) ->
+          (* FIXME stop requester ? *)
+          bt.stage <- HasMeta (meta, Seeding (t, ch))
+      | _ ->
+          ()
+      end
 
 let handle_event bt = function
   | GotMetaLength m ->
-    bt.stage <- NoMeta (PartialMeta m)
+      bt.stage <- NoMeta (PartialMeta m)
   | GotBadMeta ->
-    bt.stage <- NoMeta NoMetaLength
+      bt.stage <- NoMeta NoMetaLength
   (* | IncomingPeer (sock, addr) -> *)
   (*   PeerMgr.handle_incoming_peer bt.peer_mgr sock addr *)
   | PeersReceived addrs ->
-    debug "received %d peers" (List.length addrs);
-    List.iter (PeerMgr.handle_received_peer bt.peer_mgr) addrs
+      debug "received %d peers" (List.length addrs);
+      List.iter (PeerMgr.handle_received_peer bt.peer_mgr) addrs
   | GotMetadata meta ->
-    begin match bt.stage with
-    | NoMeta _ ->
-      bt.stage <- HasMeta (meta, Loading);
-      let aux () =
-        Torrent.create meta (handle_torrent_event bt) >|= fun dl ->
-        bt.push (TorrentLoaded dl)
-      in
-      Lwt.async aux
-    | HasMeta _ ->
-      ()
-    end
+      begin match bt.stage with
+      | NoMeta _ ->
+          bt.stage <- HasMeta (meta, Loading);
+          let aux () =
+            Torrent.create meta (handle_torrent_event bt) >|= fun dl ->
+            bt.push (TorrentLoaded dl)
+          in
+          Lwt.async aux
+      | HasMeta _ ->
+          ()
+      end
   | TorrentLoaded dl ->
-    begin match bt.stage with
-    | HasMeta (meta, Loading) ->
-      (* debug "torrent loaded (good=%d,total=%d)" *)
-      (*   (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl); *)
-      (* PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt); FIXME FIXME *)
-      let ch = Choker.create bt.peer_mgr dl in
-      if Torrent.is_complete dl then
-        bt.stage <- HasMeta (meta, Seeding (dl, ch))
-      else begin
-        let r = Requester.create meta dl in
-        bt.stage <- HasMeta (meta, Leeching (dl, ch, r));
-        PeerMgr.iter_peers (fun p -> Requester.got_bitfield r (Peer.have p)) bt.peer_mgr
-      end;
-      Choker.start ch
-    | _ ->
-      ()
-    end
+      begin match bt.stage with
+      | HasMeta (meta, Loading) ->
+          (* debug "torrent loaded (good=%d,total=%d)" *)
+          (*   (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl); *)
+          (* PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt); FIXME FIXME *)
+          let ch = Choker.create bt.peer_mgr dl in
+          if Torrent.is_complete dl then
+            bt.stage <- HasMeta (meta, Seeding (dl, ch))
+          else begin
+            let r = Requester.create meta dl in
+            bt.stage <- HasMeta (meta, Leeching (dl, ch, r));
+            PeerMgr.iter_peers (fun p -> Requester.got_bitfield r (Peer.have p)) bt.peer_mgr
+          end;
+          Choker.start ch
+      | _ ->
+          ()
+      end
   | Announce (tier, event) ->
-    let doit () =
-      (* FIXME port *)
-      Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
-      debug "announce to %s successful, reannouncing in %ds"
-        (Tracker.Tier.to_string tier) resp.Tracker.interval;
-      push_peers_received bt resp.Tracker.peers;
-      Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
-      bt.push (Announce (tier, None))
-    in
-    let safe_doit () =
-      Lwt.catch doit (fun exn -> debug ~exn "announce failure"; Lwt.return ())
-    in
-    Lwt.async safe_doit
+      let doit () =
+        (* FIXME port *)
+        Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
+        debug "announce to %s successful, reannouncing in %ds"
+          (Tracker.Tier.to_string tier) resp.Tracker.interval;
+        push_peers_received bt resp.Tracker.peers;
+        Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
+        bt.push (Announce (tier, None))
+      in
+      let safe_doit () =
+        Lwt.catch doit (fun exn -> debug ~exn "announce failure"; Lwt.return ())
+      in
+      Lwt.async safe_doit
   | PeerEvent (p, e) ->
       handle_peer_event bt p e
   | PeerJoined (sock, id, exts) ->
@@ -321,6 +319,8 @@ let handle_event bt = function
       | HasMeta (_, Loading)
       | NoMeta _ -> ()
       end
+
+let (!!) = Lazy.force
 
 let rec event_loop bt =
   Lwt_stream.next bt.chan >|= handle_event bt >>= fun () -> event_loop bt
@@ -370,9 +370,9 @@ let stats c =
   let downloaded = match c.stage with
     | HasMeta (_, Leeching (t, _, _))
     | HasMeta (_, Seeding (t, _)) ->
-      Torrent.have_size t
+        Torrent.have_size t
     | _ ->
-      0L
+        0L
   in
   let total_size = match c.stage with
     | HasMeta (m, _) -> Metadata.total_length m
