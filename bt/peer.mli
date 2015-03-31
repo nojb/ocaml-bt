@@ -40,6 +40,7 @@ type pex_flags = {
     (Peer manager, Torrent, Choker, Requester, etc.). *)
 type event =
   | Choked
+  | Unchoked
   (** The peer has choked us. *)
   | Interested
   (** The peer is interested in us. *)
@@ -193,7 +194,7 @@ val piece_data_time : t -> float
 val close : t -> unit
 (** Disconnect this peer. *)
 
-val got_message : t -> Wire.message -> unit
+val got_message : t -> Wire.message -> (t * event) option
 
 val send_pex : t -> Addr.t list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed

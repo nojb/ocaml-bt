@@ -36,6 +36,7 @@ type pex_flags = {
 
 type event =
   | Choked
+  | Unchoked
   | Interested
   | NotInterested
   | Have of int
@@ -160,13 +161,17 @@ let got_ut_metadata p data =
   let data = String.sub data data_start (String.length data - data_start) in
   match msg_type with
   | 0 -> (* request *)
-    signal p (MetaRequested piece)
+      Some (p, MetaRequested piece)
+    (* signal p (MetaRequested piece) *)
   | 1 -> (* data *)
-    signal p (GotMetaPiece (piece, data))
+      Some (p, GotMetaPiece (piece, data))
+    (* signal p (GotMetaPiece (piece, data)) *)
   | 2 -> (* reject *)
-    signal p (RejectMetaPiece piece)
+      Some (p, RejectMetaPiece piece)
+    (* signal p (RejectMetaPiece piece) *)
   | _ ->
-    ()
+      None
+    (* () *)
 
 let send_reject_meta p piece =
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -216,7 +221,8 @@ let got_ut_pex p data =
     loop 0
   in
   let dropped = loop (Bitstring.bitstring_of_string dropped) in
-  signal p (GotPEX (List.combine added added_f, dropped))
+  (* signal p (GotPEX (List.combine added added_f, dropped)) *)
+  Some (p, GotPEX (List.combine added added_f, dropped))
 
 let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata);
@@ -226,36 +232,45 @@ let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
     p.act_reqs <- 0;
-    signal p Choked;
-    Lwt_condition.broadcast p.on_choke ()
-  end
+    (* signal p Choked; *)
+    Some (p, Choked)
+    (* Lwt_condition.broadcast p.on_choke () *)
+  end else
+    None
 
 let got_unchoke p =
   if p.peer_choking then begin
     debug "%s is no longer choking us" (string_of_node p.node);
     p.peer_choking <- false;
-    Lwt_condition.broadcast p.on_unchoke ()
-  end
+    Some (p, Unchoked)
+    (* Lwt_condition.broadcast p.on_unchoke () *)
+  end else
+    None
 
 let got_interested p =
   if not p.peer_interested then begin
     debug "%s is interested in us" (string_of_node p.node);
     p.peer_interested <- true;
-    signal p Interested
-  end
+    Some (p, Interested)
+    (* signal p Interested *)
+  end else
+    None
 
 let got_not_interested p =
   if p.peer_interested then begin
     debug "%s is no longer interested in us" (string_of_node p.node);
     p.peer_interested <- false;
-    signal p NotInterested
-  end
+    Some (p, NotInterested)
+    (* signal p NotInterested *)
+  end else
+    None
 
 let got_have_bitfield p b =
   begin match p.info with
   | HasMeta n ->
     Bits.blit b 0 n.have 0 (Bits.length n.have);
-    signal p (HaveBitfield n.have)
+    Some (p, HaveBitfield n.have)
+    (* signal p (HaveBitfield n.have) *)
   | NoMeta n ->
     let rec loop acc i =
       if i >= Bits.length b then List.rev acc else
@@ -263,7 +278,8 @@ let got_have_bitfield p b =
       else loop acc (i+1)
     in
     n.have <- loop [] 0;
-    signal p (HaveBitfield b)
+    Some (p, HaveBitfield b)
+    (* signal p (HaveBitfield b) *)
   end
 
 let got_have p idx =
@@ -271,13 +287,17 @@ let got_have p idx =
   | HasMeta nfo ->
     if not (Bits.is_set nfo.have idx) then begin
       Bits.set nfo.have idx;
-      signal p (Have idx)
-    end
+      Some (p, Have idx)
+      (* signal p (Have idx) *)
+    end else
+      None
   | NoMeta n ->
     if not (List.mem idx n.have) && not n.has_all then begin
       n.have <- idx :: n.have;
-      signal p (Have idx)
-    end
+      Some (p, Have idx)
+      (* signal p (Have idx) *)
+    end else
+      None
 
 let got_cancel p i ofs len =
   Lwt_sequence.iter_node_l (fun n ->
@@ -285,7 +305,8 @@ let got_cancel p i ofs len =
       | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && String.length s = len ->
         Lwt_sequence.remove n
       | _ ->
-        ()) p.send_queue
+        ()) p.send_queue;
+  None
 
 let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
@@ -295,7 +316,8 @@ let got_piece p idx off s =
   match p.info with
   | HasMeta info ->
     Bits.set info.blame idx;
-    signal p (BlockReceived (idx, Metadata.block_number info.meta idx off, s))
+    (* signal p (BlockReceived (idx, Metadata.block_number info.meta idx off, s)) *)
+    Some (p, BlockReceived (idx, Metadata.block_number info.meta idx off, s))
   | NoMeta _ ->
     failwith "Peer.got_piece: no meta info"
 
@@ -308,9 +330,12 @@ let got_extended_handshake p bc =
       if id = 0 then Hashtbl.remove p.extensions name
       else Hashtbl.replace p.extensions name id) m;
   debug "%s supports %s" (string_of_node p.node) (strl fst m);
+  Lwt_condition.broadcast p.on_ltep_handshake ();
   if Hashtbl.mem p.extensions "ut_metadata" then
-    signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int));
-  Lwt_condition.broadcast p.on_ltep_handshake ()
+    (* signal p (AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)); *)
+    Some (p, AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int))
+  else
+    None
 
 let got_extended p id data =
   let (_, f) = List.assoc id supported_extensions in
@@ -322,17 +347,19 @@ let got_request p idx off len =
     let b = Metadata.block_number info.meta idx off in
     let _, _, l = Metadata.block info.meta idx b in
     assert (l = len);
-    signal p (BlockRequested (idx, b))
+    Some (p, BlockRequested (idx, b))
+    (* signal p (BlockRequested (idx, b)) *)
   | _ ->
-    ()
+    None
 (* FIXME send REJECT if fast extension is supported *)
 
 let got_port p i =
-  signal p (DHTPort i)
+  Some (p, DHTPort i)
+  (* signal p (DHTPort i) *)
 
 let got_message p m =
   match m with
-  | Wire.KEEP_ALIVE -> ()
+  | Wire.KEEP_ALIVE -> None
   | Wire.CHOKE -> got_choke p
   | Wire.UNCHOKE -> got_unchoke p
   | Wire.INTERESTED -> got_interested p
@@ -347,7 +374,7 @@ let got_message p m =
   | Wire.EXTENDED (0, s) -> got_extended_handshake p (Bcode.decode s)
   | Wire.EXTENDED (id, s) -> got_extended p id s
   | Wire.PORT i -> got_port p i
-  | _ -> assert false
+  | _ -> None
 
 let send_request p (i, ofs, len) =
   p.act_reqs <- p.act_reqs + 1;
