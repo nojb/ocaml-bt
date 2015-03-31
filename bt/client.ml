@@ -84,25 +84,6 @@ let get_next_metadata_request bt p =
   | _ ->
       None
 
-let reader_loop p =
-  let ic = IO.in_channel (Peer.sock p) in
-  let input = Lwt_stream.from
-      (fun () -> Wire.read ic >>= fun msg ->
-        (* debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg); *)
-        Lwt.return (Some msg))
-  in
-  let rec loop f =
-    Lwt.pick
-      [(Lwt_stream.next input >|= fun x -> `Ok x);
-       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
-       (Lwt_unix.sleep (float Peer.keepalive_delay) >|= fun () -> `Timeout)]
-    >>= function
-    | `Ok x -> f x; loop f
-    (* | `Stop -> Lwt.return () *)
-    | `Timeout -> Lwt.fail Peer.Timeout
-  in
-  loop (Peer.got_message p)
-
 let handle_peer_event bt p e =
   match e with
   | Peer.Finished ->
@@ -214,6 +195,33 @@ let handle_peer_event bt p e =
             debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i
       end
 
+let reader_loop bt p =
+  let ic = IO.in_channel (Peer.sock p) in
+  let input = Lwt_stream.from
+      (fun () -> Wire.read ic >>= fun msg ->
+        (* debug "got message from %s : %s" (string_of_node p.node) (Wire.string_of_message msg); *)
+        Lwt.return (Some msg))
+  in
+  let rec loop f =
+    Lwt.pick
+      [(Lwt_stream.next input >|= fun x -> `Ok x);
+       (* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *)
+       (Lwt_unix.sleep (float Peer.keepalive_delay) >|= fun () -> `Timeout)]
+    >>= function
+    | `Ok x ->
+        begin match f x with
+        | None ->
+            loop f
+        | Some (p, e) ->
+            handle_peer_event bt p e;
+            loop f
+        end
+        (* let () = f x in loop f *)
+    (* | `Stop -> Lwt.return () *)
+    | `Timeout -> Lwt.fail Peer.Timeout
+  in
+  loop (Peer.got_message p)
+
 let handle_torrent_event bt = function
   | Torrent.PieceVerified i ->
       debug "piece %d verified and written to disk" i;
@@ -309,6 +317,7 @@ let handle_event bt = function
             Peer.create_no_meta sock (IO.addr sock) id
               (fun p e -> bt.push (PeerEvent (p, e))) (get_next_metadata_request bt)
       in
+      Lwt.async (fun () -> reader_loop bt p);
       Peer.start p;
       (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
       if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
