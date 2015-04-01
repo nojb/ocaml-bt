@@ -38,7 +38,23 @@ let string_of_sockaddr = function
   | Unix.ADDR_UNIX s -> s
 
 
-module W = struct
+module W : sig
+  type t
+
+  val len : t -> int
+  val empty : t
+  val append : t -> t -> t
+  val (<+>) : t -> t -> t
+  val char : char -> t
+  val byte : int -> t
+  val string : string -> t
+  val int32 : int32 -> t
+  val int : int -> t
+  val int16 : int -> t
+  val concat : t list -> t
+  val immediate : Cstruct.t -> t
+  val to_cstruct : t -> Cstruct.t
+end = struct
   type t = int * (Cstruct.t -> int -> unit)
 
   let len (l, _) = l

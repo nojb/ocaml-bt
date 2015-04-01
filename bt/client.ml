@@ -22,10 +22,6 @@
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
-(* let section = Log.make_section "Client" *)
-
-(* let debug ?exn fmt = Log.debug section ?exn fmt *)
-
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 

@@ -141,5 +141,3 @@ val is_snubbing : t -> bool
 
 val to_string : t -> string
 (** Print out the peer's id (in shortened form) and address. *)
-
-(* val sock : t -> IO.t *)

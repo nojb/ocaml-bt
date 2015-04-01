@@ -21,18 +21,10 @@
 
 module Cs = Nocrypto.Uncommon.Cs
 
-(* let section = Log.make_section "Peer" *)
-
-(* let debug ?exn fmt = Log.debug section ?exn fmt *)
-
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
-
-let kilobyte n = n * 1024
 let keepalive_delay = 20 (* FIXME *)
 let request_pipeline_max = 5
-let info_piece_size = kilobyte 16
-let default_block_size = kilobyte 16
+let info_piece_size = 16 * 1024
+let default_block_size = 16 * 1024
 
 exception Timeout
 
