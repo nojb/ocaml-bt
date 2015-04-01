@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -60,8 +60,6 @@ val pp : Format.formatter -> t -> unit
 val block_offset : t -> int -> int -> int64
 (** Return the global offset at which the piece/block begins.  Used as an
     argument to {!Store.read} and {!Store.write}. *)
-
-(* val block_size : t -> int -> int -> int *)
 
 val hash : t -> int -> SHA1.t
 (** The SHA1 hash of the given piece. *)

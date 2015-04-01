@@ -42,14 +42,6 @@ type t = {
   push : event -> unit
 }
 
-(* let get_next_requests bt p n = *)
-(*   match bt.stage with *)
-(*   | HasMeta (_, Leeching (_, _, r)) -> *)
-(*       (\* if not (Peer.peer_choking p) then *\)Requester.get_next_requests r p n *)
-(*   (\* else [] *\) *)
-(*   | HasMeta _ -> [] *)
-(*   | NoMeta _ -> [] *)
-
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
 let extensions =
@@ -286,7 +278,6 @@ let share_torrent bt meta dl peers =
   let ch = Choker.create bt.peer_mgr dl in
   let r = Requester.create meta dl in
   Peers.iter (fun _ p -> Requester.got_bitfield r (Peer.have p)) peers;
-  (* PeerMgr.iter_peers (fun p -> Requester.got_bitfield r (Peer.have p)) bt.peer_mgr; *)
   Choker.start ch;
   let rec loop peers =
     Lwt_stream.next bt.chan >>= function
@@ -321,9 +312,6 @@ let share_torrent bt meta dl peers =
 
     | ConnectPeer (addr, timeout) ->
         Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
-        loop peers
-
-    | AvailableMetadata _ ->
         loop peers
 
     | Choked _ ->
@@ -401,6 +389,7 @@ let share_torrent bt meta dl peers =
         (* FIXME *)
         loop (Peers.add id p peers)
 
+    | AvailableMetadata _
     | NoEvent ->
         loop peers
   in
