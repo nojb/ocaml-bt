@@ -15,11 +15,9 @@ PeerMgr
 Choker
 Client
 Rate
-UDP
 Wire
 Handshake
 Requester
-DHT
 Kademlia
 Log
 Event
