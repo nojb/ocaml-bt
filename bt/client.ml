@@ -38,9 +38,7 @@ type t = {
   trackers : Uri.t list;
   peer_mgr : PeerMgr.swarm;
   chan : event Lwt_stream.t;
-  push : event -> unit;
-  (* listener : Listener.t; *)
-  dht : DHT.t
+  push : event -> unit
 }
 
 (* let get_next_requests bt p n = *)
@@ -485,21 +483,6 @@ let rec fetch_metadata bt =
 
 let start bt =
   List.iter (fun tier -> Lwt.async (fun () -> announce ~info_hash:bt.ih tier bt.push bt.id)) bt.trackers;
-  DHT.start bt.dht;
-  Lwt.async begin fun () ->
-    DHT.auto_bootstrap bt.dht DHT.bootstrap_nodes >>= fun () ->
-    DHT.query_peers bt.dht bt.ih begin fun (id, addr) token peers ->
-      bt.push (PeersReceived peers);
-      Lwt.async begin fun () ->
-        Lwt.catch
-          (fun () -> DHT.announce bt.dht addr 6881 token bt.ih >>= fun _ -> Lwt.return ())
-          (fun exn ->
-             (* FIXME FIXME *)
-             (* debug ~exn "dht announce to %s (%s) failed" (SHA1.to_hex_short id) (Addr.to_string addr); *)
-             Lwt.return ())
-      end
-    end
-  end;
   fetch_metadata bt >>= fun meta ->
   load_torrent bt meta >>= fun tor ->
   assert false
@@ -527,5 +510,4 @@ let create mg =
   let peer_mgr = PeerMgr.create () in
   Lwt.async (fun () -> start_server push);
   { id; ih; trackers = mg.Magnet.tr; chan;
-    push; peer_mgr;
-    dht = DHT.create 6881 }
+    push; peer_mgr }
