@@ -19,9 +19,9 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let section = Log.make_section "Choker"
+(* let section = Log.make_section "Choker" *)
 
-let debug ?exn fmt = Log.debug section ?exn fmt
+(* let debug ?exn fmt = Log.debug section ?exn fmt *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)

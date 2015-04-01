@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -18,10 +18,6 @@
    COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
-
-let section = Log.make_section "Metadata"
-
-let debug ?exn fmt = Log.debug section ?exn fmt
 
 let _ = Random.self_init ()
 
@@ -168,7 +164,7 @@ let create bc =
   let info_hash = info_hash bc in
   let piece_length = piece_length bc in
   let block_size = compute_block_size piece_length in
-  debug "block_size is %d" block_size;
+  (* debug "block_size is %d" block_size; *)
   let total_length = total_length bc in
   let files = files bc in
   let last_piece_size = Util.safe_int64_to_int (Int64.rem total_length (Int64.of_int piece_length)) in

@@ -21,9 +21,9 @@
 
 module Cs = Nocrypto.Uncommon.Cs
 
-let section = Log.make_section "Peer"
+(* let section = Log.make_section "Peer" *)
 
-let debug ?exn fmt = Log.debug section ?exn fmt
+(* let debug ?exn fmt = Log.debug section ?exn fmt *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)

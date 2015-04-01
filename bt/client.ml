@@ -22,9 +22,9 @@
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
-let section = Log.make_section "Client"
+(* let section = Log.make_section "Client" *)
 
-let debug ?exn fmt = Log.debug section ?exn fmt
+(* let debug ?exn fmt = Log.debug section ?exn fmt *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -257,7 +257,7 @@ let announce ~info_hash url push id =
 let announce ~info_hash url push id =
   Lwt.catch
     (fun () -> announce ~info_hash url push id)
-    (fun exn -> debug ~exn "announce failure"; Lwt.return_unit)
+    (fun exn -> (* debug ~exn "announce failure"; *) Lwt.return_unit)
 
 module Peers = Map.Make (SHA1)
 
@@ -291,19 +291,19 @@ let share_torrent bt meta dl peers =
   let rec loop peers =
     Lwt_stream.next bt.chan >>= function
     | PeersReceived addrs ->
-        debug "received %d peers" (List.length addrs);
+        (* debug "received %d peers" (List.length addrs); *)
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop peers
 
     | PieceVerified i ->
-        debug "piece %d verified and written to disk" i;
+        (* debug "piece %d verified and written to disk" i; *)
         (* PeerMgr.got_piece bt.peer_mgr i; *)
         Requester.got_piece r i;
         loop peers
 
     | PieceFailed i ->
         (* Announcer.add_bytes *)
-        debug "piece %d failed hashcheck" i;
+        (* debug "piece %d failed hashcheck" i; *)
         Requester.got_bad_piece r i;
         (* PeerMgr.got_bad_piece bt.peer_mgr i; *)
         loop peers
@@ -423,7 +423,7 @@ let rec fetch_metadata bt =
         loop peers m
 
     | _, PeersReceived addrs ->
-        debug "received %d peers" (List.length addrs);
+        (* debug "received %d peers" (List.length addrs); *)
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop peers m
 
@@ -458,12 +458,12 @@ let rec fetch_metadata bt =
         (*   (IncompleteMetadata.piece_count m) (Peer.to_string p); *)
         begin match IncompleteMetadata.add m' i s with
         | `Failed ->
-            debug "metadata hash check failed; trying again";
+            (* debug "metadata hash check failed; trying again"; *)
             loop peers None
         | `Verified raw ->
-              debug "got full metadata";
-              let m' = Metadata.create (Bcode.decode raw) in
-              Lwt.return m'
+              (* debug "got full metadata"; *)
+            let m' = Metadata.create (Bcode.decode raw) in
+            Lwt.return m'
         | `More ->
             loop peers m
         end
@@ -519,10 +519,10 @@ let start_server ?(port = 0) push =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
   Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, 0));
   Lwt_unix.listen fd listen_backlog;
-  debug "listening on port %u" port;
+  (* debug "listening on port %u" port; *)
   let rec loop () =
     Lwt_unix.accept fd >>= fun (fd, sa) ->
-    debug "accepted connection from %s" (Util.string_of_sockaddr sa);
+    (* debug "accepted connection from %s" (Util.string_of_sockaddr sa); *)
     push (IncomingConnection (fd, sa));
     loop ()
   in

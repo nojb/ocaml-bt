@@ -4,7 +4,6 @@ Bits
 IncompleteMetadata
 Metadata
 Stats
-KRPC
 Magnet
 Peer
 Store
@@ -18,5 +17,4 @@ Rate
 Wire
 Handshake
 Requester
-Kademlia
 Event

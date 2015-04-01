@@ -19,9 +19,9 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let section = Log.make_section "Requester"
+(* let section = Log.make_section "Requester" *)
 
-let debug ?exn fmt = Log.debug section ?exn fmt
+(* let debug ?exn fmt = Log.debug section ?exn fmt *)
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
@@ -77,7 +77,7 @@ let get_next_requests t peer n =
     else
       let p = t.pending.(i) in
       if p.p_complete then List.rev acc
-      else 
+      else
       if not (Peer.has_piece peer p.p_index) then loop acc (i+1)
       else
         let rec loop' acc j =
@@ -116,8 +116,8 @@ let rec upkeep_pulse t =
   let old, keep = List.partition (fun r -> r.a_sent_at <= too_old) t.active in
   t.active <- keep;
   List.iter (fun r ->
-      debug "cancelling %d(%d/%d) because request is too old"
-        r.a_piece r.a_block (Metadata.block_count t.meta r.a_piece);
+      (* debug "cancelling %d(%d/%d) because request is too old" *)
+        (* r.a_piece r.a_block (Metadata.block_count t.meta r.a_piece); *)
       Peer.send_cancel r.a_peer (r.a_piece, r.a_block);
       decrease_request_count t r.a_piece) old;
   Lwt_unix.sleep refill_upkeep_period_msec >>= fun () ->
@@ -159,7 +159,7 @@ let got_piece r i =
 let got_bad_piece r i =
   (* FIXME *)
   ()
-  
+
 let create m t =
   let numpieces = Metadata.piece_count m in
   let create_pending_piece i =
