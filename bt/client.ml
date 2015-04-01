@@ -39,7 +39,7 @@ type t = {
   peer_mgr : PeerMgr.swarm;
   chan : event Lwt_stream.t;
   push : event -> unit;
-  listener : Listener.t;
+  (* listener : Listener.t; *)
   dht : DHT.t
 }
 
@@ -249,7 +249,8 @@ let share_torrent bt meta dl peers =
     | Announce (tier, event) ->
         let doit () =
           (* FIXME port *)
-          Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
+          Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:None
+            (* ?port:(Listener.port bt.listener) FIXME FIXME *) ~id:bt.id >>= fun resp ->
           debug "announce to %s successful, reannouncing in %ds"
             (Tracker.Tier.to_string tier) resp.Tracker.interval;
           bt.push (PeersReceived resp.Tracker.peers);
@@ -393,7 +394,7 @@ let rec fetch_metadata bt =
     | Announce (tier, event) ->
         let doit () =
           (* FIXME port *)
-          Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
+          Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:None (* FIXME FIXME (Listener.port bt.listener) *) ~id:bt.id >>= fun resp ->
           debug "announce to %s successful, reannouncing in %ds"
             (Tracker.Tier.to_string tier) resp.Tracker.interval;
           bt.push (PeersReceived resp.Tracker.peers);
@@ -483,7 +484,7 @@ let rec fetch_metadata bt =
 
 let start bt =
   List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
-  Listener.start bt.listener ();
+  (* Listener.start bt.listener (); *)
   DHT.start bt.dht;
   Lwt.async begin fun () ->
     DHT.auto_bootstrap bt.dht DHT.bootstrap_nodes >>= fun () ->
@@ -503,6 +504,21 @@ let start bt =
   load_torrent bt meta >>= fun tor ->
   assert false
 
+let listen_backlog = 5
+
+let start_server ?(port = 0) push =
+  let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
+  Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, 0));
+  Lwt_unix.listen fd listen_backlog;
+  debug "listening on port %u" port;
+  let rec loop () =
+    Lwt_unix.accept fd >>= fun (fd, sa) ->
+    debug "accepted connection from %s" (Util.string_of_sockaddr sa);
+    push (IncomingConnection (fd, sa));
+    loop ()
+  in
+  loop ()
+
 let create mg =
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
@@ -514,11 +530,12 @@ let create mg =
   (*       (\* (fun p e -> handle_peer_event !!cl p e) *\) *)
   (*       (fun p -> get_next_metadata_request !!cl p)) *)
   (* in *)
+  Lwt.async (fun () -> start_server push);
   { id; ih; trackers; chan;
     push; peer_mgr;
     (* stage = NoMeta NoMetaLength; *)
-    listener = Listener.create
-        (fun fd _ -> assert false (* FIXME FIXME PeerMgr.handle_incoming_peer !!peer_mgr (IO.of_file_descr fd)) *));
+    (* listener = Listener.create *)
+        (* (fun fd _ -> assert false (\* FIXME FIXME PeerMgr.handle_incoming_peer !!peer_mgr (IO.of_file_descr fd)) *\)); *)
     dht = DHT.create 6881 }
 
 (* let stats c = *)

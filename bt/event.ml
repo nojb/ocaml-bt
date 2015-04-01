@@ -68,6 +68,8 @@ type event =
 
   | MetaRequested of SHA1.t * int
 
+  | IncomingConnection of Lwt_unix.file_descr * Unix.sockaddr
+
   | GotMetaPiece of SHA1.t * int * Cstruct.t
 
   | RejectMetaPiece of SHA1.t * int
