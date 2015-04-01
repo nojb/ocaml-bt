@@ -20,6 +20,7 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
+module Cs   = Nocrypto.Uncommon.Cs
 
 let section = Log.make_section "Client"
 
@@ -55,8 +56,6 @@ type t = {
 (*       IncompleteMetadata.get_next_metadata_request m *)
 (*   | _ -> *)
 (*       None *)
-
-module Cs = Nocrypto.Uncommon.Cs
 
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
@@ -401,28 +400,26 @@ let load_torrent bt meta =
 
 let rec fetch_metadata bt =
   let rec loop peers m =
-    Lwt_stream.next bt.chan >>= function
-    | AvailableMetadata (p, len) ->
+    Lwt_stream.next bt.chan >>= fun e ->
+    match m, e with
+    | None, AvailableMetadata (p, len) ->
         (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
         (* FIXME *)
-        begin match m with
-        | None ->
-            let m = IncompleteMetadata.create bt.ih len in
-            loop peers (Some m)
-        | _ ->
-            loop peers m
-        end
+        let m = IncompleteMetadata.create bt.ih len in
+        loop peers (Some m)
+    | Some _, AvailableMetadata _ ->
+        loop peers m
 
-    | PeersReceived addrs ->
+    | _, PeersReceived addrs ->
         debug "received %d peers" (List.length addrs);
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop peers m
 
-    | ConnectPeer (addr, timeout) ->
+    | _, ConnectPeer (addr, timeout) ->
         Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
         loop peers m
 
-    | PeerConnected (mode, sock, exts, id) ->
+    | _, PeerConnected (mode, sock, exts, id) ->
         let p = Peer.create_no_meta id bt.push (fun _ -> None (* FIXME FIXME *)) in
         Lwt.async (fun () -> reader_loop bt.push sock p);
         Peer.start p;
@@ -431,62 +428,58 @@ let rec fetch_metadata bt =
         if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
         loop (Peers.add id p peers) m
 
-    | PeerDisconnected id ->
+    | _, PeerDisconnected id ->
         bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         loop (Peers.remove id peers) m
 
-    | ConnectFailed addr ->
+    | _, ConnectFailed addr ->
         bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop peers m
 
-    | Choked _
-    | Interested _
-    | NotInterested _
-    | Have _
-    | HaveBitfield _ ->
-        loop peers m
-
-    | MetaRequested (id, _) ->
+    | _, MetaRequested (id, _) ->
         (* Peer.send_reject_meta p i; *)
         (* FIXME *)
         loop peers m
 
-    | GotMetaPiece (p, i, s) ->
-        begin match m with
-        | Some m' ->
-            (* debug "got metadata piece %d/%d from %s" i *)
-            (*   (IncompleteMetadata.piece_count m) (Peer.to_string p); *)
-            if IncompleteMetadata.add_piece m' i s then begin
-              match IncompleteMetadata.verify m' with
-              | Some m' ->
-                  debug "got full metadata";
-                  let m' = Metadata.create (Bcode.decode m') in
-                  Lwt.return m'
-              | None ->
-                  debug "metadata hash check failed; trying again";
-                  loop peers None
-            end else
-              loop peers m
-        | _ ->
+    | Some m', GotMetaPiece (p, i, s) ->
+        (* debug "got metadata piece %d/%d from %s" i *)
+        (*   (IncompleteMetadata.piece_count m) (Peer.to_string p); *)
+        begin match IncompleteMetadata.add m' i s with
+        | `Failed ->
+            debug "metadata hash check failed; trying again";
+            loop peers None
+        | `Verified raw ->
+              debug "got full metadata";
+              let m' = Metadata.create (Bcode.decode raw) in
+              Lwt.return m'
+        | `More ->
             loop peers m
         end
 
-    | RejectMetaPiece (p, i) ->
-        (* debug "%s rejected request for metadata piece %d" (Peer.to_string p) i; *)
-        (* FIXME *)
+    | None, GotMetaPiece _ ->
         loop peers m
 
-    | BlockRequested _
-    | BlockReceived _ ->
+    | _, PieceVerified _
+    | _, PieceFailed _
+    | _, TorrentComplete
+    | _, Unchoked _
+    | _, Choked _
+    | _, Interested _
+    | _, NotInterested _
+    | _, Have _
+    | _, HaveBitfield _
+    | _, RejectMetaPiece _
+    | _, BlockRequested _
+    | _, BlockReceived _ ->
         loop peers m
 
-    | GotPEX (p, added, dropped) ->
+    | _, GotPEX (p, added, dropped) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
         List.iter (fun (addr, _) -> bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop peers m
 
-    | DHTPort (p, i) ->
+    | _, DHTPort (p, i) ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -499,7 +492,7 @@ let rec fetch_metadata bt =
         (* FIXME *)
         loop peers m
 
-    | NoEvent ->
+    | _, NoEvent ->
         loop peers m
   in
   loop Peers.empty None

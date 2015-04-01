@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,37 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(** Incomplete Metadata.  Used to keep track of the data we are receiving when
-    acquiring the metainfo dictionary using ut_metadata. *)
+val metadata_max_size : int
 
 type t
 
-val create : SHA1.t -> int -> t
-(** [create ih len] creates an incomplete metadata object which info-hash [ih]
-    and length [len]. *)
+val create : info_hash:SHA1.t -> length:int -> t
 
-val add_piece : t -> int -> Cstruct.t -> bool
-(** Called when a metainfo piece has been received.  Returns [true] if the all
-    the pieces have been received (even though they may contain corrupted
-    data). *)
-
-val get_next_metadata_request : t -> int option
-(** Which metainfo piece should be requested next.  Returns [None] if no
-    suitable piece can be found. *)
-
-val verify : t -> Cstruct.t option
-(** Verify whether the SHA1 hash of the incomplete data matches the know
-    info-hash.  Returns [Some s] if it does, where [s] is the raw bencoded data.
-    Otherwise returns [None]. *)
-
-val is_complete : t -> bool
-(** Whether all the pieces have been received. *)
-
-val info_hash : t -> SHA1.t
-(** The info-hash of the metainfo dictionary. *)
-
-val length : t -> int
-(** The length of the bencoded metainfo dictionary. *)
-
-val piece_count : t -> int
-(** The total number of pieces. *)
+val add : t -> int -> Cstruct.t -> [ `Failed | `Verified of Cstruct.t | `More ]
