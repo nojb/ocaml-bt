@@ -71,15 +71,38 @@ type t = {
 (*     Lwt.async (fun () -> IO.close sock); *)
 (*     debug "handshake failed" *)
 
-let connect_to_peer push ((ip, port) as addr) timeout =
+module Cs = Nocrypto.Uncommon.Cs
+
+let buf_size = 1024
+
+let negotiate fd t =
+  let read_buf = Cstruct.create buf_size in
+  let rec loop = function
+    | `Ok (t, Some cs) ->
+        Lwt_cstruct.complete (Lwt_cstruct.write fd) cs >>= fun () ->
+        loop (Handshake.handle t Cs.empty)
+    | `Ok (t, None) ->
+        Lwt_cstruct.read fd read_buf >>= begin function
+        | 0 ->
+            failwith "eof"
+        | n ->
+            loop (Handshake.handle t (Cstruct.sub read_buf 0 n))
+        end
+    | `Error err ->
+        failwith err
+    | `Success (mode, rest) ->
+        Lwt.return (mode, rest)
+  in
+  loop t
+
+let connect_to_peer info_hash push ((ip, port) as addr) timeout =
   let connect () =
     let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
     Lwt_unix.gethostbyaddr ip >>= fun he ->
     let sa = Lwt_unix.ADDR_INET (he.Lwt_unix.h_addr_list.(0), port) in
     Lwt_unix.connect fd sa >>= fun () ->
-    assert false (* FIXME *)
-    (* let hs = Handshake.(outgoing ~id:bt.id ~ih:bt.ih (Crypto Prefer) sock) (handshake_done bt sock) *)
-       (* in *)
+    negotiate fd Handshake.(outgoing ~info_hash Both) >>= fun (mode, rest) ->
+    assert false
   in
   Lwt.catch connect (fun _ -> push (ConnectFailed addr); Lwt.return_unit)
 
