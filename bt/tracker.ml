@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,335 +19,327 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let section = Log.make_section "Tracker"
-
-let debug ?exn fmt = Log.debug section ?exn fmt
-
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
-
-let failwith_lwt fmt =
-  Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
-
 type event =
-  | STARTED
-  | STOPPED
-  | COMPLETED
-
-let string_of_event = function
-  | STARTED -> "started"
-  | STOPPED -> "stopped"
-  | COMPLETED -> "completed"
+  [ `Started
+  | `None
+  | `Stopped
+  | `Completed ]
 
 type addr = Unix.inet_addr * int
 
-type response = {
-  peers : addr list;
-  leechers : int option;
-  seeders : int option;
-  interval : int
-}
+module Udp = struct
 
-exception Error of string
-exception Warning of string
+  type state =
+    | WaitConnectResponse of int32 * int
+    | WaitAnnounceResponse of int32 * int64 * int
 
-module UdpTracker = struct
-  let fresh_transaction_id () =
+  let (>>=) m f = match m with `Ok x -> f x | `Error _ as e -> e
+
+  type udp =
+    { info_hash : SHA1.t;
+      id : SHA1.t;
+      up : int64;
+      down : int64;
+      left : int64;
+      event : event;
+      port : int;
+      state : state }
+
+  type t =
+    [ `Udp of udp ]
+
+  let generate_trans_id () =
     Random.int32 Int32.max_int
 
-  let parse_connect_response trans_id s =
-    bitmatch Bitstring.bitstring_of_string s with
-    | { 3l : 32; msg : -1 : string } ->
-      `Error msg
-    | { n : 32; trans_id' : 32 : check (trans_id = trans_id'); conn_id : 64 } ->
-      `Ok conn_id
+  let parse_connect_response cs =
+    match Cstruct.BE.get_uint32 cs 0 with
+    | 3l ->
+        `Error Cstruct.(to_string @@ shift cs 4)
+    | n ->
+        let trans_id' = Cstruct.BE.get_uint32 cs 4 in
+        let conn_id = Cstruct.BE.get_uint64 cs 8 in
+        `Ok (trans_id', conn_id)
 
   let make_connect_request trans_id =
-    BITSTRING { 0x41727101980L : 64; 0l : 32; trans_id : 32 }
+    let cs = Cstruct.create 16 in
+    Cstruct.BE.set_uint64 cs 0 0x41727101980L;
+    Cstruct.BE.set_uint32 cs 8 0l;
+    Cstruct.BE.set_uint32 cs 12 trans_id;
+    cs
 
-  let make_announce_request conn_id trans_id ih ?(up = 0L) ?(down = 0L) ?(left = 0L) event ?port id =
-    let event = match event with
-      | None -> 0l
-      | Some COMPLETED -> 1l
-      | Some STARTED -> 2l
-      | Some STOPPED -> 3l
-    in
-    (* BITSTRING *)
-    (*   { conn_id : 64; 1l : 32; trans_id : 32; *)
-    (*     SHA1.to_bin ih : 20 * 8 : string; *)
-    (*     SHA1.to_bin id : 20 * 8 : string; *)
-    (*     down : 64; left : 64; up : 64; *)
-    (*     event : 32; 0l : 32; 0l : 32; -1l : 32; *)
-    (*     (match port with None -> 0 | Some p -> p) : 16 } *)
-    assert false (* FIXME FIXME *)
+  let int32_of_event = function
+    | `None -> 0l
+    | `Completed -> 1l
+    | `Started -> 2l
+    | `Stopped -> 3l
 
-  let parse_announce_response trans_id s =
-    bitmatch Bitstring.bitstring_of_string s with
-    | { 3l : 32; msg : -1 : string } ->
-      `Error msg
-    | { 1l : 32; trans_id' : 32 : check (trans_id = trans_id');
-        interval : 32 : bind (Int32.to_int interval);
-        leechers : 32 : bind (Int32.to_int leechers);
-        seeders : 32 : bind (Int32.to_int seeders);
-        peers : -1 : bitstring } ->
-      let rec loop bs =
-        bitmatch bs with
-        | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } ->
-            [] (* FIXME FIXME *)
-          (* Addr.of_string_compact addr :: loop bs *)
-        | { _ } ->
-          []
-      in
-      let peers = loop peers in
-      `Ok {peers; leechers = Some leechers; seeders = Some seeders; interval}
+  let make_announce_request conn_id trans_id t =
+    let cs = Cstruct.create (8 + 4 + 4 + 20 + 20 + 8 + 8 + 8 + 4 + 4 + 4 + 4 + 2) in
+    Cstruct.BE.set_uint64 cs 0 conn_id;
+    Cstruct.BE.set_uint32 cs 8 1l;
+    Cstruct.BE.set_uint32 cs 12 trans_id;
+    Cstruct.blit (SHA1.to_raw t.info_hash) 0 cs 16 20;
+    Cstruct.blit (SHA1.to_raw t.id) 0 cs 36 20;
+    Cstruct.BE.set_uint64 cs 56 t.down;
+    Cstruct.BE.set_uint64 cs 64 t.left;
+    Cstruct.BE.set_uint64 cs 72 t.up;
+    Cstruct.BE.set_uint32 cs 80 (int32_of_event t.event);
+    Cstruct.BE.set_uint32 cs 84 0l;
+    Cstruct.BE.set_uint32 cs 88 0l;
+    Cstruct.BE.set_uint32 cs 92 (-1l);
+    Cstruct.BE.set_uint16 cs 96 t.port;
+    cs
 
-  let send_connect_request fd addr =
-    let trans_id = fresh_transaction_id () in
-    UDP.send_bitstring fd (make_connect_request trans_id) addr >>= fun () ->
-    Lwt.return trans_id
-
-  let read_connect_response fd trans_id =
-    UDP.recv fd >>= fun (s, _) ->
-    match parse_connect_response trans_id s with
-    | `Error msg ->
-      Lwt.fail (Error msg)
-    | `Ok conn_id ->
-      Lwt.return conn_id
-
-  let send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id =
-    let trans_id = fresh_transaction_id () in
-    let create_packet = make_announce_request conn_id trans_id ih ?up ?down ?left event ?port id in
-    UDP.send_bitstring fd create_packet addr >>= fun () ->
-    Lwt.return trans_id
-
-  let read_announce_response fd trans_id =
-    Lwt.catch begin fun () ->
-      UDP.recv fd >>= fun (s, _) ->
-      match parse_announce_response trans_id s with
-      | `Error msg -> Lwt.fail (Error msg)
-      | `Ok resp -> Lwt.return resp
-    end Lwt.fail
-
-  let do_announce fd addr ih ?up ?down ?left ?event ?port id : response Lwt.t =
-    let rec try_connect n =
-      send_connect_request fd addr >>= fun trans_id ->
-      UDP.set_timeout fd (15.0 *. 2.0 ** float n);
-      Lwt.catch begin fun () ->
-        read_connect_response fd trans_id >>=
-        try_announce 0
-      end begin function
-      | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-        if n >= 8 then
-          Lwt.fail (Failure "connect_request: too many retries")
-        else begin
-          debug "udp connect request timeout after %.0fs; retrying..." (15.0 *. 2.0 ** float n);
-          try_connect (n+1)
-        end
-      | exn ->
-        Lwt.fail exn
-      end
-    and try_announce n conn_id =
-      send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id >>= fun trans_id ->
-      UDP.set_timeout fd (15.0 *. 2.0 ** float n);
-      Lwt.catch begin fun () ->
-        read_announce_response fd trans_id
-      end begin function
-      | Unix.Unix_error (Unix.ETIMEDOUT, _, _) ->
-        debug "udp announce request timeout after %.0fs; retrying..." (15.0 *. 2.0 ** float n);
-        if n >= 2 then
-          try_connect (n+1)
-        else
-          try_announce (n+1) conn_id
-      | exn ->
-        Lwt.fail exn
-      end
-    in
-    try_connect 0
-
-    (* let rec loop = function *)
-    (*   | Connect_request n -> *)
-    (*     let trans_id = fresh_transaction_id () in *)
-    (*     UDP.send_bitstring fd (connect_request trans_id) addr >>= fun () -> *)
-    (*     UDP.set_timeout fd (15.0 *. 2.0 ** float n); *)
-    (*     Lwt.catch begin fun () -> *)
-    (*       loop (Connect_response trans_id) *)
-    (*     end begin function *)
-    (*     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) -> *)
-    (*       if n >= 8 then *)
-    (*         failwith_lwt "connect_request: too many retries" *)
-    (*       else begin *)
-    (*         debug "udp connect request timeout after %ds; retrying..." *)
-    (*           (truncate (15.0 *. 2.0 ** float n)); *)
-    (*         loop (Connect_request (n+1)) *)
-    (*       end *)
-    (*     | exn -> Lwt.fail exn *)
-    (*     end *)
-    (*   | Connect_response trans_id -> *)
-    (*     UDP.recv fd >>= fun (s, _) -> *)
-    (*     begin match connect_response trans_id s with *)
-    (*     | `Error msg -> Lwt.fail (Error msg) *)
-    (*     | `Ok conn_id -> loop (Announce_request (conn_id, 0)) *)
-    (*     end *)
-    (*   | Announce_request (conn_id, n) -> *)
-    (*     let trans_id = fresh_transaction_id () in *)
-    (*     let create_packet = announce_request conn_id trans_id ih ?up ?down ?left event ?port id in *)
-    (*     UDP.send_bitstring fd create_packet addr >>= fun () -> *)
-    (*     UDP.set_timeout fd (15.0 *. 2.0 ** float n); *)
-    (*     Lwt.catch begin fun () -> *)
-    (*       loop (Announce_response trans_id) *)
-    (*     end begin function *)
-    (*     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) -> *)
-    (*       debug "udp announce request timeout after %ds; retrying..." *)
-    (*         (truncate (15.0 *. 2.0 ** float n)); *)
-    (*       if n >= 2 then *)
-    (*         loop (Connect_request (n+1)) *)
-    (*       else *)
-    (*         loop (Announce_request (conn_id, n+1)) *)
-    (*     | exn -> *)
-    (*       Lwt.fail exn *)
-    (*     end *)
-    (*   | Announce_response trans_id -> *)
-    (*     Lwt.catch begin fun () -> *)
-    (*       UDP.recv fd >>= fun (s, _) -> *)
-    (*       match announce_response trans_id s with *)
-    (*       | `Error msg -> Lwt.fail (Error msg) *)
-    (*       | `Ok resp -> Lwt.return resp *)
-    (*     end Lwt.fail *)
-    (* in *)
-    (* loop (Connect_request 0) *)
-
-  let announce tr ih ?up ?down ?left ?event ?port id =
-    let url = tr in
-    let host = match Uri.host url with
-      | None -> failwith "Empty Hostname"
-      | Some host -> host
-    in
-    let p = match Uri.port url with
-      | None -> failwith "Empty Port"
-      | Some port -> port
-    in
-    let addr = (assert false) (* FIXME FIXME *) in
-    (* let addr = (Addr.Ip.of_string host, p) in *)
-    let fd = UDP.create_socket () in
-    do_announce fd addr ih ?up ?down ?left ?event ?port id
-end
-
-module HttpTracker = struct
-  let either f g x =
-    try f x with _ -> g x
-
-  let decode_response (d : Bcode.t) =
-    let success () =
-      let seeders =
-        try Some (Bcode.find "complete" d |> Bcode.to_int) with Not_found -> None
-      in
-      let leechers =
-        try Some (Bcode.find "incomplete" d |> Bcode.to_int) with Not_found -> None
-      in
-      let interval = Bcode.find "interval" d |> Bcode.to_int in
-      (* let min_interval = try Some (Bcode.find "min interval" d) with _ -> None in *)
-      let compact_peers peers =
-        let peers = Bcode.to_string peers in
-        let rec loop bs =
-          bitmatch bs with
-          | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } ->
-              [] (* FIXME FIXME *)
-            (* Addr.of_string_compact addr :: loop bs *)
-          | { _ } ->
+  let parse_announce_response cs =
+    match Cstruct.BE.get_uint32 cs 0 with
+    | 3l ->
+        `Error Cstruct.(to_string @@ shift cs 4)
+    | 1l ->
+        let trans_id = Cstruct.BE.get_uint32 cs 4 in
+        let interval = Cstruct.BE.get_uint32 cs 8 in
+        let leechers = Cstruct.BE.get_uint32 cs 12 in
+        let seeders = Cstruct.BE.get_uint32 cs 16 in
+        let rec loop buf =
+          if Cstruct.len buf >= 6 then
+            let p, buf = Cstruct.split buf 6 in
+            let ip =
+              Printf.sprintf "%d.%d.%d.%d"
+                (Cstruct.get_uint8 p 0) (Cstruct.get_uint8 p 1)
+                (Cstruct.get_uint8 p 2) (Cstruct.get_uint8 p 3)
+            in
+            let ip = Unix.inet_addr_of_string ip in
+            let port = Cstruct.BE.get_uint16 p 4 in
+            (ip, port) :: loop buf
+          else
             []
         in
-        loop (Bitstring.bitstring_of_string peers)
-      in
-      let usual_peers peers =
-        Bcode.to_list peers |>
-        List.map (fun d ->
-            let ip = Bcode.find "ip" d |> Bcode.to_string in
-            let port = Bcode.find "port" d |> Bcode.to_int in
-            let addr = (assert false) in (* FIXME FIXME *)
-            (* let addr = Addr.Ip.of_string ip in *)
-            (addr, port))
-      in
-      let peers = Bcode.find "peers" d in
-      let peers = either compact_peers usual_peers peers in
-      Lwt.return {peers; leechers; seeders; interval}
-    in
-    let error () =
-      let s = Bcode.find "failure reason" d |> Bcode.to_string in
-      Lwt.fail (Error s)
-    in
-    let warning () =
-      let s = Bcode.find "warning message" d |> Bcode.to_string in
-      Lwt.fail (Warning s)
-    in
-    either warning (either error success) ()
+        let peers = loop (Cstruct.shift cs 20) in
+        `Ok (trans_id, interval, leechers, seeders, peers)
+    | _ ->
+        `Error "parse_announce_response"
 
-  let announce tr ih ?up ?down ?left ?event ?port id =
-    let uri = ref tr in
-    let add name x = uri := Uri.add_query_param' !uri (name, x) in
-    let add_opt name f = function
-      | None -> ()
-      | Some x -> uri := Uri.add_query_param' !uri (name, f x)
-    in
-    add "info_hash" (Cstruct.to_string @@ SHA1.to_raw ih);
-    add "peer_id" (Cstruct.to_string @@ SHA1.to_raw id);
-    add_opt "uploaded" Int64.to_string up;
-    add_opt "downloaded" Int64.to_string down;
-    add_opt "left" Int64.to_string left;
-    add_opt "port" string_of_int port;
-    add "compact" "1";
-    add_opt "event" string_of_event event;
-    Cohttp_lwt_unix.Client.get !uri >>= fun (_, body) ->
-    Cohttp_lwt_body.to_string body >>= fun body ->
-    debug "received response from http tracker: %S" body;
-    try
-      Cstruct.of_string body |> Bcode.decode |> decode_response
-    with exn ->
-      Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn))
+  (* let send_connect_request fd addr = *)
+  (*   let trans_id = fresh_transaction_id () in *)
+  (*   UDP.send_bitstring fd (make_connect_request trans_id) addr >>= fun () -> *)
+  (*   Lwt.return trans_id *)
+
+  (* let read_connect_response fd trans_id = *)
+  (*   UDP.recv fd >>= fun (s, _) -> *)
+  (*   match parse_connect_response s with *)
+  (*   | `Error msg -> *)
+  (*       Lwt.fail (Error msg) *)
+  (*   | `Ok (trans_id', conn_id) -> *)
+  (*       if trans_id <> trans_id' then *)
+  (*         Lwt.fail (Error "trans_id don't match") *)
+  (*       else *)
+  (*         Lwt.return conn_id *)
+
+  (* let send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id = *)
+  (*   let trans_id = fresh_transaction_id () in *)
+  (*   let create_packet = make_announce_request conn_id trans_id ih ?up ?down ?left event ?port id in *)
+  (*   UDP.send_bitstring fd create_packet addr >>= fun () -> *)
+  (*   Lwt.return trans_id *)
+
+  (* let read_announce_response fd trans_id = *)
+  (*   Lwt.catch begin fun () -> *)
+  (*     UDP.recv fd >>= fun (s, _) -> *)
+  (*     match parse_announce_response trans_id s with *)
+  (*     | `Error msg -> Lwt.fail (Error msg) *)
+  (*     | `Ok resp -> Lwt.return resp *)
+  (*   end Lwt.fail *)
+
+  let delay n = 15. *. 2. ** float n
+
+  let timeout t =
+    match t.state with
+    | WaitConnectResponse (_, n) when n >= 8 ->
+        `Error "too many retries"
+
+    | WaitConnectResponse (_, n) ->
+        let n = n + 1 in
+        let trans_id = generate_trans_id () in
+        `Ok (WaitConnectResponse (trans_id, n), (delay n, make_connect_request trans_id))
+
+    | WaitAnnounceResponse (_, _, n) when n >= 2 ->
+        let trans_id = generate_trans_id () in
+        `Ok (WaitConnectResponse (trans_id, 0), (delay 0, make_connect_request trans_id))
+
+    | WaitAnnounceResponse (_, conn_id, n) ->
+        let n = n + 1 in
+        let trans_id = generate_trans_id () in
+        `Ok (WaitAnnounceResponse (trans_id, conn_id, n), (delay n, make_announce_request conn_id trans_id t))
+
+  let timeout (`Udp t) =
+    timeout t >>= fun (state, dbuf) -> `Ok (`Udp { t with state }, dbuf)
+
+  let handle (`Udp t) buf =
+    match t.state with
+    | WaitConnectResponse (trans_id, _) ->
+        parse_connect_response buf >>= fun (trans_id', conn_id) ->
+        if trans_id' <> trans_id then
+          `Error "trans_id don't match"
+        else
+          let trans_id = generate_trans_id () in
+          let req = make_announce_request conn_id trans_id t in
+          let t = `Udp { t with state = WaitAnnounceResponse (trans_id, conn_id, 0) } in
+          `Ok (t, (delay 0, req))
+
+    | WaitAnnounceResponse (trans_id, conn_id, n) ->
+        parse_announce_response buf >>= fun (trans_id', interval, leechers, seeders, peers) ->
+        if trans_id <> trans_id' then
+          `Error "trans_id don't match"
+        else
+          `Success (Int32.to_float interval, Int32.to_int leechers, Int32.to_int seeders, peers)
+
+  let create ~up ~left ~down ~info_hash ~id ~port ~event  =
+    let trans_id = generate_trans_id () in
+    let state = WaitConnectResponse (trans_id, 0) in
+    let t = { up; left; down; info_hash; id; port; event; state } in
+    `Ok (`Udp t, (delay 0, make_connect_request trans_id))
+
+  (* let do_announce fd addr ih ?up ?down ?left ?(event = `None) ?port id = *)
+  (*   let rec try_connect n = *)
+  (*     send_connect_request fd addr >>= fun trans_id -> *)
+  (*     UDP.set_timeout fd (15.0 *. 2.0 ** float n); *)
+  (*     Lwt.catch begin fun () -> *)
+  (*       read_connect_response fd trans_id >>= *)
+  (*       try_announce 0 *)
+  (*     end begin function *)
+  (*     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) -> *)
+  (*         if n >= 8 then *)
+  (*           Lwt.fail (Failure "connect_request: too many retries") *)
+  (*         else begin *)
+  (*           debug "udp connect request timeout after %.0fs; retrying..." (15.0 *. 2.0 ** float n); *)
+  (*           try_connect (n+1) *)
+  (*         end *)
+  (*     | exn -> *)
+  (*         Lwt.fail exn *)
+  (*     end *)
+  (*   and try_announce n conn_id = *)
+  (*     send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id >>= fun trans_id -> *)
+  (*     UDP.set_timeout fd (15.0 *. 2.0 ** float n); *)
+  (*     Lwt.catch begin fun () -> *)
+  (*       read_announce_response fd trans_id *)
+  (*     end begin function *)
+  (*     | Unix.Unix_error (Unix.ETIMEDOUT, _, _) -> *)
+  (*         debug "udp announce request timeout after %.0fs; retrying..." (15.0 *. 2.0 ** float n); *)
+  (*         if n >= 2 then *)
+  (*           try_connect (n+1) *)
+  (*         else *)
+  (*           try_announce (n+1) conn_id *)
+  (*     | exn -> *)
+  (*         Lwt.fail exn *)
+  (*     end *)
+  (*   in *)
+  (*   try_connect 0 *)
+
 end
 
-let query tr ~ih ?up ?down ?left ?event ?port ~id =
-  debug "announcing on %S" (Uri.to_string tr);
-  match Uri.scheme tr with
-  | Some "http" | Some "https" ->
-    HttpTracker.announce tr ih ?up ?down ?left ?event ?port id
-  | Some "udp" ->
-    UdpTracker.announce tr ih ?up ?down ?left ?event ?port id
-  | Some sch ->
-    failwith_lwt "unknown tracker url scheme: %S" sch
-  | None ->
-    failwith_lwt "missing tracker url scheme"
+(* module Http = struct *)
+(*   let either f g x = *)
+(*     try f x with _ -> g x *)
 
-module Tier = struct
-  type t = Uri.t array
+(*   let decode_response (d : Bcode.t) = *)
+(*     let success () = *)
+(*       let seeders = *)
+(*         try Some (Bcode.find "complete" d |> Bcode.to_int) with Not_found -> None *)
+(*       in *)
+(*       let leechers = *)
+(*         try Some (Bcode.find "incomplete" d |> Bcode.to_int) with Not_found -> None *)
+(*       in *)
+(*       let interval = Bcode.find "interval" d |> Bcode.to_int in *)
+(*       (\* let min_interval = try Some (Bcode.find "min interval" d) with _ -> None in *\) *)
+(*       let compact_peers peers = *)
+(*         let peers = Bcode.to_string peers in *)
+(*         let rec loop bs = *)
+(*           bitmatch bs with *)
+(*           | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } -> *)
+(*               [] (\* FIXME FIXME *\) *)
+(*           (\* Addr.of_string_compact addr :: loop bs *\) *)
+(*           | { _ } -> *)
+(*               [] *)
+(*         in *)
+(*         loop (Bitstring.bitstring_of_string peers) *)
+(*       in *)
+(*       let usual_peers peers = *)
+(*         Bcode.to_list peers |> *)
+(*         List.map (fun d -> *)
+(*           let ip = Bcode.find "ip" d |> Bcode.to_string in *)
+(*           let port = Bcode.find "port" d |> Bcode.to_int in *)
+(*           let addr = (assert false) in (\* FIXME FIXME *\) *)
+(*           (\* let addr = Addr.Ip.of_string ip in *\) *)
+(*           (addr, port)) *)
+(*       in *)
+(*       let peers = Bcode.find "peers" d in *)
+(*       let peers = either compact_peers usual_peers peers in *)
+(*       Lwt.return {peers; leechers; seeders; interval} *)
+(*     in *)
+(*     let error () = *)
+(*       let s = Bcode.find "failure reason" d |> Bcode.to_string in *)
+(*       Lwt.fail (Error s) *)
+(*     in *)
+(*     let warning () = *)
+(*       let s = Bcode.find "warning message" d |> Bcode.to_string in *)
+(*       Lwt.fail (Warning s) *)
+(*     in *)
+(*     either warning (either error success) () *)
 
-  let create tier =
-    let a = Array.of_list tier in
-    Util.shuffle_array a;
-    a
+(*   let announce tr ih ?up ?down ?left ?event ?port id = *)
+(*     let uri = ref tr in *)
+(*     let add name x = uri := Uri.add_query_param' !uri (name, x) in *)
+(*     let add_opt name f = function *)
+(*       | None -> () *)
+(*       | Some x -> uri := Uri.add_query_param' !uri (name, f x) *)
+(*     in *)
+(*     add "info_hash" (Cstruct.to_string @@ SHA1.to_raw ih); *)
+(*     add "peer_id" (Cstruct.to_string @@ SHA1.to_raw id); *)
+(*     add_opt "uploaded" Int64.to_string up; *)
+(*     add_opt "downloaded" Int64.to_string down; *)
+(*     add_opt "left" Int64.to_string left; *)
+(*     add_opt "port" string_of_int port; *)
+(*     add "compact" "1"; *)
+(*     add_opt "event" string_of_event event; *)
+(*     Cohttp_lwt_unix.Client.get !uri >>= fun (_, body) -> *)
+(*     Cohttp_lwt_body.to_string body >>= fun body -> *)
+(*     debug "received response from http tracker: %S" body; *)
+(*     try *)
+(*       Cstruct.of_string body |> Bcode.decode |> decode_response *)
+(*     with exn -> *)
+(*       Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn)) *)
+(* end *)
 
-  let query tier ~ih ?up ?down ?left ?event ?port ~id =
-    let rec loop i =
-      if i >= Array.length tier then Lwt.fail (Failure "all trackers in tier failed")
-      else
-        let tr = tier.(i) in
-        Lwt.catch begin fun () ->
-          query tr ~ih ?up ?down ?left ?event ?port ~id >>= fun resp ->
-          if i > 0 then begin
-            (* move the first successful tracker to the front of the tier *)
-            Array.blit tier 0 tier 1 i;
-            tier.(0) <- tr;
-          end;
-          Lwt.return resp
-        end begin fun exn ->
-          debug ~exn "error announcing to %S" (Uri.to_string tr);
-          loop (i+1)
-        end
-    in
-    loop 0
-
-  let strl f l =
-    "[" ^ String.concat " " (List.map f l) ^ "]"
-
-  let to_string tier =
-    strl Uri.to_string (Array.to_list tier)
+module Http = struct
+  type t = [ `Http of unit ]
+  let timeout _ = `Error "not implemented"
+  let handle _ _ = `Error "not implemented"
 end
+
+type t =
+  [ Udp.t
+  | Http.t ]
+
+let create ?(up = 0L) ?(left = 0L) ?(down = 0L) ?(event = `None) ?(port = 0) ~id ~info_hash proto =
+  match proto with
+  | `Http ->
+      failwith "not implemented"
+      (* Http.announce tr ih ?up ?down ?left ?event ?port id *)
+  | `Udp ->
+      Udp.create ~up ~left ~down ~event ~port ~id ~info_hash
+
+type ret =
+  [ `Ok of t * (float * Cstruct.t)
+  | `Error of string
+  | `Success of float * int * int * addr list ]
+
+let timeout = function
+  | `Udp _ as t ->
+      Udp.timeout t
+  | `Http _ as t ->
+      Http.timeout t
+
+let handle t buf : ret =
+  match t with
+  | `Udp _ as t ->
+      Udp.handle t buf
+  | `Http _ as t ->
+      Http.handle t buf

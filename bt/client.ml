@@ -35,7 +35,7 @@ open Event
 type t = {
   id : SHA1.t;
   ih : SHA1.t;
-  mutable trackers : Tracker.Tier.t list;
+  trackers : Uri.t list;
   peer_mgr : PeerMgr.swarm;
   chan : event Lwt_stream.t;
   push : event -> unit;
@@ -216,15 +216,40 @@ let reader_loop push fd p =
   (*         Choker.start ch *)
 (*     end *)
 
-let announce ~info_hash tier push id =
-  let rec loop () =
-    (* FIXME port *)
-    Tracker.Tier.query tier ~ih:info_hash ?up:None ?down:None ?left:None ?event:None ?port:None (* FIXME FIXME (Listener.port bt.listener) *) ~id >>= fun resp ->
-    debug "announce to %s successful, reannouncing in %ds" (Tracker.Tier.to_string tier) resp.Tracker.interval;
-    push (PeersReceived resp.Tracker.peers);
-    Lwt_unix.sleep (float resp.Tracker.interval) >>= loop
+let max_datagram_size = 1024
+
+let announce ~info_hash url push id =
+  let read_buf = Cstruct.create max_datagram_size in
+  let rec loop fd = function
+    | `Ok (t, (timeout, buf)) ->
+        Lwt_cstruct.write fd buf >>= fun _ ->
+        Lwt_unix.with_timeout timeout (fun () -> Lwt_cstruct.read fd read_buf) >>= fun n ->
+        loop fd (Tracker.handle t (Cstruct.sub read_buf 0 n))
+
+    | `Error s ->
+        Printf.ksprintf failwith "tracker error %S" s
+
+    | `Success (interval, leechers, seeders, peers) ->
+        push (PeersReceived peers);
+        Lwt_unix.sleep interval >>= fun () -> loop fd (Tracker.create ~info_hash ~id `Udp)
   in
-  Lwt.catch loop (fun exn -> debug ~exn "announce failure"; Lwt.return_unit)
+  match Uri.scheme url with
+  | Some "udp" ->
+      let h = match Uri.host url with None -> assert false | Some h -> h in
+      let p = match Uri.port url with None -> assert false | Some p -> p in
+      Lwt_unix.gethostbyname h >>= fun he ->
+      let ip = he.Unix.h_addr_list.(0) in
+      let fd = Lwt_unix.(socket PF_INET SOCK_DGRAM 0) in
+      let sa = Lwt_unix.ADDR_INET (ip, p) in
+      Lwt_unix.connect fd sa >>= fun () ->
+      loop fd (Tracker.create ~info_hash ~id `Udp)
+  | Some s ->
+      Printf.ksprintf failwith "tracker scheme %S not supported" s
+
+let announce ~info_hash url push id =
+  Lwt.catch
+    (fun () -> announce ~info_hash url push id)
+    (fun exn -> debug ~exn "announce failure"; Lwt.return_unit)
 
 module Peers = Map.Make (SHA1)
 
@@ -497,11 +522,10 @@ let start_server ?(port = 0) push =
 let create mg =
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
-  let trackers = List.map (fun tr -> Tracker.Tier.create [tr]) mg.Magnet.tr in
   let id = SHA1.generate ~prefix:"OCAML" () in
   let ih = mg.Magnet.xt in
   let peer_mgr = PeerMgr.create () in
   Lwt.async (fun () -> start_server push);
-  { id; ih; trackers; chan;
+  { id; ih; trackers = mg.Magnet.tr; chan;
     push; peer_mgr;
     dht = DHT.create 6881 }

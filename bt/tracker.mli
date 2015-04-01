@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -22,53 +22,29 @@
 (** Tracker *)
 
 type event =
-  | STARTED
-  | STOPPED
-  | COMPLETED
-
-exception Error of string
-exception Warning of string
+  [ `Started
+  | `Stopped
+  | `Completed
+  | `None ]
 
 type addr = Unix.inet_addr * int
 
-type response = {
-  peers : addr list;
-  (** The contact information for peers. *)
-  leechers : int option;
-  (** How many peers have not yet the whole torrent. *)
-  seeders : int option;
-  (** How many peers have the whole torrent. *)
-  interval : int
-  (** The desired interval (in seconds) before another announce. *)
-}
+type t
 
-val query :
-  Uri.t ->
-  ih:SHA1.t ->
+type ret =
+  [ `Ok of t * (float * Cstruct.t)
+  | `Error of string
+  | `Success of float * int * int * addr list ]
+
+val create :
   ?up:int64 ->
-  ?down:int64 ->
   ?left:int64 ->
+  ?down:int64 ->
   ?event:event ->
   ?port:int ->
-  id:SHA1.t -> response Lwt.t
-(** [query url ih up down left event port id] announces a torrent with info-hash
-    [ih] to the tracker [url].  [up] is the number of bytes uploaded since we last
-    restarted the torrent.  [down] is the number of bytes downloaded since we last
-    restarted the torrent.  [left] is the number of bytes currently left to
-    download.  [port] is the port in which we are listening for incoming
-    connections, [id] is our client ID. *)
+  id:SHA1.t ->
+  info_hash:SHA1.t -> [ `Udp | `Http ] -> ret
 
-module Tier : sig
-  type t
+val timeout : t -> ret
 
-  val create : Uri.t list -> t
-  (** Create a tier with the given list of trackers. *)
-
-  val query : t -> ih:SHA1.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
-    ?port:int -> id:SHA1.t -> response Lwt.t
-  (** Query a tier.  All the trackers are tried in turn, until one that works is
-      found. *)
-
-  val to_string : t -> string
-  (** First tracker in the tier. *)
-end
+val handle : t -> Cstruct.t -> ret
