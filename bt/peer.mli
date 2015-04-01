@@ -115,7 +115,7 @@ val send_port : t -> int -> unit
 val send_reject_meta : t -> int -> unit
 (** Reject a request for a metainfo piece. *)
 
-val send_meta_piece : t -> int -> int * string -> unit
+val send_meta_piece : t -> int -> int * Cstruct.t -> unit
 (** Send a metainfo piece. *)
 
 val send_block : t -> int -> int -> string -> unit

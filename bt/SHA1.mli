@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,68 +19,61 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(** SHA1 hashes *)
+(** SHA1 hashes: blobs of 20-bytes.  They are supposed to be immutable, but see
+    {!to_raw}, {!of_raw}. *)
 
-(** The type of hashes.  The string should be 20-bytes long. *)
-type t = private string
+type t
+(** The type of SHA1 hashes. *)
 
 val zero : t
 (** The hash [0x00000000000000000000]. *)
-  
+
 val last : t
 (** The hash [0xFFFFFFFFFFFFFFFFFFFF]. *)
-  
+
 val compare : t -> t -> int
 (** Compare the hashes bitwise. *)
-  
+
 val equal : t -> t -> bool
 (** Whether two hashes are identical. *)
-  
+
 val hash : t -> int
 (** A suitable function for {!Hashtbl.Make}. *)
-  
-val to_hex : t -> string
-(** Convert the hash to 40 hexadecimal characters. *)
-  
-val to_hex_short : t -> string
-(** The first 7 hexadecimal characters of the hash. *)
-  
-val pp : Format.formatter -> t -> unit
-(** Print the hexadecimal characters of the hash. *)
-  
-val to_bin : t -> string
-(** The underlying 20-byte string. *)
-  
-val of_bin : string -> t
-(** The hash corresponding to the given 20-byte string. *)
-  
-val string : string -> t
+
+val to_raw : t -> Cstruct.t
+(** The underlying data.  WARNING: this is not a copy, so it is possibly to
+    modify in-place.  *)
+
+val of_raw : Cstruct.t -> t
+(** WARNING: does not make a copy. *)
+
+val digest : Cstruct.t -> t
 (** Compute the SHA1 digest of a string. *)
-  
-val to_z : t -> Z.t
-(** The (large) integer represented by the hash's bits using big-endian
-    ordering.  *)
-    
-val of_z : Z.t -> t
-(** Create a hash from the first 20 bytes from a large integer.  The sign is
-    ignored and it uses a big-endian ordering. *)
-  
-val distance : t -> t -> Z.t
+
+val digestv : Cstruct.t list -> t
+(** [digestv l] is [digest (Cs.concat l)], but more efficient. *)
+
+val to_z : t -> Nocrypto.Numeric.Z.t
+(** The big int represented by the hash's bits using big-endian ordering.  *)
+
+val of_z : Nocrypto.Numeric.Z.t -> t
+(** Create a hash from the first 20 bytes from a big int.  The sign is ignored
+    and it uses a big-endian ordering. *)
+
+val distance : t -> t -> Nocrypto.Numeric.Z.t
 (** The XOR-distance between two hashes.  Used in {!Kademlia}. *)
-    
-val random : unit -> t
-(** A random hash. *)
-  
-val peer_id : string -> t
-(** Generate a BitTorrent peer ID according to usual conventions.  The argument
-    should be a distinctive string of 3-4 characters. *)
-  
+
+val generate : ?g:Nocrypto.Fortuna.g -> ?prefix:string -> unit -> t
+(** A random hash with prefix [prefix]. *)
+
 val of_hex : string -> t
 (** The hash with the given hexadecimal characters. *)
-  
+
+val to_hex : t -> string
+(** Convert the hash to 40 hexadecimal characters. *)
+
+val to_hex_short : t -> string
+(** The first 7 hexadecimal characters of the hash. *)
+
 val of_base32 : string -> t
 (** The hash with the given base32 characters. *)
-  
-val strings : string list -> t
-(** The SHA1 digest of the string obtained by concatenating the given list of
-    strings. *)

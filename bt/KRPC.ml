@@ -40,15 +40,16 @@ let string_of_msg = function
   | Error (n, s) -> sprintf "error (%Ld,%S)" n s
 
 let encode t msg =
+  let str s = Bcode.String (Cstruct.of_string s) in
   let d = match msg with
     | Query (name, args) ->
-      ["y", Bcode.String "q"; "q", Bcode.String name; "a", Bcode.Dict args]
+      ["y", str "q"; "q", str name; "a", Bcode.Dict args]
     | Response dict ->
-      ["y", Bcode.String "r"; "r", Bcode.Dict dict]
+      ["y", str "r"; "r", Bcode.Dict dict]
     | Error (code, s) ->
-      ["y", Bcode.String "e"; "e", Bcode.List [Bcode.Int code; Bcode.String s]]
+      ["y", str "e"; "e", Bcode.List [Bcode.Int code; str s]]
   in
-  let d = ("t", Bcode.String t) :: d in
+  let d = ("t", str t) :: d in
   Bcode.encode (Bcode.Dict d)
 
 let decode s =
@@ -65,7 +66,7 @@ let decode s =
       Response r
     | "e" ->
       begin match Bcode.to_list (Bcode.find "e" bc) with
-      | Bcode.Int n :: Bcode.String s :: _ -> Error (n, s)
+      | Bcode.Int n :: Bcode.String s :: _ -> Error (n, Cstruct.to_string s)
       | _ -> failwith "KRPC.decode: bad fields for 'e' entry"
       end
     | _ ->
@@ -118,7 +119,7 @@ let create answer port =
 
 let read_one_packet krpc =
   UDP.recv krpc.sock >>= fun (s, addr) ->
-  let (t, msg) = decode s in
+  let (t, msg) = decode (Cstruct.of_string s) in
   match msg with
   | Error (code, msg) ->
     begin match Assoc2.find krpc.pending addr t with
@@ -132,7 +133,7 @@ let read_one_packet krpc =
     Lwt.return ()
   | Query (name, args) ->
     let ret = krpc.answer addr name args in
-    UDP.send krpc.sock (encode t ret) addr
+    UDP.send krpc.sock (Cstruct.to_string (encode t ret)) addr
   | Response args ->
     begin match Assoc2.find krpc.pending addr t with
     | None ->
@@ -177,4 +178,4 @@ let send_msg krpc msg addr =
   let t = fresh_txn () in (* FIXME only outstanding queries need be unique *)
   let wait, w = Lwt.wait () in
   Assoc2.add krpc.pending addr t (w, Unix.time () +. timeout_delay);
-  UDP.send krpc.sock (encode t msg) addr >>= fun () -> wait
+  UDP.send krpc.sock (Cstruct.to_string (encode t msg)) addr >>= fun () -> wait

@@ -33,40 +33,40 @@ let string_of_file_size (b : int64) : string =
 (*     Printf.sprintf "%.1f %ciB" *)
 (*       (b' /. step ** (float exp)) ("KMGTPE".[exp-1]) *)
 
-let really_read fd buf off len =
-  let (>>=) = Lwt.(>>=) in
-  assert (off + len <= String.length buf);
-  let rec loop off len =
-    if len <= 0 then
-      Lwt.return ()
-    else
-      Lwt_unix.read fd buf off len >>= fun len' ->
-      if len' = 0 then Lwt.fail End_of_file
-      else loop (off + len') (len - len')
-  in
-  loop off len
+(* let really_read fd buf off len = *)
+(*   let (>>=) = Lwt.(>>=) in *)
+(*   assert (off + len <= String.length buf); *)
+(*   let rec loop off len = *)
+(*     if len <= 0 then *)
+(*       Lwt.return () *)
+(*     else *)
+(*       Lwt_unix.read fd buf off len >>= fun len' -> *)
+(*       if len' = 0 then Lwt.fail End_of_file *)
+(*       else loop (off + len') (len - len') *)
+(*   in *)
+(*   loop off len *)
 
-let read_exactly fd n =
-  let (>>=) = Lwt.(>>=) in
-  let s = String.create n in
-  really_read fd s 0 n >>= fun () ->
-  Lwt.return s
+(* let read_exactly fd n = *)
+(*   let (>>=) = Lwt.(>>=) in *)
+(*   let s = String.create n in *)
+(*   really_read fd s 0 n >>= fun () -> *)
+(*   Lwt.return s *)
 
-let really_write fd buf off len =
-  let (>>=) = Lwt.(>>=) in
-  assert (off + len <= String.length buf);
-  let rec loop off len =
-    if len <= 0 then
-      Lwt.return ()
-    else
-      Lwt_unix.write fd buf off len >>= fun len' ->
-      assert (len' > 0);
-      loop (off + len') (len - len')
-  in
-  loop off len
+(* let really_write fd buf off len = *)
+(*   let (>>=) = Lwt.(>>=) in *)
+(*   assert (off + len <= String.length buf); *)
+(*   let rec loop off len = *)
+(*     if len <= 0 then *)
+(*       Lwt.return () *)
+(*     else *)
+(*       Lwt_unix.write fd buf off len >>= fun len' -> *)
+(*       assert (len' > 0); *)
+(*       loop (off + len') (len - len') *)
+(*   in *)
+(*   loop off len *)
 
-let write_fully fd s =
-  really_write fd s 0 (String.length s)
+(* let write_fully fd s = *)
+(*   really_write fd s 0 (String.length s) *)
 
 let string_of_sockaddr = function
   | Unix.ADDR_INET (a, p) -> Printf.sprintf "%s:%u" (Unix.string_of_inet_addr a) p

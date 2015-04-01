@@ -72,13 +72,14 @@ module UdpTracker = struct
       | Some STARTED -> 2l
       | Some STOPPED -> 3l
     in
-    BITSTRING
-      { conn_id : 64; 1l : 32; trans_id : 32;
-        SHA1.to_bin ih : 20 * 8 : string;
-        SHA1.to_bin id : 20 * 8 : string;
-        down : 64; left : 64; up : 64;
-        event : 32; 0l : 32; 0l : 32; -1l : 32;
-        (match port with None -> 0 | Some p -> p) : 16 }
+    (* BITSTRING *)
+    (*   { conn_id : 64; 1l : 32; trans_id : 32; *)
+    (*     SHA1.to_bin ih : 20 * 8 : string; *)
+    (*     SHA1.to_bin id : 20 * 8 : string; *)
+    (*     down : 64; left : 64; up : 64; *)
+    (*     event : 32; 0l : 32; 0l : 32; -1l : 32; *)
+    (*     (match port with None -> 0 | Some p -> p) : 16 } *)
+    assert false (* FIXME FIXME *)
 
   let parse_announce_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
@@ -287,8 +288,8 @@ module HttpTracker = struct
       | None -> ()
       | Some x -> uri := Uri.add_query_param' !uri (name, f x)
     in
-    add "info_hash" (SHA1.to_bin ih);
-    add "peer_id" (SHA1.to_bin id);
+    add "info_hash" (Cstruct.to_string @@ SHA1.to_raw ih);
+    add "peer_id" (Cstruct.to_string @@ SHA1.to_raw id);
     add_opt "uploaded" Int64.to_string up;
     add_opt "downloaded" Int64.to_string down;
     add_opt "left" Int64.to_string left;
@@ -299,7 +300,7 @@ module HttpTracker = struct
     Cohttp_lwt_body.to_string body >>= fun body ->
     debug "received response from http tracker: %S" body;
     try
-      Bcode.decode body |> decode_response
+      Cstruct.of_string body |> Bcode.decode |> decode_response
     with exn ->
       Lwt.fail (Failure ("http error: decode error: " ^ Printexc.to_string exn))
 end

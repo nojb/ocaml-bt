@@ -21,20 +21,21 @@
 
 type t =
   | Int of int64
-  | String of string
+  | String of Cstruct.t
   | List of t list
   | Dict of (string * t) list
 
-let find (s : string) (bc : t) : t =
-  match bc with
-  | Dict d ->
-    List.assoc s d
+let find name = function
+  | Dict d when List.mem_assoc name d ->
+      List.assoc name d
   | _ ->
-    invalid_arg (Printf.sprintf "Bcode.find: key %S not found" s)
+      invalid_arg (Printf.sprintf "Bcode.find: key %S not found" name)
 
 let to_list = function
-  | List l -> l
-  | _ -> invalid_arg "Bcode.to_list"
+  | List l ->
+      l
+  | _ ->
+      invalid_arg "Bcode.to_list"
 
 let to_int64 = function
   | Int n -> n
@@ -42,124 +43,178 @@ let to_int64 = function
 
 let to_int = function
   | Int n ->
-    if Int64.(compare n (of_int (to_int n))) = 0 then Int64.to_int n
-    else invalid_arg "Bcode.to_int"
+      Int64.to_int n
   | _ ->
-    invalid_arg "Bcode.to_int"
+      invalid_arg "Bcode.to_int"
 
-let rec sprint bc =
-  let strl sep f l = String.concat sep (List.map f l) in
-  match bc with
-  | String s -> Printf.sprintf "%S" s
-  | Int n -> Printf.sprintf "%Ld" n
+let strl sep f oc = function
+  | [] -> ()
+  | [x] -> f oc x
+  | x :: xs ->
+      f oc x;
+      List.iter (fun x -> Printf.fprintf oc "%s%a" sep f x) xs
+
+let rec print oc = function
+  | String s ->
+      Printf.fprintf oc "%S" (Cstruct.to_string s) (* FIXME FIXME *)
+  | Int n ->
+      Printf.fprintf oc "%Ld" n
   | Dict d ->
-    let aux (k, v) = Printf.sprintf "%s: %s" k (sprint v) in
-    "{" ^ (strl ";" aux d) ^ "}"
-  | List l -> "[" ^ (strl "," sprint l) ^ "]"
+      let aux oc (k, v) = Printf.fprintf oc "%s: %a" k print v in
+      Printf.fprintf oc "{%a}" (strl ";" aux) d
+  | List l ->
+      Printf.fprintf oc "[%a]" (strl "," print) l
 
 let to_string = function
-  | String s -> s
-  | _ as bc ->
-    invalid_arg (Printf.sprintf "Bcode.to_string: %s" (sprint bc))
+  | String cs ->
+      Cstruct.to_string cs
+  | _ ->
+      invalid_arg "Bcode.to_string"
+
+let to_cstruct = function
+  | String cs ->
+      cs
+  | _ ->
+      invalid_arg "Bcode.to_cstruct"
 
 let to_dict = function
-  | Dict d -> d
-  | _ -> invalid_arg "Bcode.to_dict"
+  | Dict d ->
+      d
+  | _ ->
+      invalid_arg "Bcode.to_dict"
 
 (** Bcode parsing *)
 
-let decode_partial s =
-  let len = String.length s in
-  let rec loop pos =
-    assert (pos < len);
-    match s.[pos] with
+let decode_partial cs =
+  let rec loop i =
+    match Char.chr @@ Cstruct.get_uint8 cs i with
     | 'i' ->
-      let start = pos+1 in
-      let rec loop1 pos =
-        assert (pos < len);
-        match s.[pos] with
-        | 'e' -> Int (Int64.of_string (String.sub s start (pos-start))), pos+1
-        | _ -> loop1 (pos+1)
-      in
-      loop1 start
+        let start = i + 1 in
+        let rec loop' i =
+          assert (i < Cstruct.len cs);
+          match Char.chr @@ Cstruct.get_uint8 cs i with
+          | 'e' ->
+              Int (Int64.of_string @@ Cstruct.copy cs start (i - start)), (i + 1)
+          | '0' .. '9' ->
+              loop' (i + 1)
+          | _ ->
+              failwith "Bcode.decode_partial: bad digit"
+        in
+        loop' start
+
     | 'l' ->
-      let start = pos+1 in
-      let rec loop1 pos =
-        assert (pos < len);
-        match s.[pos] with
-        | 'e' -> [], pos+1
-        | _ ->
-          let x, pos = loop pos in
-          let xs, pos = loop1 pos in
-          x :: xs, pos
-      in
-      let xs, pos = loop1 start in
-      List xs, pos
+        let rec loop' acc i =
+          assert (i < Cstruct.len cs);
+          match Char.chr @@ Cstruct.get_uint8 cs i with
+          | 'e' ->
+              List (List.rev acc), (i + 1)
+          | _ ->
+              let x, i = loop i in
+              loop' (x :: acc) i
+        in
+        loop' [] (i + 1)
+
     | '0' .. '9' ->
-      let start = pos in
-      let rec loop1 pos =
-        assert (pos < len);
-        match s.[pos] with
-        | '0' .. '9' ->
-          loop1 (pos+1)
-        | ':' ->
-          let n = int_of_string (String.sub s start (pos-start)) in
-          String (String.sub s (pos+1) n), pos+n+1
-        | _ ->
-          assert false
-      in
-      loop1 (start+1)
+        let start = i in
+        let rec loop' i =
+          assert (i < Cstruct.len cs);
+          match Char.chr @@ Cstruct.get_uint8 cs i with
+          | '0' .. '9' ->
+              loop' (i + 1)
+          | ':' ->
+              let n = int_of_string @@ Cstruct.copy cs start (i - start) in
+              String (Cstruct.sub cs (i + 1) n), (i + n + 1)
+          | _ ->
+              failwith "Bcode.decode_partial: bad string"
+        in
+        loop' start
+
     | 'd' ->
-      let start = pos+1 in
-      let rec loop1 pos =
-        assert (pos < len);
-        match s.[pos] with
-        | 'e' -> [], pos+1
-        | _ ->
-          match loop pos with
-          | String k, pos ->
-            let v, pos = loop pos in
-            let d, pos = loop1 pos in
-            (k, v) :: d, pos
-          | _ -> assert false
-      in
-      let d, pos = loop1 start in
-      Dict d, pos
+        let rec loop' acc i =
+          assert (i < Cstruct.len cs);
+          match Char.chr @@ Cstruct.get_uint8 cs i with
+          | 'e' ->
+              Dict (List.rev acc), (i + 1)
+          | _ ->
+              begin match loop i with
+              | String k, i ->
+                  let v, i = loop i in
+                  loop' ((Cstruct.to_string k, v) :: acc) i
+              | _ ->
+                  failwith "Bcode.decode_partial: bad dict"
+              end
+        in
+        loop' [] (i + 1)
+
     | _ ->
-      assert false
+        failwith "Bcode.decode_partial: bad"
   in
-  loop 0
+  let v, i = loop 0 in
+  v, Cstruct.shift cs i
 
 let decode s =
   let bc, _ = decode_partial s in
   bc
 
-let encode item =
-  let b = Buffer.create 17 in
-  let rec loop = function
-    | Int n ->
-      Buffer.add_char b 'i';
-      Buffer.add_string b (Int64.to_string n);
-      Buffer.add_char b 'e'
-    | String s ->
-      Buffer.add_string b (string_of_int (String.length s));
-      Buffer.add_char b ':';
-      Buffer.add_string b s
-    | List l ->
-      Buffer.add_char b 'l';
-      List.iter loop l;
-      Buffer.add_char b 'e'
-    | Dict d ->
-      Buffer.add_char b 'd';
-      List.iter (fun (k, v) ->
-          Buffer.add_string b (string_of_int (String.length k));
-          Buffer.add_char b ':';
-          Buffer.add_string b k;
-          loop v) d;
-      Buffer.add_char b 'e'
-  in
-  loop item;
-  Buffer.contents b
+module W = struct
+  type t = int * (Cstruct.t -> int -> unit)
+
+  let empty = (0, fun _ _ -> ())
+  let append (l1, f1) (l2, f2) = (l1 + l2, fun cs o -> f1 cs o; f2 cs (o + l1))
+  let (<+>) = append
+  let char c = (1, fun cs o -> Cstruct.set_uint8 cs o (Char.code c))
+  let string s = (String.length s, fun cs o -> Cstruct.blit_from_string s 0 cs o (String.length s))
+  let concat l = List.fold_left append empty l
+  let immediate x = (Cstruct.len x, fun cs o -> Cstruct.blit x 0 cs o (Cstruct.len x))
+
+  let to_cstruct (l, f) =
+    let cs = Cstruct.create l in
+    f cs 0;
+    cs
+end
+
+let rec writer x =
+  let open W in
+  match x with
+  | Int n ->
+      char 'i' <+> string (Int64.to_string n) <+> char 'e'
+  | String cs ->
+      string (string_of_int (Cstruct.len cs)) <+> char ':' <+> immediate cs
+  | List l ->
+      char 'l' <+> concat (List.map writer l) <+> char 'e'
+  | Dict d ->
+      let aux (k, v) = string (string_of_int (String.length k)) <+> char ':' <+> string k <+> writer v in
+      char 'd' <+> concat (List.map aux d) <+> char 'e'
+
+let encode x =
+  W.to_cstruct (writer x)
+
+(* let encode item = *)
+(*   let b = Buffer.create 17 in *)
+(*   let rec loop = function *)
+(*     | Int n -> *)
+(*         Buffer.add_char b 'i'; *)
+(*         Buffer.add_string b (Int64.to_string n); *)
+(*         Buffer.add_char b 'e' *)
+(*     | String s -> *)
+(*         Buffer.add_string b (string_of_int (String.length s)); *)
+(*         Buffer.add_char b ':'; *)
+(*         Buffer.add_string b s *)
+(*     | List l -> *)
+(*         Buffer.add_char b 'l'; *)
+(*         List.iter loop l; *)
+(*         Buffer.add_char b 'e' *)
+(*     | Dict d -> *)
+(*         Buffer.add_char b 'd'; *)
+(*         List.iter (fun (k, v) -> *)
+(*           Buffer.add_string b (string_of_int (String.length k)); *)
+(*           Buffer.add_char b ':'; *)
+(*           Buffer.add_string b k; *)
+(*           loop v) d; *)
+(*         Buffer.add_char b 'e' *)
+(*   in *)
+(*   loop item; *)
+(*   Buffer.contents b *)
 
 (* let test_bdecode () = *)
 (*   let ints = *)

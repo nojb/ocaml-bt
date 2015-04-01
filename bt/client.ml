@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -18,6 +18,8 @@
    COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
+
+module ARC4 = Nocrypto.Cipher_stream.ARC4
 
 let section = Log.make_section "Client"
 
@@ -56,24 +58,51 @@ type t = {
 (*   | _ -> *)
 (*       None *)
 
-(* let handshake_done bt sock res = *)
-(*   assert (Hashtbl.mem bt.connecting (IO.addr sock)); *)
-(*   Hashtbl.remove bt.connecting (IO.addr sock); *)
-(*   match res with *)
-(*   | Handshake.Success (id, exts) -> *)
-(*     debug "%s handshake with %s (%s) successful, ih %s" *)
-(*       (if IO.is_encrypted sock then "encrypted" else "plain") *)
-(*       (SHA1.to_hex_short id) (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih); *)
-(*     (\* Hashtbl.add bt.peers (IO.addr sock) !!p; XXX FIXME FIXME *\) *)
-(*     bt.push sock id exts *)
-(*     (\* peer_joined bt sock (IO.addr sock) bt.ih id exts *\) *)
-(*   | Handshake.Failed -> *)
-(*     Lwt.async (fun () -> IO.close sock); *)
-(*     debug "handshake failed" *)
-
 module Cs = Nocrypto.Uncommon.Cs
 
+let proto = Cstruct.of_string "\019BitTorrent protocol"
+
+let extensions =
+  let bits = Bits.create (8 * 8) in
+  Bits.set bits Wire.ltep_bit;
+  Bits.set bits Wire.dht_bit;
+  Cstruct.of_string @@ Bits.to_bin bits
+
+let handshake_len = Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
+
+let handshake_message peer_id info_hash =
+  Cs.concat [ proto; extensions; SHA1.to_raw info_hash; SHA1.to_raw peer_id ]
+
+let parse_handshake cs =
+  assert (Cstruct.len cs = handshake_len);
+  match Cstruct.get_uint8 cs 0 with
+  | 19 ->
+      let proto' = Cstruct.sub cs 0 20 in
+      if Cs.equal proto' proto then
+        let ext = Cstruct.sub cs 20 8 in
+        let info_hash = Cstruct.sub cs 28 20 in
+        let peer_id = Cstruct.sub cs 48 20 in
+        (ext, SHA1.of_raw info_hash, SHA1.of_raw peer_id)
+      else
+        failwith "bad proto"
+  | _ ->
+      failwith "bad proto length"
+
 let buf_size = 1024
+
+let encrypt mode cs =
+  match mode with
+  | `Plain -> `Plain, cs
+  | `Encrypted (my_key, her_key) ->
+      let { ARC4.key = my_key; message = cs } = ARC4.encrypt ~key:my_key cs in
+      `Encrypted (my_key, her_key), cs
+
+let decrypt mode cs =
+  match mode with
+  | `Plain -> `Plain, cs
+  | `Encrypted (my_key, her_key) ->
+      let { ARC4.key = my_key; message = cs } = ARC4.decrypt ~key:her_key cs in
+      `Encrypted (my_key, her_key), cs
 
 let negotiate fd t =
   let read_buf = Cstruct.create buf_size in
@@ -91,33 +120,36 @@ let negotiate fd t =
     | `Error err ->
         failwith err
     | `Success (mode, rest) ->
-        Lwt.return (mode, rest)
+        Lwt.return (`Ok (mode, rest))
   in
   loop t
 
-let connect_to_peer info_hash push ((ip, port) as addr) timeout =
-  let connect () =
-    let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
-    Lwt_unix.gethostbyaddr ip >>= fun he ->
-    let sa = Lwt_unix.ADDR_INET (he.Lwt_unix.h_addr_list.(0), port) in
-    Lwt_unix.connect fd sa >>= fun () ->
-    negotiate fd Handshake.(outgoing ~info_hash Both) >>= fun (mode, rest) ->
-    assert false
-  in
-  Lwt.catch connect (fun _ -> push (ConnectFailed addr); Lwt.return_unit)
+let connect_to_peer info_hash ip port timeout =
+  let my_id = SHA1.generate () in (* FIXME FIXME *)
+  let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
+  Lwt_unix.gethostbyaddr ip >>= fun he ->
+  let sa = Lwt_unix.ADDR_INET (he.Lwt_unix.h_addr_list.(0), port) in
+  Lwt_unix.connect fd sa >>= fun () ->
+  negotiate fd Handshake.(outgoing ~info_hash Both) >>= function
+  | `Ok (mode, rest) ->
+      Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message info_hash my_id) >>= fun () ->
+      assert (Cstruct.len rest <= handshake_len);
+      let n = handshake_len - Cstruct.len rest in
+      let hs = Cstruct.create handshake_len in
+      Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
+      Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
+      let ext, info_hash', peer_id = parse_handshake hs in
+      assert (SHA1.equal info_hash info_hash');
+      Lwt.return (mode, fd, ext, peer_id)
+  | `Error _ ->
+      assert false
 
-  (* Lwt.try_bind (fun () -> IO.connect sock) *)
-  (*   (fun () -> *)
-  (*      let hs = *)
-  (*        Handshake.outgoing ~id:bt.id ~ih:bt.ih *)
-  (*          Handshake.(Crypto Prefer) sock (handshake_done bt sock) *)
-  (*      in *)
-  (*      Lwt.return ()) *)
-  (*   (fun exn -> *)
-  (*      debug ~exn "could not connect to %s" (Addr.to_string addr); *)
-  (*      Hashtbl.remove bt.connecting addr; *)
-  (*      IO.close sock) *)
-  (*     (\* Lwt.return ()) *\) *)
+let connect_to_peer info_hash push ((ip, port) as addr) timeout =
+  Lwt.try_bind
+    (fun () -> connect_to_peer info_hash ip port timeout)
+    (fun (mode, fd, ext, peer_id) ->
+       Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_bin (Cstruct.to_string ext), peer_id))
+    (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr)
 
 let buf_size = 1024
 
@@ -137,8 +169,8 @@ let reader_loop push fd p =
     (fun () -> loop Wire.R.empty)
     (fun e ->
        Printf.eprintf "unexpected exc: %S\n%!" (Printexc.to_string e);
-       Lwt_unix.close fd;
        push (PeerDisconnected (Peer.id p));
+       Lwt_unix.close fd >>= fun () ->
        Lwt.return_unit)
 
   (*   Lwt.pick *)
@@ -320,7 +352,7 @@ let share_torrent bt meta dl peers =
         (* FIXME *)
         loop peers
 
-    | PeerConnected (sock, id, exts) ->
+    | PeerConnected (mode, sock, exts, id) ->
         let p =
           Peer.create_has_meta id bt.push meta (Requester.get_next_requests r)
         in
@@ -374,7 +406,7 @@ let rec fetch_metadata bt =
         Lwt.async safe_doit;
         loop peers m
 
-    | PeerConnected (sock, id, exts) ->
+    | PeerConnected (mode, sock, exts, id) ->
         let p = Peer.create_no_meta id bt.push (fun _ -> None (* FIXME FIXME *)) in
         Lwt.async (fun () -> reader_loop bt.push sock p);
         Peer.start p;
@@ -475,7 +507,7 @@ let create mg =
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
   let trackers = List.map (fun tr -> Tracker.Tier.create [tr]) mg.Magnet.tr in
-  let id = SHA1.peer_id "OCTO" in
+  let id = SHA1.generate ~prefix:"OCAML" () in
   let ih = mg.Magnet.xt in
   let peer_mgr = PeerMgr.create () in
   (*       (fun sock id ext -> !!cl.push (PeerJoined (sock, id, ext))) *)

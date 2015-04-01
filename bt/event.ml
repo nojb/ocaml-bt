@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module ARC4 = Nocrypto.Cipher_stream.ARC4
+
 type pex_flags = {
   pex_encryption : bool;
   pex_seed : bool;
@@ -34,7 +36,7 @@ type event =
 
   | Announce of Tracker.Tier.t * Tracker.event option
 
-  | PeerConnected of Lwt_unix.file_descr * SHA1.t * Bits.t
+  | PeerConnected of [ `Plain | `Encrypted of ARC4.key * ARC4.key ] * Lwt_unix.file_descr * Bits.t * SHA1.t
 
   | PieceVerified of int
 
@@ -66,7 +68,7 @@ type event =
 
   | MetaRequested of SHA1.t * int
 
-  | GotMetaPiece of SHA1.t * int * string
+  | GotMetaPiece of SHA1.t * int * Cstruct.t
 
   | RejectMetaPiece of SHA1.t * int
 

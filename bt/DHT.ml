@@ -70,7 +70,7 @@ let string_of_response r =
       (* token (strl Addr.to_string peers) (strl string_of_node nodes) *)
 
 let parse_query name args : SHA1.t * query =
-  let sha1 k args = SHA1.of_bin (Bcode.to_string (List.assoc k args)) in
+  let sha1 k args = SHA1.of_raw (Bcode.to_cstruct (List.assoc k args)) in
   let q = match name with
     | "ping" ->
       Ping
@@ -119,7 +119,7 @@ let parse_value s =
   (* loop s *)
 
 let parse_response q args =
-  let sha1 k args = SHA1.of_bin (Bcode.to_string (List.assoc k args)) in
+  let sha1 k args = SHA1.of_raw (Bcode.to_cstruct (List.assoc k args)) in
   let r = match q with
     | Ping ->
       Pong
@@ -200,7 +200,7 @@ let type_of_query : query -> query_type = function
   | Announce _ -> Announce
 
 let encode_query id (q : query) =
-  let sha1 x = Bcode.String (SHA1.to_bin x) in
+  let sha1 x = Bcode.String (SHA1.to_raw x) in
   let self = ("id", sha1 id) in
   match q with
   | Ping ->
@@ -213,7 +213,7 @@ let encode_query id (q : query) =
     KRPC.Query ("announce",
       [ "info_hash", sha1 ih;
         "port", Bcode.Int (Int64.of_int port);
-        "token", Bcode.String token;
+        "token", Bcode.String (Cstruct.of_string token);
         self ])
 
 let query dht addr q =
@@ -289,7 +289,7 @@ let encode_values l =
   (* Bitstring.string_of_bitstring (loop l) *)
 
 let encode_response id r : KRPC.msg =
-  let sha1 x = Bcode.String (SHA1.to_bin x) in
+  let sha1 x = Bcode.String (SHA1.to_raw x) in
   let self = ("id", sha1 id) in
   match r with
   | Pong ->
@@ -299,7 +299,7 @@ let encode_response id r : KRPC.msg =
       [ self; "nodes", Bcode.String (encode_nodes nodes) ]
   | Peers (token, peers, nodes) ->
     KRPC.Response
-      [ self; "token", Bcode.String token;
+      [ self; "token", Bcode.String (Cstruct.of_string token);
         "values", Bcode.String (encode_values peers);
         "nodes", Bcode.String (encode_nodes nodes) ]
 
@@ -373,7 +373,7 @@ let update dht st id addr =
 let (!!) = Lazy.force
 
 let create port =
-  let id = SHA1.random () in
+  let id = SHA1.generate () in
   let secret = Secret.create secret_timeout in
   let rec dht = lazy
     { rt = Kademlia.create id;

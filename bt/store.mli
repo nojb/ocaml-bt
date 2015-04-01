@@ -30,14 +30,14 @@ type t
 val create : Metadata.t -> t Lwt.t
 (** Creates a store to access the files specified in
     the given metainfo dictionary. *)
-  
+
 val close : t -> unit Lwt.t
 (** Close all the files in the store. *)
-    
-val read : t -> int64 -> int -> string Lwt.t
+
+val read : t -> int64 -> int -> Cstruct.t Lwt.t
 (** [read st ofs len] reads [len] bytes starting at offset [ofs] from the store
     [st].  The offset and the length can span multiple files in the store. *)
-    
-val write : t -> int64 -> string -> unit Lwt.t
+
+val write : t -> int64 -> Cstruct.t -> unit Lwt.t
 (** [write st ofs s] writes [s] starting at offset [ofs] in the store [st].  The
     string may end up being written in more than one file in the store. *)

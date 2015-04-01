@@ -19,18 +19,16 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type metadata_node = {
-  mutable requested_at : float;
-  piece : int
-}
+type metadata_node =
+  { mutable requested_at : float;
+    piece : int }
 
-type t = {
-  ih : SHA1.t;
-  length : int;
-  raw : string;
-  pieces_needed : metadata_node option array;
-  mutable missing : int
-}
+type t =
+  { ih : SHA1.t;
+    length : int;
+    raw : Cstruct.t;
+    pieces_needed : metadata_node option array;
+    mutable missing : int }
 
 let kilobytes n = n * 1024
 
@@ -42,17 +40,17 @@ let roundup n r =
 let create ih length =
   let npieces = roundup length info_piece_size / info_piece_size in
   let pieces_needed = Array.init npieces (fun i -> Some {requested_at = 0.0; piece = i}) in
-  { ih; length; raw = String.create length; pieces_needed; missing = npieces }
+  { ih; length; raw = Cstruct.create length; pieces_needed; missing = npieces }
 
 let add_piece p n s =
   let rec loop i =
     match p.pieces_needed.(i) with
     | Some { piece; _ } when piece = n ->
-      String.blit s 0 p.raw (n * info_piece_size) (String.length s);
-      p.pieces_needed.(i) <- None;
-      p.missing <- p.missing - 1
+        Cstruct.blit s 0 p.raw (n * info_piece_size) (Cstruct.len s);
+        p.pieces_needed.(i) <- None;
+        p.missing <- p.missing - 1
     | _ ->
-      loop (i+1)
+        loop (i+1)
   in
   loop 0;
   p.missing = 0
@@ -66,19 +64,19 @@ let get_next_metadata_request p =
     else match p.pieces_needed.(i) with
       | None -> loop (i+1)
       | Some pc ->
-        if pc.requested_at +. float min_repeat_interval_secs < now then begin
-          pc.requested_at <- now;
-          Array.blit p.pieces_needed 1 p.pieces_needed 0 (Array.length p.pieces_needed - 1);
-          p.pieces_needed.(Array.length p.pieces_needed - 1) <- Some pc;
-          Some pc.piece
-        end
-        else None
+          if pc.requested_at +. float min_repeat_interval_secs < now then begin
+            pc.requested_at <- now;
+            Array.blit p.pieces_needed 1 p.pieces_needed 0 (Array.length p.pieces_needed - 1);
+            p.pieces_needed.(Array.length p.pieces_needed - 1) <- Some pc;
+            Some pc.piece
+          end
+          else None
   in
   loop 0
-      
+
 let verify p =
-  if SHA1.string p.raw = p.ih then
-    Some (String.copy p.raw)
+  if SHA1.(equal (digest p.raw) p.ih) then
+    Some p.raw
   else
     None
 

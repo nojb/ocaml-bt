@@ -24,7 +24,7 @@ let section = Log.make_section "Metadata"
 let debug ?exn fmt = Log.debug section ?exn fmt
 
 let _ = Random.self_init ()
-    
+
 type file_info = {
   file_path     : string list;
   file_size     : int64
@@ -39,26 +39,26 @@ type t = {
   last_piece_size : int;
   total_length : int64;
   files : file_info list;
-  encoded : string
+  encoded : Cstruct.t
 }
 
 let length info =
-  String.length info.encoded
+  Cstruct.len info.encoded
 
 let info_piece_size = 16 * 1024 (* bytes *)
-                      
+
 (* let roundup n r = *)
 (*   (n + r - 1) / r * r *)
 
 let get_piece info i =
-  let l = String.length info.encoded in
+  let l = Cstruct.len info.encoded in
   let numpieces = (l + info_piece_size - 1) / info_piece_size in
   if i >= numpieces || i < 0 then invalid_arg "Info.get_piece";
   if i < numpieces - 1 then
-    String.sub info.encoded (i * info_piece_size) info_piece_size
+    Cstruct.sub info.encoded (i * info_piece_size) info_piece_size
   else
     let last_piece_size = l mod info_piece_size in
-    String.sub info.encoded (i * info_piece_size) last_piece_size
+    Cstruct.sub info.encoded (i * info_piece_size) last_piece_size
 
 (* let comment bc = *)
 (*   try Some (Bcode.find "comment" bc |> Bcode.to_string) *)
@@ -83,16 +83,16 @@ let either f g x =
                       (** announce_list takes precedence over announce - see BEP 12 *)
 (*   either announce_list announce () *)
 
-let split_at n s =
-  let l = String.length s in
-  if l mod n <> 0 then invalid_arg "Torrent.split_at";
-  Array.init (l/n) (fun i -> String.sub s (n*i) n)
+let split_at n cs =
+  let l = Cstruct.len cs in
+  if l mod n <> 0 then invalid_arg "Metadata.split_at";
+  Array.init (l / n) (fun i -> Cstruct.sub cs (n * i) n)
 
 let hashes bc =
-  Bcode.find "pieces" bc |> Bcode.to_string |> split_at 20 |> Array.map SHA1.of_bin
+  Bcode.find "pieces" bc |> Bcode.to_cstruct |> split_at 20 |> Array.map SHA1.of_raw
 
 let info_hash (bc : Bcode.t) =
-  SHA1.string (Bcode.encode bc)
+  SHA1.digest (Bcode.encode bc)
 
 let piece_length bc =
   Bcode.find "piece length" bc |> Bcode.to_int
@@ -215,7 +215,7 @@ let block_size info i j =
   if i < n - 1 then info.block_size else
   if j < block_count info i - 1 then info.block_size
   else piece_length info i mod info.block_size
-  
+
 let block_offset m i j =
   Int64.add (piece_offset m i) (Int64.of_int (j * m.block_size))
 

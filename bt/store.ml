@@ -25,17 +25,12 @@ let (>|=) = Lwt.(>|=)
 let failwith fmt = Printf.ksprintf failwith fmt
 let failwith_lwt fmt = Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
-    
+
 type t = {
   meta : Metadata.t;
   descrs : (Lwt_unix.file_descr * int64) list;
   lock : Lwt_mutex.t
 }
-
-let safe_to_int n =
-  let n' = Int64.to_int n in
-  assert (Int64.(compare (of_int n') n) = 0);
-  n'
 
 let rec get_chunks descrs offset size =
   let open Int64 in
@@ -50,34 +45,31 @@ let rec get_chunks descrs offset size =
       if compare size1 (of_int size) >= 0 then
         [fd, offset, size]
       else
-        let size1 = safe_to_int size1 in
+        let size1 = Int64.to_int size1 in
         (fd, offset, size1) :: get_chunks descrs 0L (size-size1)
     end
 
 let read self off len =
-  let buf = String.create len in
-  let read_chunk doff (fd, off, len) =
+  let read_chunk buf (fd, off, len) =
     Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
-    Util.really_read fd buf doff len >>= fun () ->
-    Lwt.return (doff + len)
+    Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.sub buf 0 len) >>= fun () ->
+    Lwt.return (Cstruct.shift buf len)
   in
+  let buf = Cstruct.create len in
   Lwt_mutex.with_lock self.lock
     (fun () ->
-       Lwt_list.fold_left_s read_chunk 0 (get_chunks self.descrs off len) >>= fun n ->
-       assert (n = len);
+       Lwt_list.fold_left_s read_chunk buf (get_chunks self.descrs off len) >>= fun _ ->
        Lwt.return buf)
 
-let write self off s =
-  let write_chunk doff (fd, off, len) =
+let write self off buf =
+  let write_chunk buf (fd, off, len) =
     Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
-    Util.really_write fd s doff len >>= fun () ->
-    Lwt.return (doff + len)
+    Lwt_cstruct.complete (Lwt_cstruct.write fd) (Cstruct.sub buf 0 len) >>= fun () ->
+    Lwt.return (Cstruct.shift buf len)
   in
   Lwt_mutex.with_lock self.lock
     (fun () ->
-       Lwt_list.fold_left_s write_chunk 0
-         (get_chunks self.descrs off (String.length s)) >>= fun n ->
-       assert (n = String.length s);
+       Lwt_list.fold_left_s write_chunk buf (get_chunks self.descrs off (Cstruct.len buf)) >>= fun _ ->
        Lwt.return_unit)
 
 let cwd path f =
@@ -87,7 +79,7 @@ let cwd path f =
 
 let file_default_perm = 0o600
 let directory_default_perm = 0o700
-  
+
 let open_file path size =
   let rec loop path =
     match path with
@@ -107,7 +99,7 @@ let open_file path size =
       end
   in
   loop path
-    
+
 let close self =
   Lwt_mutex.with_lock self.lock
     (fun () -> Lwt_list.iter_p (fun (fd, _) -> Lwt_unix.close fd) self.descrs)

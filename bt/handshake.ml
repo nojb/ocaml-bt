@@ -131,44 +131,6 @@ let arc4 from secret skey =
 5 A->B: ENCRYPT2(Payload Stream)
 *)
 
-(* let proto = "BitTorrent protocol" *)
-
-(* let extended_bits = *)
-(*   let bits = Bits.create (8 * 8) in *)
-(*   Bits.set bits Wire.ltep_bit; *)
-(*   Bits.set bits Wire.dht_bit; *)
-(*   bits *)
-
-(* let handshake_message id ih = *)
-(*   let bs = *)
-(*     BITSTRING *)
-(*       { 19 : 8; proto : -1 : string; *)
-(*         Bits.to_bin extended_bits : -1 : string; *)
-(*         SHA1.to_bin ih : 20 * 8 : string; *)
-(*         SHA1.to_bin id : 20 * 8 : string } *)
-(*   in *)
-(*   Bitstring.string_of_bitstring bs *)
-
-(* let handshake_len = 49 + String.length proto *)
-
-(* let send_handshake hs = *)
-(*   IO.write_string hs.sock (handshake_message hs.id hs.skey) *)
-
-(* let parse_handshake hs str = *)
-(*   bitmatch Bitstring.bitstring_of_string str with *)
-(*   | { 19 : 8; *)
-(*       proto : 19 * 8 : string; *)
-(*       extbits : 8 * 8 : string, bind (Bits.of_bin extbits); *)
-(*       ih : 20 * 8 : string, bind (SHA1.of_bin ih); *)
-(*       id : 20 * 8 : string, bind (SHA1.of_bin id) } -> *)
-(*     if SHA1.equal hs.skey ih then *)
-(*       Lwt.return (id, extbits) *)
-(*     else *)
-(*       fail_lwt "info-hash mismatch received:%s expected:%s" (SHA1.to_hex ih) (SHA1.to_hex hs.skey) *)
-
-(* let read_handshake hs = *)
-(*   IO.read_string hs.sock handshake_len >>= parse_handshake hs *)
-
 (* let send_random_padding hs = *)
 (*   let len = Random.int (max_pad_len + 1) in *)
 (*   let pad = Cryptokit.Random.string Cryptokit.Random.secure_rng len in *)
@@ -508,7 +470,7 @@ type ret =
   | `Error of string ]
 
 let outgoing ~info_hash mode =
-  let info_hash = Cstruct.of_string (S.to_bin info_hash) in
+  let info_hash = S.to_raw info_hash in
   let t = { info_hash; mode; state = Client ClientWaitDh; buf = Cs.empty } in
   let padA_len = Rng.Int.gen (max_pad_len + 1) in
   let padA = Rng.generate padA_len in

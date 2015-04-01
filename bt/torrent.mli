@@ -33,14 +33,14 @@ val create : Metadata.t -> event_callback -> t Lwt.t
     This loads any partially downloaded data from disk and re-checks all the hashes
     to be sure which pieces are valid. *)
 
-val get_block : t -> int -> int -> string Lwt.t
+val get_block : t -> int -> int -> Cstruct.t Lwt.t
 (** Called to read a block from the already downloaded data with the intention
     of sending it to another peer who has requested it. *)
 
 val is_complete : t -> bool
 (** Whether we have all the pieces. *)
 
-val got_block : t -> Peer.t -> int -> int -> string -> unit
+val got_block : t -> Peer.t -> int -> int -> Cstruct.t -> unit
 (** Called when we receive a block from a peer. *)
 
 (* val down : t -> int64 *)
