@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -156,25 +156,8 @@ let decode s =
   let bc, _ = decode_partial s in
   bc
 
-module W = struct
-  type t = int * (Cstruct.t -> int -> unit)
-
-  let empty = (0, fun _ _ -> ())
-  let append (l1, f1) (l2, f2) = (l1 + l2, fun cs o -> f1 cs o; f2 cs (o + l1))
-  let (<+>) = append
-  let char c = (1, fun cs o -> Cstruct.set_uint8 cs o (Char.code c))
-  let string s = (String.length s, fun cs o -> Cstruct.blit_from_string s 0 cs o (String.length s))
-  let concat l = List.fold_left append empty l
-  let immediate x = (Cstruct.len x, fun cs o -> Cstruct.blit x 0 cs o (Cstruct.len x))
-
-  let to_cstruct (l, f) =
-    let cs = Cstruct.create l in
-    f cs 0;
-    cs
-end
-
 let rec writer x =
-  let open W in
+  let open Util.W in
   match x with
   | Int n ->
       char 'i' <+> string (Int64.to_string n) <+> char 'e'
@@ -187,7 +170,7 @@ let rec writer x =
       char 'd' <+> concat (List.map aux d) <+> char 'e'
 
 let encode x =
-  W.to_cstruct (writer x)
+  Util.W.to_cstruct (writer x)
 
 (* let encode item = *)
 (*   let b = Buffer.create 17 in *)

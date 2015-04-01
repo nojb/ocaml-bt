@@ -153,32 +153,41 @@ let send_meta_piece p piece (len, s) =
 let got_ut_pex p data =
   (* FIXME support for IPv6 *)
   let m = Bcode.decode data in
-  let added = Bcode.find "added" m |> Bcode.to_string in
-  let added_f = Bcode.find "added.f" m |> Bcode.to_string in
-  let dropped = Bcode.find "dropped" m |> Bcode.to_string in
-  let rec loop bs = [] (* FIXME FIXME FIXME *)
-    (* bitmatch bs with *)
-    (* | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } -> *)
-        (* addr :: loop rest *)
-    (* | { _ } -> [] *)
+  let added = Bcode.find "added" m |> Bcode.to_cstruct in
+  let added_f = Bcode.find "added.f" m |> Bcode.to_cstruct in
+  let dropped = Bcode.find "dropped" m |> Bcode.to_cstruct in
+  let rec loop cs =
+    if Cstruct.len cs >= 6 then
+      let addr, cs = Cstruct.split cs 6 in
+      let ip =
+        Unix.inet_addr_of_string
+          (Printf.sprintf "%d.%d.%d.%d"
+            (Cstruct.get_uint8 addr 0) (Cstruct.get_uint8 cs 1)
+            (Cstruct.get_uint8 addr 2) (Cstruct.get_uint8 cs 3))
+      in
+      let port = Cstruct.BE.get_uint16 cs 4 in
+      (ip, port) :: loop cs
+    else
+      []
   in
-  let flag c =
-    let n = int_of_char c in
+  let flag n =
     { pex_encryption = n land 0x1 <> 0;
       pex_seed = n land 0x2 <> 0;
       pex_utp = n land 0x4 <> 0;
       pex_holepunch = n land 0x8 <> 0;
       pex_outgoing = n land 0x10 <> 0 }
   in
-  let added = loop (Bitstring.bitstring_of_string added) in
+  let added = loop added in
   let added_f =
     let rec loop i =
-      if i >= String.length added_f then []
-      else flag added_f.[i] :: loop (i+1)
+      if i >= Cstruct.len added_f then
+        []
+      else
+        flag (Cstruct.get_uint8 added_f i) :: loop (i + 1)
     in
     loop 0
   in
-  let dropped = loop (Bitstring.bitstring_of_string dropped) in
+  let dropped = loop dropped in
   GotPEX (p.id, List.combine added added_f, dropped)
 
 let supported_extensions =
@@ -528,15 +537,23 @@ let close p =
 
 let send_ut_pex p added dropped =
   let id = Hashtbl.find p.extensions "ut_pex" in
-  let rec c _ = assert false in (* FIXME FIXME *)
-    (* function *)
-    (* | [] -> Bitstring.empty_bitstring *)
-    (* | a :: aa -> BITSTRING { Addr.to_string_compact a : -1 : string; c aa : -1 : bitstring } *)
-  (* in *)
-  let c l = Cstruct.of_string (Bitstring.string_of_bitstring (c l)) (* FIXME FIXME *) in
+  let rec c (ip, port) =
+    let cs =
+      Scanf.sscanf (Unix.string_of_inet_addr ip) "%d.%d.%d.%d"
+        (fun a b c d ->
+           let cs = Cstruct.create 6 in
+           Cstruct.set_uint8 cs 0 a; Cstruct.set_uint8 cs 1 b;
+           Cstruct.set_uint8 cs 2 a; Cstruct.set_uint8 cs 3 d;
+           cs)
+    in
+    Cstruct.BE.set_uint16 cs 4 port;
+    cs
+  in
+  let c l = Cs.concat (List.map c l) in
+  let added_f = Cstruct.of_string (String.make (List.length added) '\x00') in
   let d =
     [ "added", Bcode.String (c added);
-      (* "added.f", Bcode.String (String.make (List.length added) '\000'); *) (* FIXME FIXME *)
+      "added.f", Bcode.String added_f;
       "dropped", Bcode.String (c dropped) ]
   in
   send_extended p id @@ Bcode.encode (Bcode.Dict d)

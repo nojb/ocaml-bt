@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -39,8 +39,7 @@ type message =
   | EXTENDED of int * Cstruct.t
 
 val string_of_message : message -> string
-(* val read : Lwt_io.input_channel -> message Lwt.t *)
-val write : Lwt_io.output_channel -> message -> unit Lwt.t
+val writer : message -> Util.W.t
 
 val ltep_bit : int
 val dht_bit : int

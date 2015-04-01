@@ -1,4 +1,2 @@
 true: package(nocrypto), package(cstruct), package(cstruct.lwt), package(lwt), package(uri), package(cohttp)
-true: package(bitstring)
-<bt/peer.*> or <bt/tracker.*> or <bt/addr.*> or <bt/wire.*> or <bt/IO.*> or <bt/handshake.*> or <bt/DHT.*>: syntax(camlp4o), package(bitstring.syntax)
 true: bin_annot

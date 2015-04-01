@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -18,8 +18,6 @@
    COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
-
-open Printf
 
 type message =
   | KEEP_ALIVE
@@ -43,7 +41,9 @@ type message =
 let strl f l =
   "[" ^ String.concat " " (List.map f l) ^ "]"
 
-let string_of_message = function
+let string_of_message x =
+  let open Printf in
+  match x with
   | KEEP_ALIVE -> "keep alive"
   | CHOKE -> "choke"
   | UNCHOKE -> "unchoke"
@@ -62,60 +62,48 @@ let string_of_message = function
   | ALLOWED pieces -> sprintf "allowed %s" (strl string_of_int pieces)
   | EXTENDED (id, _) -> sprintf "extended %d" id
 
-let put' = function
+let writer x =
+  let open Util.W in
+  match x with
   | KEEP_ALIVE ->
-    Bitstring.empty_bitstring
+      empty
   | CHOKE ->
-    BITSTRING { 0 : 8 }
+      byte 0
   | UNCHOKE ->
-    BITSTRING { 1 : 8 }
+      byte 1
   | INTERESTED ->
-    BITSTRING { 2 : 8 }
+      byte 2
   | NOT_INTERESTED ->
-    BITSTRING { 3 : 8 }
+      byte 3
   | HAVE i ->
-    BITSTRING { 4 : 8; Int32.of_int i : 32 }
+      byte 4 <+> int i
   | BITFIELD bits ->
-    BITSTRING { 5 : 8; Bits.to_bin bits : -1 : string }
+      byte 5 <+> string (Bits.to_bin bits)
   | REQUEST (i, off, len) ->
-    BITSTRING { 6 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
+      byte 6 <+> int i <+> int off <+> int len
   | PIECE (i, off, s) ->
-    BITSTRING { 7 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Cstruct.to_string s : -1 : string }
+      byte 7 <+> int i <+> int off <+> immediate s
   | CANCEL (i, off, len) ->
-    BITSTRING { 8 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
+      byte 8 <+> int i <+> int off <+> int len
   | PORT i ->
-    BITSTRING { 9 : 8; i : 16 }
+      byte 9 <+> int16 i
   | SUGGEST i ->
-    BITSTRING { 13 : 8; Int32.of_int i : 32 }
+      byte 13 <+> int i
   | HAVE_ALL ->
-    BITSTRING { 14 : 8 }
+      byte 14
   | HAVE_NONE ->
-    BITSTRING { 15 : 8 }
+      byte 15
   | REJECT (i, off, len) ->
-    BITSTRING { 16 : 8; Int32.of_int i : 32; Int32.of_int off : 32; Int32.of_int len : 32 }
+      byte 16 <+> int i <+> int off <+> int len
   | ALLOWED pieces ->
-    let rec loop = function
-      | [] -> Bitstring.empty_bitstring
-      | p :: pieces -> BITSTRING { Int32.of_int p : 32; loop pieces : -1 : bitstring }
-    in
-    BITSTRING { 17 : 8; loop pieces : -1 : bitstring }
+      byte 17 <+> concat (List.map int pieces)
   | EXTENDED (id, s) ->
-    BITSTRING { 20 : 8; id : 8; Cstruct.to_string s : -1 : string }
+      byte 20 <+> byte id <+> immediate s
 
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
-
-let write output msg =
-  let doit () =
-    let (bs, boff, blen) = put' msg in
-    assert (boff land 7 = 0 && blen land 7 = 0);
-    (* Bitstring.hexdump_bitstring stderr bs; *)
-    Lwt_io.BE.write_int output (blen lsr 3) >>= fun () ->
-    Lwt_io.write_from_exactly output bs (boff lsr 3) (blen lsr 3)
-    (* Tcp.write_bitstring sock len >>= fun () -> *)
-    (* Tcp.write_bitstring sock bs *)
-  in
-  Lwt.catch doit Lwt.fail
+let writer x =
+  let open Util.W in
+  let w = writer x in
+  int (len w) <+> w
 
 let parse cs =
   let int cs o = Int32.to_int @@ Cstruct.BE.get_uint32 cs o in
@@ -161,7 +149,6 @@ let parse cs =
       EXTENDED (Cstruct.get_uint8 cs 1, Cstruct.shift cs 2)
   | _ ->
       failwith "can't parse msg"
-(* fail (\* fail (BadMsg (len, id)) *\) *)
 
 let parse cs =
   if Cstruct.len cs = 0 then
@@ -170,19 +157,6 @@ let parse cs =
     parse cs
 
 let max_packet_len = 32 * 1024
-
-(* let read input = *)
-(*   let doit () = *)
-(*     Lwt_io.BE.read_int input >>= fun len -> *)
-(*     assert (len <= max_packet_len); *)
-(*     if len = 0 then *)
-(*       Lwt.return KEEP_ALIVE *)
-(*     else *)
-(*       let buf = String.create len in *)
-(*       Lwt_io.read_into_exactly input buf 0 len >|= fun () -> parse buf *)
-(*       (\* Bitstring.hexdump_bitstring stderr s; *\) *)
-(*   in *)
-(*   Lwt.catch doit Lwt.fail *)
 
 let ltep_bit = 43 (* 20-th bit from the right *)
 let dht_bit = 63 (* last bit of the extension bitfield *)

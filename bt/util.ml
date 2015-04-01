@@ -36,3 +36,26 @@ let string_of_file_size (b : int64) : string =
 let string_of_sockaddr = function
   | Unix.ADDR_INET (a, p) -> Printf.sprintf "%s:%u" (Unix.string_of_inet_addr a) p
   | Unix.ADDR_UNIX s -> s
+
+
+module W = struct
+  type t = int * (Cstruct.t -> int -> unit)
+
+  let len (l, _) = l
+  let empty = (0, fun _ _ -> ())
+  let append (l1, f1) (l2, f2) = (l1 + l2, fun cs o -> f1 cs o; f2 cs (o + l1))
+  let (<+>) = append
+  let char c = (1, fun cs o -> Cstruct.set_uint8 cs o (Char.code c))
+  let byte b = (1, fun cs o -> Cstruct.set_uint8 cs o b)
+  let string s = (String.length s, fun cs o -> Cstruct.blit_from_string s 0 cs o (String.length s))
+  let int32 n = (4, fun cs o -> Cstruct.BE.set_uint32 cs o n)
+  let int n = (4, fun cs o -> Cstruct.BE.set_uint32 cs o (Int32.of_int n))
+  let int16 n = (2, fun cs o -> Cstruct.BE.set_uint16 cs o n)
+  let concat l = List.fold_left append empty l
+  let immediate x = (Cstruct.len x, fun cs o -> Cstruct.blit x 0 cs o (Cstruct.len x))
+
+  let to_cstruct (l, f) =
+    let cs = Cstruct.create l in
+    f cs 0;
+    cs
+end
