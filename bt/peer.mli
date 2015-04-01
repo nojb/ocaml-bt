@@ -32,27 +32,10 @@ exception Timeout
 open Event
 
 type event_callback = event -> unit
-type get_block_func = t -> int -> (int * int) list
 
-val create_has_meta : SHA1.t -> event_callback -> Metadata.t -> get_block_func -> t
-(** [create_has_meta sock addr id cb m r] creates a peer in the block-requesting
-    stage.  [sock] is the socket used to communicate with the peer, [addr] is
-    its address, [id] is its ID, [cb] is the callback invoked on important
-    events (currently, this is set to {!Client.handle_peer_event}), [m] is the
-    metainfo dictionary, and [r] is the function used to pick blocks to request
-    from this peer (see {!Requester.get_next_requests}). *)
+val create_has_meta : SHA1.t -> event_callback -> Metadata.t -> t
 
 val create_no_meta : SHA1.t -> event_callback -> t
-(** [create_no_meta sock addr id cb r] creates a peer in the metainfo-requesting
-    stage.  [sock] is the socket used to communicate with this peer, [addr] is
-    its address, [id] is its ID, [cb] is the callback invoked on important
-    events (currently, this is set to {!Client.handle_peer_event}), [m] is the
-    metainfo dictionary, and [r] is the function used to pick metainfo pieces to
-    request from this peer (see
-    {!IncompleteMetadata.get_next_metadata_request}). *)
-
-val start : t -> unit
-(** Start the peer's event loop. *)
 
 val id : t -> SHA1.t
 (** The peer ID. *)
@@ -131,7 +114,7 @@ val download_rate : t -> float
 val reset_rates : t -> unit
 (** Reset the download/upload speed computation. *)
 
-val got_metadata : t -> Metadata.t -> get_block_func -> unit
+(* val got_metadata : t -> Metadata.t -> get_block_func -> unit *)
 (** Called when the full metadata is received. The peer should be in the
     metainfo-requesting stage. *)
 

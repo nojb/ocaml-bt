@@ -159,8 +159,24 @@ let reader_loop push fd p =
     (fun e ->
        Printf.eprintf "unexpected exc: %S\n%!" (Printexc.to_string e);
        push (PeerDisconnected (Peer.id p));
-       Lwt_unix.close fd >>= fun () ->
-       Lwt.return_unit)
+       Lwt_unix.close fd)
+
+(* let request_blocks_loop p = *)
+(*   match p.info with *)
+(*   | HasMeta nfo -> *)
+(*       let rec loop () = *)
+(*         (\* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *\) *)
+(*         let ps = nfo.request p (request_pipeline_max - p.act_reqs) in *)
+(*         List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps; *)
+(*         Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest); *)
+(*                   (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>= *)
+(*         function *)
+(*         | `CanRequest -> loop () *)
+(*         | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop *)
+(*       in *)
+(*       Lwt_condition.wait p.on_unchoke >>= loop *)
+(*   | NoMeta _ -> *)
+(*       failwith "Peer.request_loop: no meta info" *)
 
   (*   Lwt.pick *)
   (*     [(Lwt_stream.next input >|= fun x -> `Ok x); *)
@@ -258,6 +274,13 @@ let peer_interested peers id =
     Peer.peer_interested p
   with
   | Not_found -> false
+
+let welcome push mode fd exts id =
+  let p = Peer.create_no_meta id push in
+  Lwt.async (fun () -> reader_loop push fd p);
+  if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
+  if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
+  p
 
 let share_torrent bt meta dl peers =
   let ch = Choker.create bt.peer_mgr dl in
@@ -370,17 +393,13 @@ let share_torrent bt meta dl peers =
         loop peers
 
     | PeerConnected (mode, sock, exts, id) ->
-        let p =
-          Peer.create_has_meta id bt.push meta (Requester.get_next_requests r)
-        in
+        let p = Peer.create_has_meta id bt.push meta (*  (Requester.get_next_requests r) *) in
         Lwt.async (fun () -> reader_loop bt.push sock p);
-        Peer.start p;
-        (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
         if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
         if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
         (* Peer.send_have_bitfield p (Torrent.have tor) *)
         (* FIXME *)
-        loop peers
+        loop (Peers.add id p peers)
 
     | NoEvent ->
         loop peers
@@ -390,14 +409,6 @@ let share_torrent bt meta dl peers =
 let load_torrent bt meta =
   Torrent.create meta bt.push (* >|= fun dl -> *)
 (* bt.push (TorrentLoaded dl) *)
-
-let welcome push mode fd exts id =
-  let p = Peer.create_no_meta id push in
-  Lwt.async (fun () -> reader_loop push fd p);
-  Peer.start p;
-  if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
-  if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
-  p
 
 let rec fetch_metadata bt =
   let rec loop peers m =

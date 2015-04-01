@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Cs = Nocrypto.Uncommon.Cs
+
 let section = Log.make_section "Peer"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
@@ -41,7 +43,6 @@ type addr = Unix.inet_addr * int
 type has_meta_info = {
   have : Bits.t;
   blame : Bits.t;
-  request : get_block_func;
   meta : Metadata.t
 }
 
@@ -68,10 +69,10 @@ and t = {
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
 
-  on_meta : unit Lwt_condition.t;
-  on_unchoke : unit Lwt_condition.t;
-  on_choke : unit Lwt_condition.t;
-  on_can_request : unit Lwt_condition.t;
+  (* on_meta : unit Lwt_condition.t; *)
+  (* on_unchoke : unit Lwt_condition.t; *)
+  (* on_choke : unit Lwt_condition.t; *)
+  (* on_can_request : unit Lwt_condition.t; *)
   on_stop : unit Lwt_condition.t;
 
   push : event -> unit;
@@ -88,7 +89,6 @@ and t = {
 }
 
 and event_callback = event -> unit
-and get_block_func = t -> int -> (int * int) list
 
 let string_of_node (id, (ip, port)) =
   Printf.sprintf "%s (%s:%d)" (SHA1.to_hex_short id) (Unix.string_of_inet_addr ip) port
@@ -155,7 +155,7 @@ let send_meta_piece p piece (len, s) =
         "piece", Bcode.Int (Int64.of_int piece);
         "total_size", Bcode.Int (Int64.of_int len) ]
     in
-    Nocrypto.Uncommon.Cs.(Bcode.encode (Bcode.Dict d) <+> s)
+    Cs.(Bcode.encode (Bcode.Dict d) <+> s)
   in
   send_extended p id m
 
@@ -269,7 +269,7 @@ let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
   p.piece_data_time <- Unix.time ();
   Rate.add p.download (Cstruct.len s);
-  Lwt_condition.broadcast p.on_can_request ();
+  (* Lwt_condition.broadcast p.on_can_request (); *)
   match p.info with
   | HasMeta info ->
       Bits.set info.blame idx;
@@ -436,8 +436,8 @@ let send_cancel p (i, j) =
   match p.info with
   | HasMeta n ->
       let i, ofs, len = Metadata.block n.meta i j in
-      send_message p (Wire.CANCEL (i, ofs, len));
-      Lwt_condition.broadcast p.on_can_request ()
+      send_message p (Wire.CANCEL (i, ofs, len))
+      (* Lwt_condition.broadcast p.on_can_request () *)
   | NoMeta _ ->
       failwith "send_cancel: no meta info"
 
@@ -459,66 +459,21 @@ let download_rate p = Rate.get p.download
 
 let reset_rates p = Rate.reset p.upload; Rate.reset p.download
 
-let request_blocks_loop p =
-  match p.info with
-  | HasMeta nfo ->
-      let rec loop () =
-        (* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *)
-        let ps = nfo.request p (request_pipeline_max - p.act_reqs) in
-        List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps;
-        Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest);
-                  (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>=
-        function
-        | `CanRequest -> loop ()
-        | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop
-      in
-      Lwt_condition.wait p.on_unchoke >>= loop
-  | NoMeta _ ->
-      failwith "Peer.request_loop: no meta info"
-
-(* let request_loop p = *)
-(*   Lwt.join [(request_metadata_loop p); *)
-(*             (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)] *)
-
-let start p =
-  (* let run_loop () = *)
-  (*   let wrap t = Lwt.pick [t; Lwt_condition.wait p.on_stop] in *)
-  (*   Lwt.catch *)
-  (*     (fun () -> Lwt.join [(\* wrap (reader_loop p); *\) *)
-  (*          wrap (writer_loop p); *)
-  (*          wrap (request_metadata_loop p); *)
-  (*          wrap (Lwt_condition.wait p.on_meta >>= fun () -> request_blocks_loop p)]) *)
-  (*     (fun exn -> *)
-  (*        debug ~exn "%s read/write error" (string_of_node p.node); *)
-  (*        Lwt.return ()) *)
-  (*   >>= fun () -> *)
-  (*   IO.close p.sock >|= fun () -> *)
-  (*   signal p (PeerDisconnected p.id) *)
-  (*   (\* ignore (IO.close p.sock); (\\* FIXME *\\) *\) *)
-  (*   (\* Lwt.return () *\) *)
-  (* in *)
-  (* Lwt.async run_loop; *)
-  (* FIXME FIXME *)
-  match p.info with
-  | HasMeta _ -> Lwt_condition.broadcast p.on_meta ()
-  | NoMeta _ -> ()
-
-let got_metadata p m get_next_requests =
-  match p.info with
-  | NoMeta nfo ->
-      let n = Metadata.piece_count m in
-      let have = Bits.create n in
-      if nfo.has_all then Bits.set_all have else List.iter (Bits.set have) nfo.have;
-      let info =
-        { have;
-          blame = Bits.create n;
-          request = get_next_requests;
-          meta = m }
-      in
-      p.info <- HasMeta info;
-      Lwt_condition.broadcast p.on_meta ()
-  | HasMeta _ ->
-      failwith "Peer.got_metadata: already has meta"
+(* let got_metadata p m get_next_requests = *)
+(*   match p.info with *)
+(*   | NoMeta nfo -> *)
+(*       let n = Metadata.piece_count m in *)
+(*       let have = Bits.create n in *)
+(*       if nfo.has_all then Bits.set_all have else List.iter (Bits.set have) nfo.have; *)
+(*       let info = *)
+(*         { have; *)
+(*           blame = Bits.create n; *)
+(*           meta = m } *)
+(*       in *)
+(*       p.info <- HasMeta info; *)
+(*       Lwt_condition.broadcast p.on_meta () *)
+(*   | HasMeta _ -> *)
+(*       failwith "Peer.got_metadata: already has meta" *)
 
 let create id push info =
   (* let output = IO.out_channel sock in *)
@@ -533,10 +488,10 @@ let create id push info =
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
       push;
-      on_meta = Lwt_condition.create ();
-      on_unchoke = Lwt_condition.create ();
-      on_choke = Lwt_condition.create ();
-      on_can_request = Lwt_condition.create ();
+      (* on_meta = Lwt_condition.create (); *)
+      (* on_unchoke = Lwt_condition.create (); *)
+      (* on_choke = Lwt_condition.create (); *)
+      (* on_can_request = Lwt_condition.create (); *)
       on_stop = Lwt_condition.create ();
       info;
       download = Rate.create ();
@@ -550,19 +505,16 @@ let create id push info =
 
 let create_no_meta id push =
   let info = NoMeta { have = []; has_all = false } in
-  let p = create id push info in
-  p
+  create id push info
 
-let create_has_meta id push m get_next_requests =
+let create_has_meta id push m =
   let npieces = Metadata.piece_count m in
   let info = HasMeta
       { have = Bits.create npieces;
         blame = Bits.create npieces;
-        request = get_next_requests; meta = m }
+        meta = m }
   in
-  let p = create id push info in
-  (* Lwt_condition.broadcast p.on_meta (); *)
-  p
+  create id push info
 
 let worked_on_piece p i =
   match p.info with
