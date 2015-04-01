@@ -19,8 +19,7 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module S = SHA1
-
+module S    = SHA1
 module Dh   = Nocrypto.Dh
 module Z    = Nocrypto.Numeric.Z
 module ARC4 = Nocrypto.Cipher_stream.ARC4

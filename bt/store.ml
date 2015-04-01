@@ -26,11 +26,9 @@ let failwith fmt = Printf.ksprintf failwith fmt
 let failwith_lwt fmt = Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
 let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
 
-type t = {
-  meta : Metadata.t;
-  descrs : (Lwt_unix.file_descr * int64) list;
-  lock : Lwt_mutex.t
-}
+type t =
+  { descrs : (Lwt_unix.file_descr * int64) list;
+    lock : Lwt_mutex.t }
 
 let rec get_chunks descrs offset size =
   let open Int64 in
@@ -104,10 +102,10 @@ let close self =
   Lwt_mutex.with_lock self.lock
     (fun () -> Lwt_list.iter_p (fun (fd, _) -> Lwt_unix.close fd) self.descrs)
 
-let create meta =
-  Metadata.map_files meta
-    (fun path size -> open_file path size >>= fun fd -> Lwt.return (fd, size)) >>= fun descrs ->
-  Lwt.return { meta; descrs; lock = Lwt_mutex.create () }
+let create files =
+  Lwt_list.map_s
+    (fun (path, size) -> open_file path size >>= fun fd -> Lwt.return (fd, size)) files >>= fun descrs ->
+  Lwt.return { descrs; lock = Lwt_mutex.create () }
 
 (* let add_file self path size = *)
 (*   open_file path size >>= fun fd -> *)

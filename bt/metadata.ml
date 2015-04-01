@@ -249,8 +249,8 @@ let hash m i =
 let block m i j =
   (i, j * m.block_size, block_size m i j)
 
-let map_files m f =
-  Lwt_list.map_s (fun fi -> f fi.file_path fi.file_size) m.files
+let files m =
+  List.map (fun fi -> fi.file_path, fi.file_size) m.files
 
 let block_number m _ off =
   off / m.block_size

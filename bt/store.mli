@@ -27,7 +27,7 @@
 
 type t
 
-val create : Metadata.t -> t Lwt.t
+val create : (string list * int64) list -> t Lwt.t
 (** Creates a store to access the files specified in
     the given metainfo dictionary. *)
 

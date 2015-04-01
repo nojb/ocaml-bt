@@ -44,7 +44,7 @@ type t = {
 
 let create meta handle =
   let numpieces = Metadata.piece_count meta in
-  Store.create meta >>= fun store ->
+  Store.create (Metadata.files meta) >>= fun store ->
   let dl = {
     meta; store;
     completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));

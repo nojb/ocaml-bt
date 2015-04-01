@@ -69,5 +69,4 @@ val hash : t -> int -> SHA1.t
 val block : t -> int -> int -> int * int * int
 (** The piece/ofs/len corresponding to the given piece/block. *)
 
-val map_files : t -> (string list -> int64 -> 'a Lwt.t) -> 'a list Lwt.t
-(** Maps the file list found in the metainfo dictionary. *)
+val files : t -> (string list * int64) list
