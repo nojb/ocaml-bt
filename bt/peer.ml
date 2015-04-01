@@ -353,11 +353,11 @@ let send_request p (i, ofs, len) =
 (*   in *)
 (*   loop () *)
 
-let supports_ut_metadata p =
-  Hashtbl.mem p.extensions "ut_metadata"
+let ut_pex = "ut_pex"
+let ut_metadata = "ut_metadata"
 
-let supports_ut_pex p =
-  Hashtbl.mem p.extensions "ut_pex"
+let supports p name =
+  Hashtbl.mem p.extensions name
 
 let id p =
   p.id
@@ -607,7 +607,7 @@ let send_ut_pex p added dropped =
     (* (List.length added) (List.length dropped) *)
 
 let send_pex p pex =
-  if supports_ut_pex p then begin
+  if supports p ut_pex then begin
     let added = List.filter (fun a -> not (List.mem a p.last_pex)) pex in
     let dropped = List.filter (fun a -> not (List.mem a pex)) p.last_pex in
     send_ut_pex p added dropped;
@@ -621,6 +621,3 @@ let is_snubbing p =
 let to_string p =
   SHA1.to_hex_short p.id
   (* string_of_node p.node *)
-
-(* let sock p = *)
-(*   p.sock *)

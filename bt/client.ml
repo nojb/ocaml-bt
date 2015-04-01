@@ -391,24 +391,6 @@ let load_torrent bt meta =
   Torrent.create meta bt.push (* >|= fun dl -> *)
 (* bt.push (TorrentLoaded dl) *)
 
-(* let request_metadata_loop p = *)
-(*   let rec loop () = *)
-(*     match p.info with *)
-(*     | HasMeta _ -> *)
-(*         Lwt.return () *)
-(*     | NoMeta nfo -> *)
-(*         if supports_ut_metadata p then begin *)
-(*           begin match nfo.request p with *)
-(*           | Some i -> request_meta_piece p i *)
-(*           | None -> () *)
-(*           end; *)
-(*           Lwt_unix.sleep 1.0 >>= loop *)
-(*         end *)
-(*         else *)
-(*           Lwt_condition.wait p.on_ltep_handshake >>= loop *)
-(*   in *)
-(*   Lwt.pick [Lwt_condition.wait p.on_meta; loop ()] *)
-
 let welcome push mode fd exts id =
   let p = Peer.create_no_meta id push in
   Lwt.async (fun () -> reader_loop push fd p);
@@ -478,20 +460,6 @@ let rec fetch_metadata bt =
     | None, GotMetaPiece _ ->
         loop peers m
 
-    | _, PieceVerified _
-    | _, PieceFailed _
-    | _, TorrentComplete
-    | _, Unchoked _
-    | _, Choked _
-    | _, Interested _
-    | _, NotInterested _
-    | _, Have _
-    | _, HaveBitfield _
-    | _, RejectMetaPiece _
-    | _, BlockRequested _
-    | _, BlockReceived _ ->
-        loop peers m
-
     | _, GotPEX (p, added, dropped) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
@@ -511,6 +479,18 @@ let rec fetch_metadata bt =
         (* FIXME *)
         loop peers m
 
+    | _, PieceVerified _
+    | _, PieceFailed _
+    | _, TorrentComplete
+    | _, Unchoked _
+    | _, Choked _
+    | _, Interested _
+    | _, NotInterested _
+    | _, Have _
+    | _, HaveBitfield _
+    | _, RejectMetaPiece _
+    | _, BlockRequested _
+    | _, BlockReceived _
     | _, NoEvent ->
         loop peers m
   in
