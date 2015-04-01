@@ -53,7 +53,7 @@ val peer_interested : t -> bool
 val am_choking : t -> bool
 (** Whether we are choking this peer. *)
 
-val client_interested : t -> bool
+val am_interested : t -> bool
 (** Whether we are interested in this peer. *)
 
 val has_piece : t -> int -> bool

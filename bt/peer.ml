@@ -386,7 +386,7 @@ let have p =
 let am_choking p =
   p.am_choking
 
-let client_interested p =
+let am_interested p =
   p.am_interested
 
 let send_choke p =
