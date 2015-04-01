@@ -409,6 +409,14 @@ let load_torrent bt meta =
 (*   in *)
 (*   Lwt.pick [Lwt_condition.wait p.on_meta; loop ()] *)
 
+let welcome push mode fd exts id =
+  let p = Peer.create_no_meta id push in
+  Lwt.async (fun () -> reader_loop push fd p);
+  Peer.start p;
+  if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
+  if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
+  p
+
 let rec fetch_metadata bt =
   let rec loop peers m =
     Lwt_stream.next bt.chan >>= fun e ->
@@ -430,13 +438,13 @@ let rec fetch_metadata bt =
         Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
         loop peers m
 
-    | _, PeerConnected (mode, sock, exts, id) ->
-        let p = Peer.create_no_meta id bt.push in
-        Lwt.async (fun () -> reader_loop bt.push sock p);
-        Peer.start p;
-        (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
-        if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
-        if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
+    | None, PeerConnected (mode, fd, exts, id) ->
+        let p = welcome bt.push mode fd exts id in
+        loop (Peers.add id p peers) m
+
+    | Some m', PeerConnected (mode, fd, exts, id) ->
+        let p = welcome bt.push mode fd exts id in
+        IncompleteMetadata.iter_missing (Peer.request_meta_piece p) m';
         loop (Peers.add id p peers) m
 
     | _, PeerDisconnected id ->

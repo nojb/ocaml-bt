@@ -47,3 +47,9 @@ let add m n buf =
         `Failed
   | false ->
       `More
+
+let iter_missing f m =
+  for i = 0 to Bits.length m.pieces - 1 do
+    if not (Bits.is_set m.pieces i) then
+      f i
+  done

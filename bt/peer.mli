@@ -82,6 +82,8 @@ val has_piece : t -> int -> bool
 val have : t -> Bits.t
 (** The bitfield of pieces this peer has. *)
 
+val request_meta_piece : t -> int -> unit
+
 val send_choke : t -> unit
 (** Send a CHOKE message.  If the peer is already choked, do not send
     anything. *)

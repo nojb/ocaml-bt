@@ -26,3 +26,5 @@ type t
 val create : info_hash:SHA1.t -> length:int -> t
 
 val add : t -> int -> Cstruct.t -> [ `Failed | `Verified of Cstruct.t | `More ]
+
+val iter_missing : (int -> unit) -> t -> unit
