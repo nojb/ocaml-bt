@@ -11,10 +11,8 @@ Tracker
 Util
 Torrent
 PeerMgr
-Choker
 Client
 Rate
 Wire
 Handshake
-Requester
 Event

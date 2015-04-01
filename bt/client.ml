@@ -23,20 +23,22 @@ module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
 let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
 
 let listen_ports = [50000]
+let choke_timeout = 5.
+let rechoke_interval = 10.
+let rechoke_optimistic_duration = 2
+let rechoke_slots = 10
 
 open Event
 
-type t = {
-  id : SHA1.t;
-  ih : SHA1.t;
-  trackers : Uri.t list;
-  peer_mgr : PeerMgr.swarm;
-  chan : event Lwt_stream.t;
-  push : event -> unit
-}
+type t =
+  { id : SHA1.t;
+    ih : SHA1.t;
+    trackers : Uri.t list;
+    peer_mgr : PeerMgr.swarm;
+    chan : event Lwt_stream.t;
+    push : event -> unit }
 
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
@@ -46,7 +48,8 @@ let extensions =
   Bits.set bits Wire.dht_bit;
   Cstruct.of_string @@ Bits.to_bin bits
 
-let handshake_len = Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
+let handshake_len =
+  Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
 
 let handshake_message peer_id info_hash =
   Cs.concat [ proto; extensions; SHA1.to_raw info_hash; SHA1.to_raw peer_id ]
@@ -133,7 +136,7 @@ let buf_size = 1024
 let reader_loop push fd p =
   let buf = Cstruct.create buf_size in
   let rec loop r =
-    Lwt_unix.with_timeout (float Peer.keepalive_delay)
+    Lwt_unix.with_timeout Peer.keepalive_delay
       (fun () -> Lwt_cstruct.read fd buf) >>= function
     | 0 ->
         failwith "eof"
@@ -149,26 +152,17 @@ let reader_loop push fd p =
        push (PeerDisconnected (Peer.id p));
        Lwt_unix.close fd)
 
-(* let writer_loop p = *)
-(*   let rec loop () = *)
-(*     Lwt.pick *)
-(*       [(Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout); *)
-(*        (\* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *\) *)
-(*        (next_to_send p >|= fun msg -> `Ready msg)] *)
-(*     >>= function *)
-(*     | `Timeout -> *)
-(*         Wire.write p.output Wire.KEEP_ALIVE >>= fun () -> *)
-(*         Lwt_io.flush p.output >>= loop *)
-(*     (\* | `Stop -> *\) *)
-(*     (\* Lwt.return_unit *\) *)
-(*     | `Ready m -> *)
-(*         Wire.write p.output m >>= fun () -> *)
-(*         Lwt_io.flush p.output >>= fun () -> *)
-(*         debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m); *)
-(*         (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (Cstruct.len s) | _ -> ()); *)
-(*         loop () *)
-(*   in *)
-(*   loop () *)
+let writer_loop fd =
+  let ss, send = Lwt_stream.create () in
+  let rec loop () =
+    Lwt.pick
+      [ (Lwt_stream.next ss);
+        (Lwt_unix.sleep Peer.keepalive_delay >>= fun () -> Lwt.return Wire.KEEP_ALIVE) ]
+    >>= fun m ->
+    Lwt_cstruct.complete
+      (Lwt_cstruct.write fd) (Util.W.to_cstruct @@ Wire.writer m) >>= loop
+  in
+  loop (), (fun x -> send (Some x))
 
 (* let request_blocks_loop p = *)
 (*   match p.info with *)
@@ -186,35 +180,6 @@ let reader_loop push fd p =
 (*       Lwt_condition.wait p.on_unchoke >>= loop *)
 (*   | NoMeta _ -> *)
 (*       failwith "Peer.request_loop: no meta info" *)
-
-  (*   Lwt.pick *)
-  (*     [(Lwt_stream.next input >|= fun x -> `Ok x); *)
-  (*      (\* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *\) *)
-  (*      (Lwt_unix.sleep (float Peer.keepalive_delay) >|= fun () -> `Timeout)] *)
-  (*   >>= function *)
-  (*   | `Ok x -> *)
-  (*       begin match f x with *)
-  (*       | None -> *)
-  (*           loop f *)
-  (*       | Some e -> *)
-  (*           bt.push e; *)
-  (*           loop f *)
-  (*       end *)
-  (*   (\* | `Stop -> Lwt.return () *\) *)
-  (*   | `Timeout -> Lwt.fail Peer.Timeout *)
-  (* in *)
-  (* loop (Peer.got_message p) *)
-
-(* let handle_torrent_event bt = function *)
-(*   | Torrent.TorrentComplete -> *)
-(*       debug "torrent completed!"; *)
-(*       begin match bt.stage with *)
-(*       | HasMeta (meta, Leeching (t, ch, _)) -> *)
-(*           (\* FIXME stop requester ? *\) *)
-(*           bt.stage <- HasMeta (meta, Seeding (t, ch)) *)
-(*       | _ -> *)
-(*           () *)
-(*       end *)
 
   (* | TorrentLoaded dl -> *)
   (*         (\* debug "torrent loaded (good=%d,total=%d)" *\) *)
@@ -268,97 +233,142 @@ let announce ~info_hash url push id =
     (fun () -> announce ~info_hash url push id)
     (fun exn -> (* debug ~exn "announce failure"; *) Lwt.return_unit)
 
-module Peers = Map.Make (SHA1)
-
 let am_choking peers id =
   try
-    let p = Peers.find id peers in
+    let p = Hashtbl.find peers id in
     Peer.am_choking p
   with
   | Not_found -> true
 
 let peer_interested peers id =
   try
-    let p = Peers.find id peers in
+    let p = Hashtbl.find peers id in
     Peer.peer_interested p
   with
   | Not_found -> false
 
 let welcome push mode fd exts id =
   let p = Peer.create_no_meta id in
-  Lwt.async (fun () -> reader_loop push fd p);
-  if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
-  if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
-  p
+  let _ = reader_loop push fd p in
+  let _, send = writer_loop fd in
+  send @@ Peer.extended_handshake p;
+  (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
+  p, send
+
+let rechoke_compare (_, p1, salt1) (_, p2, salt2) =
+  if Peer.download_speed p1 <> Peer.download_speed p2 then
+    compare (Peer.download_speed p2) (Peer.download_speed p1)
+  else
+  if Peer.upload_speed p1 <> Peer.upload_speed p2 then
+    compare (Peer.upload_speed p2) (Peer.upload_speed p1)
+  else
+  if Peer.am_choking p1 <> Peer.am_choking p2 then
+    compare (Peer.am_choking p1) (Peer.am_choking p2)
+  else
+    compare salt1 salt2
+
+let rechoke peers send =
+  (* let rec loop opt = *)
+  (*   let wires = *)
+  (*     let add id p wires = *)
+  (*       match opt with *)
+  (*       | Some opt when id = opt -> *)
+  (*           wires *)
+  (*       | _ -> *)
+  (*           (id, p, Random.int max_int) :: wires *)
+  (*     in *)
+  (*     Hashtbl.fold add peers [] *)
+  (*   in *)
+
+  (*   List.iter (fun (id, p) -> if is_seeder id then choke id) wires; *)
+
+  (*   let wires = List.sort rechoke_compare wires in *)
+
+  (*   let rec select n acc = function *)
+  (*     | (_, w) :: wires when n < rechoke_slots -> *)
+  (*         let n = if interested w then n + 1 else n in *)
+  (*         select n (w :: acc) wires *)
+
+  (*     | wires -> *)
+  (*         begin match opt with *)
+  (*         | Some opt -> *)
+  (*             acc, wires *)
+  (*         | None -> *)
+  (*             let wires = List.filter (fun w -> interested w) wires in *)
+  (*             if List.length wires > 0 then *)
+  (*               let opt = List.nth wires (Random.int (List.length wires)) in *)
+  (*         end *)
+  (*   in *)
+  (*   let unchoke, choke = loop 0 [] wires in *)
+  (*   unchoke unchoke, choke choke *)
+  0
 
 let share_torrent bt meta dl peers =
-  let ch = Choker.create bt.peer_mgr dl in
-  let r = Requester.create meta dl in
-  Peers.iter (fun _ p -> Requester.got_bitfield r (Peer.have p)) peers;
-  Choker.start ch;
-  let rec loop peers =
+  (* let r = Requester.create meta dl in *)
+  (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
+  let rec loop () =
     Lwt_stream.next bt.chan >>= function
     | PeersReceived addrs ->
         (* debug "received %d peers" (List.length addrs); *)
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
-        loop peers
+        loop ()
 
     | PieceVerified i ->
         (* debug "piece %d verified and written to disk" i; *)
         (* PeerMgr.got_piece bt.peer_mgr i; *)
-        Requester.got_piece r i;
-        loop peers
+        (* Requester.got_piece r i; *)
+        loop ()
 
     | PieceFailed i ->
         (* Announcer.add_bytes *)
         (* debug "piece %d failed hashcheck" i; *)
-        Requester.got_bad_piece r i;
+        (* Requester.got_bad_piece r i; *)
         (* PeerMgr.got_bad_piece bt.peer_mgr i; *)
-        loop peers
+        loop ()
 
     | ConnectFailed addr ->
         bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
-        loop peers
+        loop ()
 
     | PeerDisconnected id ->
         bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
-        if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch;
+        (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
         (* Requester.peer_declined_all_requests r id; FIXME FIXME *)
         (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
-        loop peers
+        loop ()
 
     | ConnectPeer (addr, timeout) ->
         Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
-        loop peers
+        loop ()
 
     | Choked _ ->
         (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
-        loop peers
+        loop ()
 
     | Unchoked _ ->
-        loop peers
+        loop ()
 
     | Interested id
     | NotInterested id ->
-        if not (am_choking peers id) then Choker.rechoke ch;
-        loop peers
+        (* if not (am_choking peers id) then Choker.rechoke ch; *)
+        loop ()
 
     | Have (p, i) ->
-        Requester.got_have r i;
-        loop peers
+        (* Requester.got_have r i; *)
+        loop ()
 
     | HaveBitfield (p, b) ->
-        Requester.got_bitfield r b;
-        loop peers
+        (* Requester.got_bitfield r b; *)
+        loop ()
 
     | MetaRequested (p, i) ->
         (* Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i); *)
         (* FIXME FIXME *)
-        loop peers
+        loop ()
 
     | GotMetaPiece _
     | RejectMetaPiece _ ->
-        loop peers
+        loop ()
 
     | BlockRequested (p, idx, b) ->
         (* if Torrent.has_piece dl idx then begin *)
@@ -366,7 +376,7 @@ let share_torrent bt meta dl peers =
         (*   Lwt.async aux *)
         (* end; *)
         (* FIXME FIXME *)
-        loop peers
+        loop ()
 
     | BlockReceived (p, idx, b, s) ->
         (* FIXME *)
@@ -376,13 +386,13 @@ let share_torrent bt meta dl peers =
         (* Requester.got_block r p idx b; *)
         (* Torrent.got_block t p idx b s; *)
         (* FIXME FIXME *)
-        loop peers
+        loop ()
 
     | GotPEX (p, added, dropped) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
         List.iter (fun (addr, _) -> bt.push (PeerMgr.add bt.peer_mgr addr)) added;
-        loop peers
+        loop ()
 
     | DHTPort _ ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
@@ -395,69 +405,76 @@ let share_torrent bt meta dl peers =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end; *)
         (* FIXME *)
-        loop peers
+        loop ()
 
     | PeerConnected (mode, sock, exts, id) ->
-        let p = Peer.create_has_meta id meta (*  (Requester.get_next_requests r) *) in
-        Lwt.async (fun () -> reader_loop bt.push sock p);
-        if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
-        if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
-        (* Peer.send_have_bitfield p (Torrent.have tor) *)
-        (* FIXME *)
-        loop (Peers.add id p peers)
+        let p, send = welcome bt.push mode sock exts id in
+        (* let p = Peer.create_has_meta id meta (\*  (Requester.get_next_requests r) *\) in *)
+        (* Lwt.async (fun () -> reader_loop bt.push sock p); *)
+        (* if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p; *)
+        (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
+        (* (\* Peer.send_have_bitfield p (Torrent.have tor) *\) *)
+        (* (\* FIXME *\) *)
+        Hashtbl.replace peers id p;
+        loop ()
 
     | AvailableMetadata _
     | NoEvent ->
-        loop peers
+        loop ()
   in
-  loop peers
+  loop ()
 
 let load_torrent bt meta =
   Torrent.create meta bt.push (* >|= fun dl -> *)
 (* bt.push (TorrentLoaded dl) *)
 
 let rec fetch_metadata bt =
-  let rec loop peers m =
+  let peers = Hashtbl.create 20 in
+  let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
     match m, e with
     | None, AvailableMetadata (p, len) ->
         (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
         (* FIXME *)
         let m = IncompleteMetadata.create bt.ih len in
-        loop peers (Some m)
+        loop (Some m)
     | Some _, AvailableMetadata _ ->
-        loop peers m
+        loop m
 
     | _, PeersReceived addrs ->
         (* debug "received %d peers" (List.length addrs); *)
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
-        loop peers m
+        loop m
 
     | _, ConnectPeer (addr, timeout) ->
         Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
-        loop peers m
+        loop m
 
     | None, PeerConnected (mode, fd, exts, id) ->
-        let p = welcome bt.push mode fd exts id in
-        loop (Peers.add id p peers) m
+        let p, send = welcome bt.push mode fd exts id in
+        Hashtbl.replace peers id (p, send);
+        loop m
 
     | Some m', PeerConnected (mode, fd, exts, id) ->
-        let p = welcome bt.push mode fd exts id in
-        IncompleteMetadata.iter_missing (Peer.request_meta_piece p) m';
-        loop (Peers.add id p peers) m
+        let p, send = welcome bt.push mode fd exts id in
+        IncompleteMetadata.iter_missing
+          (fun i -> send @@ Peer.request_meta_piece p i) m';
+        Hashtbl.replace peers id (p, send);
+        loop m
 
     | _, PeerDisconnected id ->
         bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
-        loop (Peers.remove id peers) m
+        Hashtbl.remove peers id;
+        loop m
 
     | _, ConnectFailed addr ->
         bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
-        loop peers m
+        loop m
 
     | _, MetaRequested (id, _) ->
         (* Peer.send_reject_meta p i; *)
         (* FIXME *)
-        loop peers m
+        loop m
 
     | Some m', GotMetaPiece (p, i, s) ->
         (* debug "got metadata piece %d/%d from %s" i *)
@@ -465,23 +482,23 @@ let rec fetch_metadata bt =
         begin match IncompleteMetadata.add m' i s with
         | `Failed ->
             (* debug "metadata hash check failed; trying again"; *)
-            loop peers None
+            loop None
         | `Verified raw ->
               (* debug "got full metadata"; *)
             let m' = Metadata.create (Bcode.decode raw) in
             Lwt.return m'
         | `More ->
-            loop peers m
+            loop m
         end
 
     | None, GotMetaPiece _ ->
-        loop peers m
+        loop m
 
     | _, GotPEX (p, added, dropped) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
         List.iter (fun (addr, _) -> bt.push (PeerMgr.add bt.peer_mgr addr)) added;
-        loop peers m
+        loop m
 
     | _, DHTPort (p, i) ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
@@ -494,7 +511,7 @@ let rec fetch_metadata bt =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end *)
         (* FIXME *)
-        loop peers m
+        loop m
 
     | _, PieceVerified _
     | _, PieceFailed _
@@ -509,9 +526,9 @@ let rec fetch_metadata bt =
     | _, BlockRequested _
     | _, BlockReceived _
     | _, NoEvent ->
-        loop peers m
+        loop m
   in
-  loop Peers.empty None
+  loop None
 
 let start bt =
   List.iter (fun tier -> Lwt.async (fun () -> announce ~info_hash:bt.ih tier bt.push bt.id)) bt.trackers;

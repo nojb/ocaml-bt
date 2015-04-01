@@ -21,7 +21,7 @@
 
 module Cs = Nocrypto.Uncommon.Cs
 
-let keepalive_delay = 20 (* FIXME *)
+let keepalive_delay = 20. (* FIXME *)
 let request_pipeline_max = 5
 let info_piece_size = 16 * 1024
 let default_block_size = 16 * 1024
@@ -32,11 +32,10 @@ open Event
 
 type addr = Unix.inet_addr * int
 
-type has_meta_info = {
-  have : Bits.t;
-  blame : Bits.t;
-  meta : Metadata.t
-}
+type has_meta_info =
+  { have : Bits.t;
+    blame : Bits.t;
+    meta : Metadata.t }
 
 and no_meta_info =
   { mutable have : int list;
@@ -46,33 +45,32 @@ and meta_info =
   | HasMeta of has_meta_info
   | NoMeta of no_meta_info
 
-and t = {
-  id : SHA1.t;
-  mutable am_choking : bool;
-  mutable am_interested : bool;
-  mutable peer_choking : bool;
-  mutable peer_interested : bool;
-  extbits : Bits.t;
-  extensions : (string, int) Hashtbl.t;
+and t =
+  { id : SHA1.t;
+    mutable am_choking : bool;
+    mutable am_interested : bool;
+    mutable peer_choking : bool;
+    mutable peer_interested : bool;
+    extbits : Bits.t;
+    extensions : (string, int) Hashtbl.t;
 
-  mutable act_reqs : int;
-  mutable strikes : int;
+    mutable act_reqs : int;
+    mutable strikes : int;
 
-  send_queue : Wire.message Lwt_sequence.t;
-  send_waiters : Wire.message Lwt.u Lwt_sequence.t;
+    (* send_queue : Wire.message Lwt_sequence.t; *)
+    (* send_waiters : Wire.message Lwt.u Lwt_sequence.t; *)
 
-  on_stop : unit Lwt_condition.t;
+    on_stop : unit Lwt_condition.t;
 
-  mutable info : meta_info;
+    mutable info : meta_info;
 
-  mutable upload : Rate.t;
-  mutable download : Rate.t;
+    mutable upload : Rate.t;
+    mutable download : Rate.t;
 
-  mutable time : float;
-  mutable piece_data_time : float;
+    mutable time : float;
+    mutable piece_data_time : float;
 
-  mutable last_pex : (* Addr.t *) addr list
-}
+    mutable last_pex : (* Addr.t *) addr list }
 
 and event_callback = event -> unit
 
@@ -82,29 +80,18 @@ let string_of_node (id, (ip, port)) =
 let strl f l =
   "[" ^ String.concat " " (List.map f l) ^ "]"
 
-let next_to_send p =
-  if Lwt_sequence.length p.send_queue > 0 then
-    Lwt.return (Lwt_sequence.take_l p.send_queue)
-  else
-    Lwt.add_task_r p.send_waiters
-
-let send_message p m =
-  if Lwt_sequence.length p.send_waiters > 0 then begin
-    assert (Lwt_sequence.is_empty p.send_queue);
-    Lwt.wakeup (Lwt_sequence.take_l p.send_waiters) m
-  end
-  else
-    ignore (Lwt_sequence.add_r m p.send_queue)
-
-let send_extended p id s =
-  send_message p (Wire.EXTENDED (id, s))
+(* let next_to_send p = *)
+(*   if Lwt_sequence.length p.send_queue > 0 then *)
+(*     Lwt.return (Lwt_sequence.take_l p.send_queue) *)
+(*   else *)
+(*     Lwt.add_task_r p.send_waiters *)
 
 let send_block p i b s =
   match p.info with
   | HasMeta info ->
       let i, o, l = Metadata.block info.meta i b in
       assert (l = String.length s);
-      send_message p (Wire.PIECE (i, o, Cstruct.of_string s))
+      Wire.PIECE (i, o, Cstruct.of_string s)
   | _ ->
       assert false
 
@@ -128,7 +115,7 @@ let send_reject_meta p piece =
     let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
     Bcode.encode (Bcode.Dict d)
   in
-  send_extended p id m
+  Wire.EXTENDED (id, m)
 
 let send_meta_piece p piece (len, s) =
   let id = Hashtbl.find p.extensions "ut_metadata" in
@@ -140,7 +127,7 @@ let send_meta_piece p piece (len, s) =
     in
     Cs.(Bcode.encode (Bcode.Dict d) <+> s)
   in
-  send_extended p id m
+  Wire.EXTENDED (id, m)
 
 let got_ut_pex p data =
   (* FIXME support for IPv6 *)
@@ -179,8 +166,7 @@ let got_ut_pex p data =
     in
     loop 0
   in
-  let dropped = loop dropped in
-  GotPEX (p.id, List.combine added added_f, dropped)
+  GotPEX (p.id, List.combine added added_f, loop dropped)
 
 let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata);
@@ -249,12 +235,13 @@ let got_have p idx =
         NoEvent
 
 let got_cancel p i ofs len =
-  Lwt_sequence.iter_node_l (fun n ->
-    match Lwt_sequence.get n with
-    | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && Cstruct.len s = len ->
-        Lwt_sequence.remove n
-    | _ ->
-        ()) p.send_queue;
+  (* Lwt_sequence.iter_node_l (fun n -> *)
+  (*   match Lwt_sequence.get n with *)
+  (*   | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && Cstruct.len s = len -> *)
+  (*       Lwt_sequence.remove n *)
+  (*   | _ -> *)
+  (*       ()) p.send_queue; *)
+  (* FIXME broadcast event *)
   NoEvent
 
 let got_piece p idx off s =
@@ -322,7 +309,7 @@ let got_message p m =
 
 let send_request p (i, ofs, len) =
   p.act_reqs <- p.act_reqs + 1;
-  send_message p (Wire.REQUEST (i, ofs, len))
+  Wire.REQUEST (i, ofs, len)
 
 let ut_pex = "ut_pex"
 let ut_metadata = "ut_metadata"
@@ -333,13 +320,13 @@ let supports p name =
 let id p =
   p.id
 
-let send_extended_handshake p =
+let extended_handshake p =
   let m =
     List.map (fun (id, (name, _)) ->
       name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.Dict ["m", Bcode.Dict m] in
-  send_extended p 0 @@ Bcode.encode m
+  Wire.EXTENDED (0, Bcode.encode m)
 
 let peer_choking p =
   p.peer_choking
@@ -353,7 +340,7 @@ let has_piece p idx =
   | HasMeta nfo -> Bits.is_set nfo.have idx
   | NoMeta nfo -> nfo.has_all || List.mem idx nfo.have
 
-let have p =
+let has p =
   match p.info with
   | HasMeta nfo -> Bits.copy nfo.have
   | NoMeta _ -> failwith "Peer.have: no meta info"
@@ -364,51 +351,62 @@ let am_choking p =
 let am_interested p =
   p.am_interested
 
-let send_choke p =
-  if not p.am_choking then begin
-    p.am_choking <- true;
-    (* debug "choking %s" (string_of_node p.node); *)
-    send_message p Wire.CHOKE
-  end
+let choke p =
+  match p.am_choking with
+  | false ->
+      p.am_choking <- true;
+      (* debug "choking %s" (string_of_node p.node); *)
+      Wire.CHOKE
+  | true ->
+      Wire.KEEP_ALIVE
 
-let send_unchoke p =
-  if p.am_choking then begin
-    p.am_choking <- false;
-    (* debug "no longer choking %s" (string_of_node p.node); *)
-    send_message p Wire.UNCHOKE
-  end
+let unchoke p =
+  match p.am_choking with
+  | true ->
+      p.am_choking <- false;
+      (* debug "no longer choking %s" (string_of_node p.node); *)
+      Wire.UNCHOKE
+  | false ->
+      Wire.KEEP_ALIVE
 
-let send_interested p =
-  if not p.am_interested then begin
-    p.am_interested <- true;
-    (* debug "interested in %s" (string_of_node p.node); *)
-    send_message p Wire.INTERESTED
-  end
+let interested p =
+  match p.am_interested with
+  | false ->
+      p.am_interested <- true;
+      (* debug "interested in %s" (string_of_node p.node); *)
+      Wire.INTERESTED
+  | true ->
+      Wire.KEEP_ALIVE
 
-let send_not_interested p =
-  if p.am_interested then begin
-    p.am_interested <- false;
-    (* debug "no longer interested in %s" (string_of_node p.node); *)
-    send_message p Wire.NOT_INTERESTED
-  end
+let not_interested p =
+  match p.am_interested with
+  | true ->
+      p.am_interested <- false;
+      (* debug "no longer interested in %s" (string_of_node p.node); *)
+      Wire.NOT_INTERESTED
+  | false ->
+      Wire.KEEP_ALIVE
 
-let send_have p idx =
-  if not (has_piece p idx) then
-    send_message p (Wire.HAVE idx)
+let have p idx =
+  match has_piece p idx with
+  | false ->
+      Wire.HAVE idx
+  | true ->
+      Wire.KEEP_ALIVE
 
-let send_have_bitfield p bits =
-  send_message p (Wire.BITFIELD bits)
+let have_bitfield p bits =
+  Wire.BITFIELD bits
 
 let send_cancel p (i, j) =
   match p.info with
   | HasMeta n ->
       let i, ofs, len = Metadata.block n.meta i j in
-      send_message p (Wire.CANCEL (i, ofs, len))
+      Wire.CANCEL (i, ofs, len)
   | NoMeta _ ->
       failwith "send_cancel: no meta info"
 
 let send_port p i =
-  send_message p (Wire.PORT i)
+  Wire.PORT i
 
 let request_meta_piece p idx =
   assert (idx >= 0);
@@ -418,7 +416,7 @@ let request_meta_piece p idx =
     [ "msg_type", Bcode.Int 0L;
       "piece", Bcode.Int (Int64.of_int idx) ]
   in
-  send_extended p id @@ Bcode.encode (Bcode.Dict d)
+  Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
 let upload_rate p = Rate.get p.upload
 let download_rate p = Rate.get p.download
@@ -432,8 +430,8 @@ let create id info =
     extbits = Bits.create (8 * 8);
     extensions = Hashtbl.create 3;
     act_reqs = 0;
-    send_queue = Lwt_sequence.create ();
-    send_waiters = Lwt_sequence.create ();
+    (* send_queue = Lwt_sequence.create (); *)
+    (* send_waiters = Lwt_sequence.create (); *)
     on_stop = Lwt_condition.create ();
     info;
     download = Rate.create ();
@@ -502,7 +500,7 @@ let send_ut_pex p added dropped =
       "added.f", Bcode.String added_f;
       "dropped", Bcode.String (c dropped) ]
   in
-  send_extended p id @@ Bcode.encode (Bcode.Dict d)
+  Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
   (* debug "sent pex to %s added %d dropped %d" (string_of_node p.node) *)
     (* (List.length added) (List.length dropped) *)
 
@@ -521,3 +519,9 @@ let is_snubbing p =
 let to_string p =
   SHA1.to_hex_short p.id
   (* string_of_node p.node *)
+
+let download_speed p =
+  0.0
+
+let upload_speed p =
+  0.0

@@ -25,7 +25,7 @@ type t
 
 type addr = Unix.inet_addr * int
 
-val keepalive_delay : int
+val keepalive_delay : float
 
 exception Timeout
 
@@ -40,7 +40,7 @@ val create_no_meta : SHA1.t -> t
 val id : t -> SHA1.t
 (** The peer ID. *)
 
-val send_extended_handshake : t -> unit
+val extended_handshake : t -> Wire.message
 (** Send LTEP handshake.  Currently supported extension are [ut_metadata] and
     [ut_pex]. *)
 
@@ -59,47 +59,47 @@ val am_interested : t -> bool
 val has_piece : t -> int -> bool
 (** Whether this peer has a particular piece. *)
 
-val have : t -> Bits.t
+val has : t -> Bits.t
 (** The bitfield of pieces this peer has. *)
 
-val request_meta_piece : t -> int -> unit
+val request_meta_piece : t -> int -> Wire.message
 
-val send_choke : t -> unit
+val choke : t -> Wire.message
 (** Send a CHOKE message.  If the peer is already choked, do not send
     anything. *)
 
-val send_unchoke : t -> unit
+val unchoke : t -> Wire.message
 (** Send an UNCHOKE message.  If the peer is already unchoked, do not send
     anything. *)
 
-val send_interested : t -> unit
+val interested : t -> Wire.message
 (** Send a INTERESTED command.  If we are already interested in this peer, do
     not send anything. *)
 
-val send_not_interested : t -> unit
+val not_interested : t -> Wire.message
 (** Send a NOT_INTERESTED message.  If we are already not interested in this
     peer, do not send anything. *)
 
-val send_have : t -> int -> unit
+val have : t -> int -> Wire.message
 (** Send a HAVE message.  If this peer already has the piece, do not send
     anything. *)
 
-val send_have_bitfield : t -> Bits.t -> unit
+val have_bitfield : t -> Bits.t -> Wire.message
 (** Send a BITFIELD message. *)
 
-val send_cancel : t -> int * int -> unit
+val send_cancel : t -> int * int -> Wire.message
 (** Send a CANCEL message. *)
 
-val send_port : t -> int -> unit
+val send_port : t -> int -> Wire.message
 (** Send a PORT message (used for DHT). *)
 
-val send_reject_meta : t -> int -> unit
+val send_reject_meta : t -> int -> Wire.message
 (** Reject a request for a metainfo piece. *)
 
-val send_meta_piece : t -> int -> int * Cstruct.t -> unit
+val send_meta_piece : t -> int -> int * Cstruct.t -> Wire.message
 (** Send a metainfo piece. *)
 
-val send_block : t -> int -> int -> string -> unit
+val send_block : t -> int -> int -> string -> Wire.message
 (** Send a block. *)
 
 val upload_rate : t -> float
@@ -141,3 +141,7 @@ val is_snubbing : t -> bool
 
 val to_string : t -> string
 (** Print out the peer's id (in shortened form) and address. *)
+
+val download_speed : t -> float
+
+val upload_speed : t -> float
