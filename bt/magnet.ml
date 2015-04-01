@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,11 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type t = {
-  xt : SHA1.t;
-  dn : string option;
-  tr : Uri.t list
-}
+type t =
+  { xt : SHA1.t;
+    dn : string option;
+    tr : Uri.t list }
 
 let string_split (str : string) (delim : char) : string list =
   let rec loop start len =
@@ -51,35 +50,33 @@ let split_two delim s =
   let i = String.index s delim in
   String.sub s 0 i, String.sub s (i+1) ((String.length s)-i-1)
 
-let _of_string s =
+let parse s =
   let s = match_prefix s "magnet:?" in
   let comps = string_split s '&' |> List.map (split_two '=') in
   let rec loop xt dn tr = function
     | [] ->
-      begin match xt with
+        begin match xt with
         | None -> failwith "Magnet._of_string: no 'xt' component"
         | Some xt -> { xt; dn; tr = List.rev tr }
-      end
+        end
     | ("xt", xt) :: rest ->
-      let xt =
-        try
-          match_prefix xt "urn:btih:" |> SHA1.of_hex
-        with
-        | Not_found ->
-          match_prefix xt "urn:sha1:" |> SHA1.of_base32
-      in
-      loop (Some xt) dn tr rest
+        let xt =
+          try
+            match_prefix xt "urn:btih:" |> SHA1.of_hex
+          with
+          | Not_found ->
+              match_prefix xt "urn:sha1:" |> SHA1.of_base32
+        in
+        loop (Some xt) dn tr rest
     | ("dn", dn) :: rest ->
-      loop xt (Some dn) tr rest
+        loop xt (Some dn) tr rest
     | ("tr", uri) :: rest ->
-      loop xt dn (Uri.of_string (Uri.pct_decode uri) :: tr) rest
+        loop xt dn (Uri.of_string (Uri.pct_decode uri) :: tr) rest
     | _ :: rest ->
-      (* Printf.eprintf "ignoring %S\n%!" n; *)
-      loop xt dn tr rest
-      (* invalid_arg "Magnet.of_string" *)
+        (* Printf.eprintf "ignoring %S\n%!" n; *)
+        loop xt dn tr rest
   in
   loop None None [] comps
 
-let of_string s =
-  try _of_string s
-  with _ -> invalid_arg "Magnet.of_string"
+let parse s =
+  try `Ok (parse s) with _ -> `Error

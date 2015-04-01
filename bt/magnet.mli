@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -21,15 +21,10 @@
 
 (** Magnet links *)
 
-type t = {
-  xt : SHA1.t;
-  (** The torrent info-hash. *)
-  dn : string option;
-  (** The display name. *)
-  tr : Uri.t list
-  (** The list of trackers. *)
-}
+type t =
+  { xt : SHA1.t;        (** The torrent info-hash. *)
+    dn : string option; (** The display name. *)
+    tr : Uri.t list     (** The list of trackers. *) }
 
-val of_string : string -> t
-(** Parses a BitTorrent magnet link.  Raises [Invalid_argument "Magnet.of_string"]
-    if parsing fails for any reason. *)
+val parse : string -> [ `Ok of t | `Error ]
+(** Parses a BitTorrent magnet link. *)
