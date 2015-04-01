@@ -324,27 +324,6 @@ let send_request p (i, ofs, len) =
   p.act_reqs <- p.act_reqs + 1;
   send_message p (Wire.REQUEST (i, ofs, len))
 
-(* let writer_loop p = *)
-(*   let rec loop () = *)
-(*     Lwt.pick *)
-(*       [(Lwt_unix.sleep (float keepalive_delay) >|= fun () -> `Timeout); *)
-(*        (\* (Lwt_condition.wait p.on_stop >|= fun () -> `Stop); *\) *)
-(*        (next_to_send p >|= fun msg -> `Ready msg)] *)
-(*     >>= function *)
-(*     | `Timeout -> *)
-(*         Wire.write p.output Wire.KEEP_ALIVE >>= fun () -> *)
-(*         Lwt_io.flush p.output >>= loop *)
-(*     (\* | `Stop -> *\) *)
-(*     (\* Lwt.return_unit *\) *)
-(*     | `Ready m -> *)
-(*         Wire.write p.output m >>= fun () -> *)
-(*         Lwt_io.flush p.output >>= fun () -> *)
-(*         debug "sent message to %s : %s" (string_of_node p.node) (Wire.string_of_message m); *)
-(*         (match m with Wire.PIECE (_, _, s) -> Rate.add p.upload (Cstruct.len s) | _ -> ()); *)
-(*         loop () *)
-(*   in *)
-(*   loop () *)
-
 let ut_pex = "ut_pex"
 let ut_metadata = "ut_metadata"
 
@@ -353,10 +332,6 @@ let supports p name =
 
 let id p =
   p.id
-(*   fst p.node *)
-
-(* let addr p = *)
-(*   snd p.node *)
 
 let send_extended_handshake p =
   let m =
@@ -429,7 +404,6 @@ let send_cancel p (i, j) =
   | HasMeta n ->
       let i, ofs, len = Metadata.block n.meta i j in
       send_message p (Wire.CANCEL (i, ofs, len))
-      (* Lwt_condition.broadcast p.on_can_request () *)
   | NoMeta _ ->
       failwith "send_cancel: no meta info"
 
@@ -451,43 +425,23 @@ let download_rate p = Rate.get p.download
 
 let reset_rates p = Rate.reset p.upload; Rate.reset p.download
 
-(* let got_metadata p m get_next_requests = *)
-(*   match p.info with *)
-(*   | NoMeta nfo -> *)
-(*       let n = Metadata.piece_count m in *)
-(*       let have = Bits.create n in *)
-(*       if nfo.has_all then Bits.set_all have else List.iter (Bits.set have) nfo.have; *)
-(*       let info = *)
-(*         { have; *)
-(*           blame = Bits.create n; *)
-(*           meta = m } *)
-(*       in *)
-(*       p.info <- HasMeta info; *)
-(*       Lwt_condition.broadcast p.on_meta () *)
-(*   | HasMeta _ -> *)
-(*       failwith "Peer.got_metadata: already has meta" *)
-
 let create id info =
-  let extensions = Hashtbl.create 17 in
-  let p =
-    { id;
-      am_choking = true; am_interested = false;
-      peer_choking = true; peer_interested = false;
-      extbits = Bits.create (8 * 8);
-      extensions;
-      act_reqs = 0;
-      send_queue = Lwt_sequence.create ();
-      send_waiters = Lwt_sequence.create ();
-      on_stop = Lwt_condition.create ();
-      info;
-      download = Rate.create ();
-      upload = Rate.create ();
-      strikes = 0;
-      time = Unix.time ();
-      piece_data_time = 0.0;
-      last_pex = [] }
-  in
-  p
+  { id;
+    am_choking = true; am_interested = false;
+    peer_choking = true; peer_interested = false;
+    extbits = Bits.create (8 * 8);
+    extensions = Hashtbl.create 3;
+    act_reqs = 0;
+    send_queue = Lwt_sequence.create ();
+    send_waiters = Lwt_sequence.create ();
+    on_stop = Lwt_condition.create ();
+    info;
+    download = Rate.create ();
+    upload = Rate.create ();
+    strikes = 0;
+    time = Unix.time ();
+    piece_data_time = 0.0;
+    last_pex = [] }
 
 let create_no_meta id =
   let info = NoMeta { have = []; has_all = false } in
