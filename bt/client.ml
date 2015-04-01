@@ -243,6 +243,8 @@ let announce ~info_hash url push id =
       loop fd (Tracker.create ~info_hash ~id `Udp)
   | Some s ->
       Printf.ksprintf failwith "tracker scheme %S not supported" s
+  | None ->
+      failwith "no tracker scheme"
 
 let announce ~info_hash url push id =
   Lwt.catch
@@ -291,7 +293,7 @@ let share_torrent bt meta dl peers =
         (* PeerMgr.got_bad_piece bt.peer_mgr i; *)
         loop peers
 
-    | HandshakeFailed addr ->
+    | ConnectFailed addr ->
         bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop peers
 
@@ -302,11 +304,18 @@ let share_torrent bt meta dl peers =
         (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
         loop peers
 
+    | ConnectPeer (addr, timeout) ->
+        Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
+        loop peers
+
     | AvailableMetadata _ ->
         loop peers
 
-    | Choked p ->
+    | Choked _ ->
         (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
+        loop peers
+
+    | Unchoked _ ->
         loop peers
 
     | Interested id
@@ -355,7 +364,7 @@ let share_torrent bt meta dl peers =
         List.iter (fun (addr, _) -> bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop peers
 
-    | DHTPort (p, i) ->
+    | DHTPort _ ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -379,6 +388,9 @@ let share_torrent bt meta dl peers =
         if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
         (* Peer.send_have_bitfield p (Torrent.have tor) *)
         (* FIXME *)
+        loop peers
+
+    | NoEvent ->
         loop peers
   in
   loop peers
@@ -406,6 +418,10 @@ let rec fetch_metadata bt =
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop peers m
 
+    | ConnectPeer (addr, timeout) ->
+        Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
+        loop peers m
+
     | PeerConnected (mode, sock, exts, id) ->
         let p = Peer.create_no_meta id bt.push (fun _ -> None (* FIXME FIXME *)) in
         Lwt.async (fun () -> reader_loop bt.push sock p);
@@ -418,6 +434,10 @@ let rec fetch_metadata bt =
     | PeerDisconnected id ->
         bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         loop (Peers.remove id peers) m
+
+    | ConnectFailed addr ->
+        bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        loop peers m
 
     | Choked _
     | Interested _
@@ -477,6 +497,9 @@ let rec fetch_metadata bt =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end *)
         (* FIXME *)
+        loop peers m
+
+    | NoEvent ->
         loop peers m
   in
   loop Peers.empty None

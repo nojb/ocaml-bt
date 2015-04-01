@@ -58,8 +58,6 @@ type event =
 
   | BlockReceived of SHA1.t * int * int * string
 
-  | HandshakeFailed of addr
-
   | PeerDisconnected of SHA1.t
 
   | AvailableMetadata of SHA1.t * int

@@ -116,12 +116,6 @@ let got_block t peer idx b s =
   else
     debug "received a block we already have"
 
-let down self =
-  self.down
-
-let up self =
-  self.up
-
 let amount_left self =
   self.amount_left
 

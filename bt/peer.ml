@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -57,10 +57,6 @@ and meta_info =
 
 and t = {
   id : SHA1.t;
-  (* sock : IO.t; *)
-  (* output : Lwt_io.output_channel; *)
-  (* input : Lwt_io.input_channel; *)
-  (* mutable id : SHA1.t; *)
   mutable am_choking : bool;
   mutable am_interested : bool;
   mutable peer_choking : bool;
@@ -161,7 +157,8 @@ let send_meta_piece p piece (len, s) =
     let d =
       [ "msg_type", Bcode.Int 1L;
         "piece", Bcode.Int (Int64.of_int piece);
-        "total_size", Bcode.Int (Int64.of_int len) ] in
+        "total_size", Bcode.Int (Int64.of_int len) ]
+    in
     Nocrypto.Uncommon.Cs.(Bcode.encode (Bcode.Dict d) <+> s)
   in
   send_extended p id m
@@ -205,9 +202,7 @@ let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
     p.act_reqs <- 0;
-    (* signal p Choked; *)
     Choked p.id
-    (* Lwt_condition.broadcast p.on_choke () *)
   end else
     NoEvent
 
@@ -216,7 +211,6 @@ let got_unchoke p =
     (* debug "%s is no longer choking us" (string_of_node p.node); *)
     p.peer_choking <- false;
     Unchoked p.id
-    (* Lwt_condition.broadcast p.on_unchoke () *)
   end else
     NoEvent
 

@@ -43,9 +43,6 @@ val is_complete : t -> bool
 val got_block : t -> Peer.t -> int -> int -> Cstruct.t -> unit
 (** Called when we receive a block from a peer. *)
 
-(* val down : t -> int64 *)
-(* val up : t -> int64 *)
-
 val amount_left : t -> int64
 (** Number of bytes left to download. *)
 
