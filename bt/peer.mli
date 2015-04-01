@@ -33,15 +33,12 @@ open Event
 
 type event_callback = event -> unit
 
-val create_has_meta : SHA1.t -> event_callback -> Metadata.t -> t
+val create_has_meta : SHA1.t -> Metadata.t -> t
 
-val create_no_meta : SHA1.t -> event_callback -> t
+val create_no_meta : SHA1.t -> t
 
 val id : t -> SHA1.t
 (** The peer ID. *)
-
-(* val addr : t -> Addr.t *)
-(** The peer address. *)
 
 val send_extended_handshake : t -> unit
 (** Send LTEP handshake.  Currently supported extension are [ut_metadata] and
@@ -113,10 +110,6 @@ val download_rate : t -> float
 
 val reset_rates : t -> unit
 (** Reset the download/upload speed computation. *)
-
-(* val got_metadata : t -> Metadata.t -> get_block_func -> unit *)
-(** Called when the full metadata is received. The peer should be in the
-    metainfo-requesting stage. *)
 
 val worked_on_piece : t -> int -> bool
 (** Whether this peer has sent us blocks of a particular piece. *)

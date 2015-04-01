@@ -69,13 +69,7 @@ and t = {
   send_queue : Wire.message Lwt_sequence.t;
   send_waiters : Wire.message Lwt.u Lwt_sequence.t;
 
-  (* on_meta : unit Lwt_condition.t; *)
-  (* on_unchoke : unit Lwt_condition.t; *)
-  (* on_choke : unit Lwt_condition.t; *)
-  (* on_can_request : unit Lwt_condition.t; *)
   on_stop : unit Lwt_condition.t;
-
-  push : event -> unit;
 
   mutable info : meta_info;
 
@@ -109,9 +103,6 @@ let send_message p m =
   end
   else
     ignore (Lwt_sequence.add_r m p.send_queue)
-
-let signal p e =
-  p.push e
 
 let send_extended p id s =
   send_message p (Wire.EXTENDED (id, s))
@@ -475,8 +466,7 @@ let reset_rates p = Rate.reset p.upload; Rate.reset p.download
 (*   | HasMeta _ -> *)
 (*       failwith "Peer.got_metadata: already has meta" *)
 
-let create id push info =
-  (* let output = IO.out_channel sock in *)
+let create id info =
   let extensions = Hashtbl.create 17 in
   let p =
     { id;
@@ -487,11 +477,6 @@ let create id push info =
       act_reqs = 0;
       send_queue = Lwt_sequence.create ();
       send_waiters = Lwt_sequence.create ();
-      push;
-      (* on_meta = Lwt_condition.create (); *)
-      (* on_unchoke = Lwt_condition.create (); *)
-      (* on_choke = Lwt_condition.create (); *)
-      (* on_can_request = Lwt_condition.create (); *)
       on_stop = Lwt_condition.create ();
       info;
       download = Rate.create ();
@@ -503,18 +488,18 @@ let create id push info =
   in
   p
 
-let create_no_meta id push =
+let create_no_meta id =
   let info = NoMeta { have = []; has_all = false } in
-  create id push info
+  create id info
 
-let create_has_meta id push m =
+let create_has_meta id m =
   let npieces = Metadata.piece_count m in
   let info = HasMeta
       { have = Bits.create npieces;
         blame = Bits.create npieces;
         meta = m }
   in
-  create id push info
+  create id info
 
 let worked_on_piece p i =
   match p.info with

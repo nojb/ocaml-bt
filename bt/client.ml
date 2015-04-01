@@ -276,7 +276,7 @@ let peer_interested peers id =
   | Not_found -> false
 
 let welcome push mode fd exts id =
-  let p = Peer.create_no_meta id push in
+  let p = Peer.create_no_meta id in
   Lwt.async (fun () -> reader_loop push fd p);
   if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
   if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
@@ -393,7 +393,7 @@ let share_torrent bt meta dl peers =
         loop peers
 
     | PeerConnected (mode, sock, exts, id) ->
-        let p = Peer.create_has_meta id bt.push meta (*  (Requester.get_next_requests r) *) in
+        let p = Peer.create_has_meta id meta (*  (Requester.get_next_requests r) *) in
         Lwt.async (fun () -> reader_loop bt.push sock p);
         if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p;
         if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (* FIXME fixed port *)
