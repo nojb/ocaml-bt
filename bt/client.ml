@@ -134,7 +134,6 @@ let connect_to_peer info_hash ip port timeout =
   | `Ok (mode, rest) ->
       Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message info_hash my_id) >>= fun () ->
       assert (Cstruct.len rest <= handshake_len);
-      let n = handshake_len - Cstruct.len rest in
       let hs = Cstruct.create handshake_len in
       Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
       Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
@@ -217,6 +216,16 @@ let reader_loop push fd p =
   (*         Choker.start ch *)
 (*     end *)
 
+let announce ~info_hash tier push id =
+  let rec loop () =
+    (* FIXME port *)
+    Tracker.Tier.query tier ~ih:info_hash ?up:None ?down:None ?left:None ?event:None ?port:None (* FIXME FIXME (Listener.port bt.listener) *) ~id >>= fun resp ->
+    debug "announce to %s successful, reannouncing in %ds" (Tracker.Tier.to_string tier) resp.Tracker.interval;
+    push (PeersReceived resp.Tracker.peers);
+    Lwt_unix.sleep (float resp.Tracker.interval) >>= loop
+  in
+  Lwt.catch loop (fun exn -> debug ~exn "announce failure"; Lwt.return_unit)
+
 module Peers = Map.Make (SHA1)
 
 let am_choking peers id =
@@ -244,23 +253,6 @@ let share_torrent bt meta dl peers =
     | PeersReceived addrs ->
         debug "received %d peers" (List.length addrs);
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
-        loop peers
-
-    | Announce (tier, event) ->
-        let doit () =
-          (* FIXME port *)
-          Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:None
-            (* ?port:(Listener.port bt.listener) FIXME FIXME *) ~id:bt.id >>= fun resp ->
-          debug "announce to %s successful, reannouncing in %ds"
-            (Tracker.Tier.to_string tier) resp.Tracker.interval;
-          bt.push (PeersReceived resp.Tracker.peers);
-          Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
-          bt.push (Announce (tier, None))
-        in
-        let safe_doit () =
-          Lwt.catch doit (fun exn -> debug ~exn "announce failure"; Lwt.return ())
-        in
-        Lwt.async safe_doit;
         loop peers
 
     | PieceVerified i ->
@@ -391,22 +383,6 @@ let rec fetch_metadata bt =
         List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop peers m
 
-    | Announce (tier, event) ->
-        let doit () =
-          (* FIXME port *)
-          Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:None (* FIXME FIXME (Listener.port bt.listener) *) ~id:bt.id >>= fun resp ->
-          debug "announce to %s successful, reannouncing in %ds"
-            (Tracker.Tier.to_string tier) resp.Tracker.interval;
-          bt.push (PeersReceived resp.Tracker.peers);
-          Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
-          bt.push (Announce (tier, None))
-        in
-        let safe_doit () =
-          Lwt.catch doit (fun exn -> debug ~exn "announce failure"; Lwt.return ())
-        in
-        Lwt.async safe_doit;
-        loop peers m
-
     | PeerConnected (mode, sock, exts, id) ->
         let p = Peer.create_no_meta id bt.push (fun _ -> None (* FIXME FIXME *)) in
         Lwt.async (fun () -> reader_loop bt.push sock p);
@@ -483,8 +459,7 @@ let rec fetch_metadata bt =
   loop Peers.empty None
 
 let start bt =
-  List.iter (fun tier -> bt.push (Announce (tier, Some Tracker.STARTED))) bt.trackers;
-  (* Listener.start bt.listener (); *)
+  List.iter (fun tier -> Lwt.async (fun () -> announce ~info_hash:bt.ih tier bt.push bt.id)) bt.trackers;
   DHT.start bt.dht;
   Lwt.async begin fun () ->
     DHT.auto_bootstrap bt.dht DHT.bootstrap_nodes >>= fun () ->
@@ -526,50 +501,7 @@ let create mg =
   let id = SHA1.generate ~prefix:"OCAML" () in
   let ih = mg.Magnet.xt in
   let peer_mgr = PeerMgr.create () in
-  (*       (fun sock id ext -> !!cl.push (PeerJoined (sock, id, ext))) *)
-  (*       (\* (fun p e -> handle_peer_event !!cl p e) *\) *)
-  (*       (fun p -> get_next_metadata_request !!cl p)) *)
-  (* in *)
   Lwt.async (fun () -> start_server push);
   { id; ih; trackers; chan;
     push; peer_mgr;
-    (* stage = NoMeta NoMetaLength; *)
-    (* listener = Listener.create *)
-        (* (fun fd _ -> assert false (\* FIXME FIXME PeerMgr.handle_incoming_peer !!peer_mgr (IO.of_file_descr fd)) *\)); *)
     dht = DHT.create 6881 }
-
-(* let stats c = *)
-(*   let downloaded = match c.stage with *)
-(*     | HasMeta (_, Leeching (t, _, _)) *)
-(*     | HasMeta (_, Seeding (t, _)) -> *)
-(*         Torrent.have_size t *)
-(*     | _ -> *)
-(*         0L *)
-(*   in *)
-(*   let total_size = match c.stage with *)
-(*     | HasMeta (m, _) -> Metadata.total_length m *)
-(*     | NoMeta _ -> 0L *)
-(*   in *)
-(*   let have_pieces = match c.stage with *)
-(*     | HasMeta (_, Leeching (t, _, _)) *)
-(*     | HasMeta (_, Seeding (t, _)) -> Torrent.numgot t *)
-(*     | _ -> 0 *)
-(*   in *)
-(*   let total_pieces = match c.stage with *)
-(*     | HasMeta (m, _) -> Metadata.piece_count m *)
-(*     | NoMeta _ -> 0 *)
-(*   in *)
-(*   let amount_left = match c.stage with *)
-(*     | HasMeta (_, Leeching (t, _, _)) *)
-(*     | HasMeta (_, Seeding (t, _)) -> Torrent.amount_left t *)
-(*     | _ -> 0L *)
-(*   in *)
-(*   { Stats.upload_speed = PeerMgr.upload_speed c.peer_mgr; *)
-(*     download_speed = PeerMgr.download_speed c.peer_mgr; *)
-(*     num_connected_peers = PeerMgr.num_connected_peers c.peer_mgr; *)
-(*     num_total_peers = PeerMgr.num_total_peers c.peer_mgr; *)
-(*     downloaded; *)
-(*     total_size; *)
-(*     have_pieces; *)
-(*     total_pieces; *)
-(*     amount_left } *)

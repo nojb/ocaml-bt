@@ -34,8 +34,6 @@ type addr = Unix.inet_addr * int
 type event =
   | PeersReceived of addr list
 
-  | Announce of Tracker.Tier.t * Tracker.event option
-
   | PeerConnected of [ `Plain | `Encrypted of ARC4.key * ARC4.key ] * Lwt_unix.file_descr * Bits.t * SHA1.t
 
   | PieceVerified of int
