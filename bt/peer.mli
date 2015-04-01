@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,6 @@ exception Timeout
 open Event
 
 type event_callback = event -> unit
-type get_metadata_func = t -> int option
 type get_block_func = t -> int -> (int * int) list
 
 val create_has_meta : SHA1.t -> event_callback -> Metadata.t -> get_block_func -> t
@@ -43,7 +42,7 @@ val create_has_meta : SHA1.t -> event_callback -> Metadata.t -> get_block_func -
     metainfo dictionary, and [r] is the function used to pick blocks to request
     from this peer (see {!Requester.get_next_requests}). *)
 
-val create_no_meta : SHA1.t -> event_callback -> get_metadata_func -> t
+val create_no_meta : SHA1.t -> event_callback -> t
 (** [create_no_meta sock addr id cb r] creates a peer in the metainfo-requesting
     stage.  [sock] is the socket used to communicate with this peer, [addr] is
     its address, [id] is its ID, [cb] is the callback invoked on important

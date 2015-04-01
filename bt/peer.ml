@@ -45,11 +45,9 @@ type has_meta_info = {
   meta : Metadata.t
 }
 
-and no_meta_info = {
-  mutable have : int list;
-  mutable has_all : bool;
-  request : get_metadata_func
-}
+and no_meta_info =
+  { mutable have : int list;
+    mutable has_all : bool }
 
 and meta_info =
   | HasMeta of has_meta_info
@@ -74,7 +72,6 @@ and t = {
   on_unchoke : unit Lwt_condition.t;
   on_choke : unit Lwt_condition.t;
   on_can_request : unit Lwt_condition.t;
-  on_ltep_handshake : unit Lwt_condition.t;
   on_stop : unit Lwt_condition.t;
 
   push : event -> unit;
@@ -91,7 +88,6 @@ and t = {
 }
 
 and event_callback = event -> unit
-and get_metadata_func = t -> int option
 and get_block_func = t -> int -> (int * int) list
 
 let string_of_node (id, (ip, port)) =
@@ -290,7 +286,6 @@ let got_extended_handshake p bc =
     if id = 0 then Hashtbl.remove p.extensions name
     else Hashtbl.replace p.extensions name id) m;
   (* debug "%s supports %s" (string_of_node p.node) (strl fst m); *)
-  Lwt_condition.broadcast p.on_ltep_handshake ();
   if Hashtbl.mem p.extensions "ut_metadata" then
     AvailableMetadata (p.id, Bcode.find "metadata_size" bc |> Bcode.to_int)
   else
@@ -464,24 +459,6 @@ let download_rate p = Rate.get p.download
 
 let reset_rates p = Rate.reset p.upload; Rate.reset p.download
 
-let request_metadata_loop p =
-  let rec loop () =
-    match p.info with
-    | HasMeta _ ->
-        Lwt.return ()
-    | NoMeta nfo ->
-        if supports_ut_metadata p then begin
-          begin match nfo.request p with
-          | Some i -> request_meta_piece p i
-          | None -> ()
-          end;
-          Lwt_unix.sleep 1.0 >>= loop
-        end
-        else
-          Lwt_condition.wait p.on_ltep_handshake >>= loop
-  in
-  Lwt.pick [Lwt_condition.wait p.on_meta; loop ()]
-
 let request_blocks_loop p =
   match p.info with
   | HasMeta nfo ->
@@ -560,7 +537,6 @@ let create id push info =
       on_unchoke = Lwt_condition.create ();
       on_choke = Lwt_condition.create ();
       on_can_request = Lwt_condition.create ();
-      on_ltep_handshake = Lwt_condition.create ();
       on_stop = Lwt_condition.create ();
       info;
       download = Rate.create ();
@@ -572,8 +548,8 @@ let create id push info =
   in
   p
 
-let create_no_meta id push get_next_metadata_request =
-  let info = NoMeta { have = []; has_all = false; request = get_next_metadata_request } in
+let create_no_meta id push =
+  let info = NoMeta { have = []; has_all = false } in
   let p = create id push info in
   p
 

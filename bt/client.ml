@@ -50,13 +50,6 @@ type t = {
 (*   | HasMeta _ -> [] *)
 (*   | NoMeta _ -> [] *)
 
-(* let get_next_metadata_request bt p = *)
-(*   match bt.stage with *)
-(*   | NoMeta (PartialMeta m) -> *)
-(*       IncompleteMetadata.get_next_metadata_request m *)
-(*   | _ -> *)
-(*       None *)
-
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
 let extensions =
@@ -396,7 +389,25 @@ let share_torrent bt meta dl peers =
 
 let load_torrent bt meta =
   Torrent.create meta bt.push (* >|= fun dl -> *)
-  (* bt.push (TorrentLoaded dl) *)
+(* bt.push (TorrentLoaded dl) *)
+
+(* let request_metadata_loop p = *)
+(*   let rec loop () = *)
+(*     match p.info with *)
+(*     | HasMeta _ -> *)
+(*         Lwt.return () *)
+(*     | NoMeta nfo -> *)
+(*         if supports_ut_metadata p then begin *)
+(*           begin match nfo.request p with *)
+(*           | Some i -> request_meta_piece p i *)
+(*           | None -> () *)
+(*           end; *)
+(*           Lwt_unix.sleep 1.0 >>= loop *)
+(*         end *)
+(*         else *)
+(*           Lwt_condition.wait p.on_ltep_handshake >>= loop *)
+(*   in *)
+(*   Lwt.pick [Lwt_condition.wait p.on_meta; loop ()] *)
 
 let rec fetch_metadata bt =
   let rec loop peers m =
@@ -420,7 +431,7 @@ let rec fetch_metadata bt =
         loop peers m
 
     | _, PeerConnected (mode, sock, exts, id) ->
-        let p = Peer.create_no_meta id bt.push (fun _ -> None (* FIXME FIXME *)) in
+        let p = Peer.create_no_meta id bt.push in
         Lwt.async (fun () -> reader_loop bt.push sock p);
         Peer.start p;
         (* Hashtbl.add bt.peers addr !!p; FIXME XXX *)
