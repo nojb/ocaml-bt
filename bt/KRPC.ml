@@ -28,7 +28,7 @@ let (>>=) = Lwt.(>>=)
 open Printf
 
 let alpha = 3
-    
+
 type msg =
   | Query of string * (string * Bcode.t) list
   | Response of (string * Bcode.t) list
@@ -98,17 +98,19 @@ end = struct
     Hashtbl.iter (fun a h -> Hashtbl.iter (fun b c -> f a b c) h) h
 end
 
-type answer_func = Addr.t -> string -> (string * Bcode.t) list -> msg
+type addr = Unix.inet_addr * int
+
+type answer_func = addr -> string -> (string * Bcode.t) list -> msg
 
 type rpc =
   | Error
   | Timeout
-  | Response of Addr.t * (string * Bcode.t) list
+  | Response of addr * (string * Bcode.t) list
 
 type t = {
   sock : UDP.socket;
   answer : answer_func;
-  pending : (Addr.t, string, rpc Lwt.u * float) Assoc2.t
+  pending : (addr, string, rpc Lwt.u * float) Assoc2.t
 }
 
 let create answer port =
@@ -120,8 +122,9 @@ let read_one_packet krpc =
   match msg with
   | Error (code, msg) ->
     begin match Assoc2.find krpc.pending addr t with
-    | None -> 
-      debug "no t:%S for %s" t (Addr.to_string addr)
+    | None ->
+        ()
+      (* debug "no t:%S for %s" t (addro_string addr) *)
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;
       Lwt.wakeup w Error
@@ -133,7 +136,7 @@ let read_one_packet krpc =
   | Response args ->
     begin match Assoc2.find krpc.pending addr t with
     | None ->
-      debug "no t:%S for %s" t (Addr.to_string addr);
+      (* debug "no t:%S for %s" t (addro_string addr); *)
       Lwt.return ()
     | Some (w, _) ->
       Assoc2.remove krpc.pending addr t;

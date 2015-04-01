@@ -36,6 +36,8 @@ exception Timeout
 
 open Event
 
+type addr = Unix.inet_addr * int
+
 type has_meta_info = {
   have : Bits.t;
   blame : Bits.t;
@@ -89,15 +91,15 @@ and t = {
   mutable time : float;
   mutable piece_data_time : float;
 
-  mutable last_pex : Addr.t list
+  mutable last_pex : (* Addr.t *) addr list
 }
 
 and event_callback = event -> unit
 and get_metadata_func = t -> int option
 and get_block_func = t -> int -> (int * int) list
 
-let string_of_node (id, addr) =
-  Printf.sprintf "%s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr)
+let string_of_node (id, (ip, port)) =
+  Printf.sprintf "%s (%s:%d)" (SHA1.to_hex_short id) (Unix.string_of_inet_addr ip) port
 
 let strl f l =
   "[" ^ String.concat " " (List.map f l) ^ "]"
@@ -171,11 +173,11 @@ let got_ut_pex p data =
   let added = Bcode.find "added" m |> Bcode.to_string in
   let added_f = Bcode.find "added.f" m |> Bcode.to_string in
   let dropped = Bcode.find "dropped" m |> Bcode.to_string in
-  let rec loop bs =
-    bitmatch bs with
-    | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } ->
-        addr :: loop rest
-    | { _ } -> []
+  let rec loop bs = [] (* FIXME FIXME FIXME *)
+    (* bitmatch bs with *)
+    (* | { addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); rest : -1 : bitstring } -> *)
+        (* addr :: loop rest *)
+    (* | { _ } -> [] *)
   in
   let flag c =
     let n = int_of_char c in
@@ -620,10 +622,11 @@ let close p =
 
 let send_ut_pex p added dropped =
   let id = Hashtbl.find p.extensions "ut_pex" in
-  let rec c = function
-    | [] -> Bitstring.empty_bitstring
-    | a :: aa -> BITSTRING { Addr.to_string_compact a : -1 : string; c aa : -1 : bitstring }
-  in
+  let rec c _ = Bitstring.empty_bitstring in (* FIXME FIXME *)
+    (* function *)
+    (* | [] -> Bitstring.empty_bitstring *)
+    (* | a :: aa -> BITSTRING { Addr.to_string_compact a : -1 : string; c aa : -1 : bitstring } *)
+  (* in *)
   let c l = Bitstring.string_of_bitstring (c l) in
   let d =
     [ "added", Bcode.String (c added);

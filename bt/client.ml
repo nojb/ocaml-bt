@@ -41,9 +41,6 @@ type t = {
   dht : DHT.t
 }
 
-let push_peers_received bt xs =
-  bt.push (PeersReceived xs)
-
 (* let get_next_requests bt p n = *)
 (*   match bt.stage with *)
 (*   | HasMeta (_, Leeching (_, _, r)) -> *)
@@ -58,6 +55,46 @@ let push_peers_received bt xs =
 (*       IncompleteMetadata.get_next_metadata_request m *)
 (*   | _ -> *)
 (*       None *)
+
+(* let handshake_done bt sock res = *)
+(*   assert (Hashtbl.mem bt.connecting (IO.addr sock)); *)
+(*   Hashtbl.remove bt.connecting (IO.addr sock); *)
+(*   match res with *)
+(*   | Handshake.Success (id, exts) -> *)
+(*     debug "%s handshake with %s (%s) successful, ih %s" *)
+(*       (if IO.is_encrypted sock then "encrypted" else "plain") *)
+(*       (SHA1.to_hex_short id) (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih); *)
+(*     (\* Hashtbl.add bt.peers (IO.addr sock) !!p; XXX FIXME FIXME *\) *)
+(*     bt.push sock id exts *)
+(*     (\* peer_joined bt sock (IO.addr sock) bt.ih id exts *\) *)
+(*   | Handshake.Failed -> *)
+(*     Lwt.async (fun () -> IO.close sock); *)
+(*     debug "handshake failed" *)
+
+let connect_to_peer push ((ip, port) as addr) timeout =
+  let connect () =
+    let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
+    Lwt_unix.gethostbyaddr ip >>= fun he ->
+    let sa = Lwt_unix.ADDR_INET (he.Lwt_unix.h_addr_list.(0), port) in
+    Lwt_unix.connect fd sa >>= fun () ->
+    assert false (* FIXME *)
+    (* let hs = Handshake.(outgoing ~id:bt.id ~ih:bt.ih (Crypto Prefer) sock) (handshake_done bt sock) *)
+       (* in *)
+  in
+  Lwt.catch connect (fun _ -> push (ConnectFailed addr); Lwt.return_unit)
+
+  (* Lwt.try_bind (fun () -> IO.connect sock) *)
+  (*   (fun () -> *)
+  (*      let hs = *)
+  (*        Handshake.outgoing ~id:bt.id ~ih:bt.ih *)
+  (*          Handshake.(Crypto Prefer) sock (handshake_done bt sock) *)
+  (*      in *)
+  (*      Lwt.return ()) *)
+  (*   (fun exn -> *)
+  (*      debug ~exn "could not connect to %s" (Addr.to_string addr); *)
+  (*      Hashtbl.remove bt.connecting addr; *)
+  (*      IO.close sock) *)
+  (*     (\* Lwt.return ()) *\) *)
 
 let buf_size = 1024
 
@@ -160,7 +197,7 @@ let share_torrent bt meta dl peers =
           Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
           debug "announce to %s successful, reannouncing in %ds"
             (Tracker.Tier.to_string tier) resp.Tracker.interval;
-          push_peers_received bt resp.Tracker.peers;
+          bt.push (PeersReceived resp.Tracker.peers);
           Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
           bt.push (Announce (tier, None))
         in
@@ -304,7 +341,7 @@ let rec fetch_metadata bt =
           Tracker.Tier.query tier ~ih:bt.ih ?up:None ?down:None ?left:None ?event ?port:(Listener.port bt.listener) ~id:bt.id >>= fun resp ->
           debug "announce to %s successful, reannouncing in %ds"
             (Tracker.Tier.to_string tier) resp.Tracker.interval;
-          push_peers_received bt resp.Tracker.peers;
+          bt.push (PeersReceived resp.Tracker.peers);
           Lwt_unix.sleep (float resp.Tracker.interval) >|= fun () ->
           bt.push (Announce (tier, None))
         in
@@ -401,7 +438,8 @@ let start bt =
         Lwt.catch
           (fun () -> DHT.announce bt.dht addr 6881 token bt.ih >>= fun _ -> Lwt.return ())
           (fun exn ->
-             debug ~exn "dht announce to %s (%s) failed" (SHA1.to_hex_short id) (Addr.to_string addr);
+             (* FIXME FIXME *)
+             (* debug ~exn "dht announce to %s (%s) failed" (SHA1.to_hex_short id) (Addr.to_string addr); *)
              Lwt.return ())
       end
     end

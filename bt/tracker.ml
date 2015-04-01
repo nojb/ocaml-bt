@@ -39,8 +39,10 @@ let string_of_event = function
   | STOPPED -> "stopped"
   | COMPLETED -> "completed"
 
+type addr = Unix.inet_addr * int
+
 type response = {
-  peers : Addr.t list;
+  peers : addr list;
   leechers : int option;
   seeders : int option;
   interval : int
@@ -76,7 +78,7 @@ module UdpTracker = struct
         SHA1.to_bin id : 20 * 8 : string;
         down : 64; left : 64; up : 64;
         event : 32; 0l : 32; 0l : 32; -1l : 32;
-        (match port with None -> 0 | Some p -> p) : 16 }                
+        (match port with None -> 0 | Some p -> p) : 16 }
 
   let parse_announce_response trans_id s =
     bitmatch Bitstring.bitstring_of_string s with
@@ -90,7 +92,8 @@ module UdpTracker = struct
       let rec loop bs =
         bitmatch bs with
         | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } ->
-          Addr.of_string_compact addr :: loop bs
+            [] (* FIXME FIXME *)
+          (* Addr.of_string_compact addr :: loop bs *)
         | { _ } ->
           []
       in
@@ -123,7 +126,7 @@ module UdpTracker = struct
       | `Error msg -> Lwt.fail (Error msg)
       | `Ok resp -> Lwt.return resp
     end Lwt.fail
-  
+
   let do_announce fd addr ih ?up ?down ?left ?event ?port id : response Lwt.t =
     let rec try_connect n =
       send_connect_request fd addr >>= fun trans_id ->
@@ -159,7 +162,7 @@ module UdpTracker = struct
       end
     in
     try_connect 0
-        
+
     (* let rec loop = function *)
     (*   | Connect_request n -> *)
     (*     let trans_id = fresh_transaction_id () in *)
@@ -222,7 +225,8 @@ module UdpTracker = struct
       | None -> failwith "Empty Port"
       | Some port -> port
     in
-    let addr = (Addr.Ip.of_string host, p) in
+    let addr = (assert false) (* FIXME FIXME *) in
+    (* let addr = (Addr.Ip.of_string host, p) in *)
     let fd = UDP.create_socket () in
     do_announce fd addr ih ?up ?down ?left ?event ?port id
 end
@@ -246,7 +250,8 @@ module HttpTracker = struct
         let rec loop bs =
           bitmatch bs with
           | { addr : 6 * 8 : bitstring; bs : -1 : bitstring } ->
-            Addr.of_string_compact addr :: loop bs
+              [] (* FIXME FIXME *)
+            (* Addr.of_string_compact addr :: loop bs *)
           | { _ } ->
             []
         in
@@ -257,7 +262,8 @@ module HttpTracker = struct
         List.map (fun d ->
             let ip = Bcode.find "ip" d |> Bcode.to_string in
             let port = Bcode.find "port" d |> Bcode.to_int in
-            let addr = Addr.Ip.of_string ip in
+            let addr = (assert false) in (* FIXME FIXME *)
+            (* let addr = Addr.Ip.of_string ip in *)
             (addr, port))
       in
       let peers = Bcode.find "peers" d in
@@ -276,7 +282,7 @@ module HttpTracker = struct
 
   let announce tr ih ?up ?down ?left ?event ?port id =
     let uri = ref tr in
-    let add name x = uri := Uri.add_query_param' !uri (name, x) in    
+    let add name x = uri := Uri.add_query_param' !uri (name, x) in
     let add_opt name f = function
       | None -> ()
       | Some x -> uri := Uri.add_query_param' !uri (name, f x)

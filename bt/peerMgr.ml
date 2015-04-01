@@ -21,6 +21,8 @@
 
 open Event
 
+type addr = Unix.inet_addr * int
+
 type peer =
   { mutable reconnect : bool;
     mutable retries : int;
@@ -28,10 +30,10 @@ type peer =
 
 type swarm =
   { size : int;
-    wires : (SHA1.t, Addr.t) Hashtbl.t;
-    mutable connections : Addr.t list;
-    queue : Addr.t Queue.t;
-    peers : (Addr.t, peer) Hashtbl.t }
+    wires : (SHA1.t, addr) Hashtbl.t;
+    mutable connections : addr list;
+    queue : addr Queue.t;
+    peers : (addr, peer) Hashtbl.t }
 
 let default_size = 100
 let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
@@ -96,35 +98,6 @@ let handshake_failed sw addr =
 (* let need_more_peers bt = *)
 (*   (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count) (\* && not (is_complete bt) *\) *)
 
-(* let handshake_done bt sock res = *)
-(*   assert (Hashtbl.mem bt.connecting (IO.addr sock)); *)
-(*   Hashtbl.remove bt.connecting (IO.addr sock); *)
-(*   match res with *)
-(*   | Handshake.Success (id, exts) -> *)
-(*     debug "%s handshake with %s (%s) successful, ih %s" *)
-(*       (if IO.is_encrypted sock then "encrypted" else "plain") *)
-(*       (SHA1.to_hex_short id) (Addr.to_string (IO.addr sock)) (SHA1.to_hex_short bt.ih); *)
-(*     (\* Hashtbl.add bt.peers (IO.addr sock) !!p; XXX FIXME FIXME *\) *)
-(*     bt.push sock id exts *)
-(*     (\* peer_joined bt sock (IO.addr sock) bt.ih id exts *\) *)
-(*   | Handshake.Failed -> *)
-(*     Lwt.async (fun () -> IO.close sock); *)
-(*     debug "handshake failed" *)
-
-(* let rec connect_peer bt addr = *)
-(*   let sock = IO.create addr in *)
-(*   Lwt.try_bind (fun () -> IO.connect sock) *)
-(*     (fun () -> *)
-(*        let hs = *)
-(*          Handshake.outgoing ~id:bt.id ~ih:bt.ih *)
-(*            Handshake.(Crypto Prefer) sock (handshake_done bt sock) *)
-(*        in *)
-(*        Lwt.return ()) *)
-(*     (fun exn -> *)
-(*        debug ~exn "could not connect to %s" (Addr.to_string addr); *)
-(*        Hashtbl.remove bt.connecting addr; *)
-(*        IO.close sock) *)
-(*       (\* Lwt.return ()) *\) *)
 
 (* let peer_finished bt id = *)
 (*   (\* debug "peer %s disconnected" (Peer.to_string p); *\) *)

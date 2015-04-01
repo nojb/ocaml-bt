@@ -23,6 +23,8 @@
 
 type t
 
+type addr = Unix.inet_addr * int
+
 val keepalive_delay : int
 
 exception Timeout
@@ -153,7 +155,7 @@ val close : t -> unit
 
 val got_message : t -> Wire.message -> event
 
-val send_pex : t -> Addr.t list -> unit
+val send_pex : t -> addr list -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
     is the list of currently connected peers. *)
 

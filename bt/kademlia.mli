@@ -25,16 +25,18 @@ type status =
   | Unknown
   | Pinged
 
+type addr = Unix.inet_addr * int
+
 type table
 
-type node_info = SHA1.t * Addr.t
+type node_info = SHA1.t * addr
 
 val create : SHA1.t -> table
 
-type ping_fun = Addr.t -> (node_info option -> unit) -> unit
+type ping_fun = addr -> (node_info option -> unit) -> unit
 
 
-val update : table -> ping_fun -> status -> SHA1.t -> Addr.t -> unit
+val update : table -> ping_fun -> status -> SHA1.t -> addr -> unit
 (** [update rt ping st id addr] updates the routing table information for [id].
     If [id] already exists, its address is updated with [addr] and marked fresh,
     status set to [status].  If [addr] is found in the bucket but with a different

@@ -27,8 +27,10 @@ type pex_flags = {
   pex_outgoing : bool
 }
 
+type addr = Unix.inet_addr * int
+
 type event =
-  | PeersReceived of Addr.t list
+  | PeersReceived of addr list
 
   | Announce of Tracker.Tier.t * Tracker.event option
 
@@ -56,7 +58,7 @@ type event =
 
   | BlockReceived of SHA1.t * int * int * string
 
-  | HandshakeFailed of Addr.t
+  | HandshakeFailed of addr
 
   | PeerDisconnected of SHA1.t
 
@@ -68,10 +70,12 @@ type event =
 
   | RejectMetaPiece of SHA1.t * int
 
-  | GotPEX of SHA1.t * (Addr.t * pex_flags) list * Addr.t list
+  | GotPEX of SHA1.t * (addr * pex_flags) list * addr list
 
   | DHTPort of SHA1.t * int
 
-  | ConnectPeer of Addr.t * float
+  | ConnectPeer of addr * float
+
+  | ConnectFailed of addr
 
   | NoEvent

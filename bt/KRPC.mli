@@ -27,11 +27,11 @@ type msg =
 type rpc =
   | Error
   | Timeout
-  | Response of Addr.t * (string * Bcode.t) list
+  | Response of (Unix.inet_addr * int) * (string * Bcode.t) list
 
 type t
 
-type answer_func = Addr.t -> string -> (string * Bcode.t) list -> msg
+type answer_func = (Unix.inet_addr * int) -> string -> (string * Bcode.t) list -> msg
 
 val create : answer_func -> int -> t
 
@@ -39,4 +39,4 @@ val start : t -> unit
 
 val string_of_msg : msg -> string
 
-val send_msg : t -> msg -> Addr.t -> rpc Lwt.t
+val send_msg : t -> msg -> (Unix.inet_addr * int) -> rpc Lwt.t

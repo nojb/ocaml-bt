@@ -23,7 +23,9 @@ let section = Log.make_section "Kademlia"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
 
-type node_info = SHA1.t * Addr.t
+type addr = Unix.inet_addr * int
+
+type node_info = SHA1.t * addr (* Addr.t *)
 
 let node_period = 15.0 *. 60.0
 
@@ -43,17 +45,18 @@ let string_of_status = function
 
 type node = {
   id : SHA1.t;
-  addr : Addr.t;
+  addr : addr;
   mutable last : float;
   mutable status : status;
 }
 
 let string_of_node n =
-  Printf.sprintf "%s at %s was %s %d sec ago"
-    (SHA1.to_hex_short n.id)
-    (Addr.to_string n.addr)
-    (string_of_status n.status)
-    (truncate (Unix.time () -. n.last))
+  assert false (* FIXME FIXME *)
+  (* Printf.sprintf "%s at %s was %s %d sec ago" *)
+  (*   (SHA1.to_hex_short n.id) *)
+  (*   (\* (Addr.to_string n.addr) *\) *)
+  (*   (string_of_status n.status) *)
+  (*   (truncate (Unix.time () -. n.last)) *)
 
 type bucket = {
   lo : SHA1.t;
@@ -112,8 +115,8 @@ let update_bucket_node b status id addr i n =
     touch b;
     raise Exit
   | true, false | false, true ->
-    debug "conflict [%s] with %s %s, replacing"
-      (string_of_node n) (SHA1.to_hex_short id) (Addr.to_string addr);
+    (* debug "conflict [%s] with %s %s, replacing" *)
+      (* (string_of_node n) (SHA1.to_hex_short id) (Addr.to_string addr); *)
     b.nodes.(i) <- make_node id addr status;
     touch b;
     raise Exit
@@ -121,7 +124,7 @@ let update_bucket_node b status id addr i n =
     ()
 
 let insert_bucket_node b status id addr =
-  debug "insert %s %s" (SHA1.to_hex_short id) (Addr.to_string addr);
+  (* debug "insert %s %s" (SHA1.to_hex_short id) (Addr.to_string addr); *)
   b.nodes <- Array.of_list (make_node id addr status :: Array.to_list b.nodes);
   touch b;
   raise Exit
@@ -145,7 +148,7 @@ let split_bucket b =
   let n2 = { lo = succ mid; hi = b.hi; last_change = b.last_change; nodes = Array.of_list nodes2 } in
   N (L n1, mid, L n2)
 
-type ping_fun = Addr.t -> (node_info option -> unit) -> unit
+type ping_fun = addr -> (node_info option -> unit) -> unit
 
 let rec update table (ping : ping_fun) status id addr =
   let rec loop = function
@@ -270,8 +273,7 @@ let rec fold f acc = function
 
 let size table =
   fold (fun acc b -> acc + Array.length b.nodes) 0 table.root
-        
+
 let create self =
   { root = L { lo = SHA1.zero; hi = SHA1.last; last_change = Unix.time (); nodes = [| |] };
     self }
-

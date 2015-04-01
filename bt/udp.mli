@@ -22,9 +22,9 @@
 type socket
 
 val create_socket : ?port:int -> unit -> socket
-  
-val send : socket -> string -> Addr.t -> unit Lwt.t
-val send_bitstring : socket -> Bitstring.bitstring -> Addr.t -> unit Lwt.t
-val recv : socket -> (string * Addr.t) Lwt.t
+
+val send : socket -> string -> (Unix.inet_addr * int) -> unit Lwt.t
+val send_bitstring : socket -> Bitstring.bitstring -> (Unix.inet_addr * int) -> unit Lwt.t
+val recv : socket -> (string * (Unix.inet_addr * int)) Lwt.t
 val set_timeout : socket -> float -> unit
 val close : socket -> unit Lwt.t

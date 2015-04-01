@@ -22,12 +22,12 @@
 let section = Log.make_section "DHT"
 
 let debug ?exn fmt = Log.debug section ?exn fmt
-    
+
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
 
 let alpha = 3
-    
+
 type query =
   | Ping
   | FindNode of SHA1.t
@@ -40,19 +40,21 @@ let string_of_query = function
   | FindNode id ->
     Printf.sprintf "find_node %s" (SHA1.to_hex_short id)
   | GetPeers ih ->
-    Printf.sprintf "get_peers %s" (SHA1.to_hex_short ih)                
+    Printf.sprintf "get_peers %s" (SHA1.to_hex_short ih)
   | Announce (ih, port, token) ->
-    Printf.sprintf "announce %s %d %S" (SHA1.to_hex_short ih) port token
+      Printf.sprintf "announce %s %d %S" (SHA1.to_hex_short ih) port token
 
-type node_info = SHA1.t * Addr.t
+type addr = Unix.inet_addr * int
+
+type node_info = SHA1.t * addr
 
 type response =
   | Pong
   | Nodes of node_info list
-  | Peers of string * Addr.t list * node_info list
+  | Peers of string * addr list * node_info list
 
-let string_of_node (id, addr) =
-  Printf.sprintf "%s (%s)" (SHA1.to_hex_short id) (Addr.to_string addr)
+let string_of_node (id, (ip, port)) =
+  Printf.sprintf "%s (%s:%d)" (SHA1.to_hex_short id) (Unix.string_of_inet_addr ip) port
 
 let strl f l = "[" ^ String.concat " " (List.map f l) ^ "]"
 
@@ -63,8 +65,9 @@ let string_of_response r =
   | Nodes nodes ->
     Printf.sprintf "nodes %s" (strl string_of_node nodes)
   | Peers (token, peers, nodes) ->
-    Printf.sprintf "peers token=%S peers %s nodes %s"
-      token (strl Addr.to_string peers) (strl string_of_node nodes)
+      "" (* FIXME FIXME *)
+    (* Printf.sprintf "peers token=%S peers %s nodes %s" *)
+      (* token (strl Addr.to_string peers) (strl string_of_node nodes) *)
 
 let parse_query name args : SHA1.t * query =
   let sha1 k args = SHA1.of_bin (Bcode.to_string (List.assoc k args)) in
@@ -88,20 +91,22 @@ let parse_query name args : SHA1.t * query =
 
 let parse_nodes s =
   let s = Bitstring.bitstring_of_string s in
-  let rec loop s =
-    bitmatch s with
-    | { id : 20 * 8 : string, bind (SHA1.of_bin id);
-        addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr);
-        rest : -1 : bitstring } ->
-      (id, addr) :: loop rest
-    | { _ } ->
-      []
+  let rec loop s = []
+  (* FIXME FIXME *)
+    (* bitmatch s with *)
+    (* | { id : 20 * 8 : string, bind (SHA1.of_bin id); *)
+    (*     addr : 6 * 8 : bitstring, bind (Addr.of_string_compact addr); *)
+    (*     rest : -1 : bitstring } -> *)
+    (*   (id, addr) :: loop rest *)
+    (* | { _ } -> *)
+    (*   [] *)
   in
   loop s
 
 let parse_value s =
   let s = Bitstring.bitstring_of_string s in
-  Addr.of_string_compact s
+  assert false (* FIXME FIXME *)
+  (* Addr.of_string_compact s *)
   (* bitmatch s with *)
   (* let rec loop s = *)
   (*   bitmatch s with *)
@@ -172,7 +177,7 @@ end = struct
   let is_valid secret str = check_timeout secret; str = secret.cur || str = secret.prev
 end
 
-module Peers = Map.Make (struct type t = Addr.t let compare = compare end)
+module Peers = Map.Make (struct type t = addr (* Addr.t *) let compare = compare end)
 
 type t = {
   mutable rt : Kademlia.table;
@@ -212,12 +217,14 @@ let encode_query id (q : query) =
         self ])
 
 let query dht addr q =
-  debug "query: %s %s" (Addr.to_string addr) (string_of_query q);
+  (* FIXME FIXME *)
+  (* debug "query: %s %s" (Addr.to_string addr) (string_of_query q); *)
   KRPC.send_msg dht.krpc (encode_query dht.id q) addr >>= function
   | KRPC.Response (addr, args) ->
-    let id, r = parse_response q args in
-    debug "query: got response from %s (%s): %s"
-      (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r);
+      let id, r = parse_response q args in
+      (* FIXME FIXME *)
+    (* debug "query: got response from %s (%s): %s" *)
+      (* (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r); *)
     Lwt.return ((id, addr), r)
   | KRPC.Timeout ->
     Lwt.fail (Failure "timeout")
@@ -259,23 +266,27 @@ let announce dht addr port token ih =
     Lwt.fail (Failure "DHT.announce")
 
 let encode_nodes l =
-  let rec loop = function
-    | [] -> Bitstring.empty_bitstring
-    | (id, addr) :: nodes ->
-      BITSTRING { SHA1.to_bin id : -1 : string;
-                  Addr.to_string_compact addr : -1 : string;
-                  loop nodes : -1 : bitstring }
-  in
-  Bitstring.string_of_bitstring (loop l)
+  (* let rec loop = function *)
+  (*   | [] -> Bitstring.empty_bitstring *)
+  (*   | (id, addr) :: nodes -> *)
+  (*     BITSTRING { SHA1.to_bin id : -1 : string; *)
+  (*                 Addr.to_string_compact addr : -1 : string; *)
+  (*                 loop nodes : -1 : bitstring } *)
+  (* in *)
+  (* Bitstring.string_of_bitstring (loop l) *)
+  assert false
+(* FIXME FIXME *)
 
 let encode_values l =
-  let rec loop = function
-    | [] -> Bitstring.empty_bitstring
-    | addr :: values ->
-      BITSTRING { Addr.to_string_compact addr : -1 : string;
-                  loop values : -1 : bitstring }
-  in
-  Bitstring.string_of_bitstring (loop l)
+  assert false
+  (* FIXME FIXME *)
+  (* let rec loop = function *)
+  (*   | [] -> Bitstring.empty_bitstring *)
+  (*   | addr :: values -> *)
+  (*     BITSTRING { Addr.to_string_compact addr : -1 : string; *)
+  (*                 loop values : -1 : bitstring } *)
+  (* in *)
+  (* Bitstring.string_of_bitstring (loop l) *)
 
 let encode_response id r : KRPC.msg =
   let sha1 x = Bcode.String (SHA1.to_bin x) in
@@ -311,8 +322,9 @@ let self_find_node dht h =
 
 (* do not hash port cause some broken implementations change it all the time *)
 let make_token addr ih secret =
-  string_of_int (Hashtbl.hash
-      (Addr.Ip.to_string (Addr.ip addr), SHA1.to_bin ih, secret))
+  "" (* FIXME FIXME *)
+  (* string_of_int (Hashtbl.hash *)
+      (* (Addr.Ip.to_string (Addr.ip addr), SHA1.to_bin ih, secret)) *)
 
 let valid_token addr ih secret token =
   let cur = Secret.current secret in
@@ -331,26 +343,32 @@ let answer dht secret addr name args =
     | Ping ->
       Pong
     | FindNode nid ->
-      Nodes (self_find_node dht nid)
+        assert false (* FIXME FIXME *)
+      (* Nodes (self_find_node dht nid) *)
     | GetPeers ih ->
       let token = make_token addr ih (Secret.current secret) in
       let peers = self_get_peers dht ih in
       let nodes = self_find_node dht ih in
       debug "answer: %d peers and %d nodes" (List.length peers) (List.length nodes);
-      Peers (token, peers, nodes)
+      assert false (* FIXME FIXME *)
+      (* Peers (token, peers, nodes) *)
     | Announce (ih, port, token) ->
       if not (valid_token addr ih secret token) then
         failwith (Printf.sprintf "answer: invalid token %S" token);
-      store dht ih (Addr.ip addr, port);
+      (* FIXME FIXME *)
+      (* store dht ih (Addr.ip addr, port); *)
       Pong
   in
-  debug "answer: %s (%s) : %s"
-    (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r);
+  (* FIXME FIXME *)
+  (* debug "answer: %s (%s) : %s" *)
+    (* (SHA1.to_hex_short id) (Addr.to_string addr) (string_of_response r); *)
   encode_response dht.id r
 
 let update dht st id addr =
   let ping addr k = Lwt.async (fun () -> ping dht addr >|= k) in
-  Kademlia.update dht.rt ping st id addr
+  (* FIXME FIXME *)
+  assert false
+  (* Kademlia.update dht.rt ping st id addr *)
 
 let (!!) = Lazy.force
 
@@ -379,15 +397,16 @@ let rec refresh dht =
     debug "refresh: got %d nodes from %s" (List.length l) (string_of_node n);
     List.iter (fun (id, addr) -> update dht Kademlia.Unknown id addr) l
   in
-  Lwt_list.iter_p (fun (target, nodes) ->
-    Lwt_list.iter_p (fun n ->
-      Lwt.catch
-        (fun () -> let id, addr = n in find_node dht addr target >|= cb id)
-        (fun exn ->
-           debug ~exn "refresh: find_node error %s" (string_of_node n);
-           Lwt.return ()))
-      nodes) ids >>= fun () ->
-  Lwt_unix.sleep 60.0 >>= fun () -> refresh dht
+  assert false (* FIXME FIXME *)
+  (* Lwt_list.iter_p (fun (target, nodes) -> *)
+  (*   Lwt_list.iter_p (fun n -> *)
+  (*     Lwt.catch *)
+  (*       (fun () -> let id, addr = n in find_node dht addr target >|= cb id) *)
+  (*       (fun exn -> *)
+  (*          debug ~exn "refresh: find_node error %s" (string_of_node n); *)
+  (*          Lwt.return ())) *)
+  (*     nodes) ids >>= fun () -> *)
+  (* Lwt_unix.sleep 60.0 >>= fun () -> refresh dht *)
 
 let expire_timer = 60.0
 
@@ -466,7 +485,7 @@ let lookup_node dht ?nodes target =
   let queried = Hashtbl.create 13 in
   let module BS = BoundedSet.Make
       (struct
-        type t = SHA1.t * Addr.t
+        type t = SHA1.t * addr (* Addr.t *)
         let compare n1 n2 =
           Z.compare (SHA1.distance target (fst n1)) (SHA1.distance target (fst n2))
       end)
@@ -513,7 +532,8 @@ let lookup_node dht ?nodes target =
   in
   begin match nodes with
   | None ->
-    let _, t = loop (self_find_node dht target) in t
+      (* let _, t = loop (self_find_node dht target) in t *)
+      assert false (* FIXME FIXME *)
   | Some nodes ->
     Lwt_list.iter_p (query false) nodes
   end >>= fun () ->
@@ -538,22 +558,26 @@ let query_peers dht id k =
          debug ~exn "query_peers: get_peers error from %s" (string_of_node n);
          Lwt.return ())
   end nodes
-    
+
 let bootstrap dht addr =
   ping dht addr >>= function
   | Some n ->
-    debug "bootstrap node %s (%s) is up" (string_of_node n) (Addr.to_string addr);
+      (* debug "bootstrap node %s (%s) is up" (string_of_node n) (Addr.to_string addr); *)
+      (* FIXME FIXME *)
     lookup_node dht ~nodes:[n] dht.id >>= fun l ->
-    debug "bootstrap via %s : found %s" (Addr.to_string addr) (strl string_of_node l);
+    (* debug "bootstrap via %s : found %s" (Addr.to_string addr) (strl string_of_node l); *)
+    (* FIXME FIXME *)
     Lwt.return (List.length l >= Kademlia.bucket_nodes)
   | None ->
-    debug "bootstrap node %s is down" (Addr.to_string addr);
+      (* debug "bootstrap node %s is down" (Addr.to_string addr); *)
+      (* FIXME FIXME *)
     Lwt.return false
 
 let bootstrap dht (host, port) =
-  Lwt.catch
-    (fun () -> Addr.Ip.of_string_noblock host >>= fun ip -> bootstrap dht (ip, port))
-    (fun exn -> debug ~exn "bootstrap error"; Lwt.return false)
+  (* Lwt.catch *)
+  (*   (fun () -> Addr.Ip.of_string_noblock host >>= fun ip -> bootstrap dht (ip, port)) *)
+  (*   (fun exn -> debug ~exn "bootstrap error"; Lwt.return false) *)
+  assert false (* FIXME FIXME *)
 
 let rec auto_bootstrap dht routers =
   lookup_node dht dht.id >>= fun l ->
@@ -572,7 +596,7 @@ let rec auto_bootstrap dht routers =
   loop routers (List.length l >= Kademlia.bucket_nodes)
   (* Lwt_list.iter_p (fun addr -> bootstrap dht addr >>= fun _ -> Lwt.return ()) routers *)
   (* let rec loop l = *)
-    
+
   (*   match l, ok with *)
   (*   | _, true -> *)
   (*     info "bootstrap ok, total nodes : %d" (Kademlia.size dht.rt); *)
@@ -590,4 +614,3 @@ let bootstrap_nodes =
   (* "router.transmission.com", 6881; *)
   [ "router.bittorrent.com", 6881;
     "dht.transmissionbt.com", 6881 ]
-   

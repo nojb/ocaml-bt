@@ -29,8 +29,10 @@ type event =
 exception Error of string
 exception Warning of string
 
+type addr = Unix.inet_addr * int
+
 type response = {
-  peers : Addr.t list;
+  peers : addr list;
   (** The contact information for peers. *)
   leechers : int option;
   (** How many peers have not yet the whole torrent. *)
@@ -61,12 +63,12 @@ module Tier : sig
 
   val create : Uri.t list -> t
   (** Create a tier with the given list of trackers. *)
-    
+
   val query : t -> ih:SHA1.t -> ?up:int64 -> ?down:int64 -> ?left:int64 -> ?event:event ->
     ?port:int -> id:SHA1.t -> response Lwt.t
   (** Query a tier.  All the trackers are tried in turn, until one that works is
       found. *)
-      
+
   val to_string : t -> string
   (** First tracker in the tier. *)
 end

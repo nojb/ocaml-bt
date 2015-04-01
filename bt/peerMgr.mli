@@ -25,14 +25,16 @@
 
 open Event
 
+type addr = Unix.inet_addr * int
+
 type swarm
 
 val create : ?size:int -> unit -> swarm
 
-val add : swarm -> Addr.t -> event
+val add : swarm -> addr -> event
 
 val peer_disconnected : swarm -> SHA1.t -> event
 
-val handshake_ok : swarm -> Addr.t -> SHA1.t -> unit
+val handshake_ok : swarm -> addr -> SHA1.t -> unit
 
-val handshake_failed : swarm -> Addr.t -> event
+val handshake_failed : swarm -> addr -> event

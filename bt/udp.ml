@@ -32,7 +32,7 @@ type socket = {
 
 let (>>=) = Lwt.(>>=)
 let (>|=) = Lwt.(>|=)
-    
+
 let create_socket ?(port = 0) () =
   let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
   Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, port));
@@ -45,17 +45,21 @@ let create_socket ?(port = 0) () =
   { fd; buf = String.create max_udp_packet_size }
 
 let send sock s addr =
-  Lwt_unix.sendto sock.fd s 0 (String.length s) [] (Addr.to_sockaddr addr) >|= fun n ->
-  if n < String.length s then debug "send: sent %d bytes, should have sent %d" n (String.length s)
+  Lwt.return_unit (* FIXME FIXME *)
+  (* Lwt_unix.sendto sock.fd s 0 (String.length s) [] (Addr.to_sockaddr addr) >|= fun n -> *)
+  (* if n < String.length s then debug "send: sent %d bytes, should have sent %d" n (String.length s) *)
 
 let send_bitstring sock (s, off, len) addr =
   assert (off land 7 = 0 && len land 7 = 0);
-  Lwt_unix.sendto sock.fd s (off lsr 3) (len lsr 3) [] (Addr.to_sockaddr addr) >|= fun n ->
-  if n < String.length s then debug "send_bitstring: sent %d bytes, should have sent %d" n len
+  Lwt.return_unit
+  (* FIXME FIXME *)
+  (* Lwt_unix.sendto sock.fd s (off lsr 3) (len lsr 3) [] (Addr.to_sockaddr addr) >|= fun n -> *)
+  (* if n < String.length s then debug "send_bitstring: sent %d bytes, should have sent %d" n len *)
 
 let recv sock =
-    Lwt_unix.recvfrom sock.fd sock.buf 0 (String.length sock.buf) [] >|= fun (n, iaddr) ->
-    String.sub sock.buf 0 n, Addr.of_sockaddr iaddr
+  Lwt_unix.recvfrom sock.fd sock.buf 0 (String.length sock.buf) [] >>= fun (n, iaddr) ->
+  Lwt.fail End_of_file (* FIXME FIXME *)
+    (* String.sub sock.buf 0 n, Addr.of_sockaddr iaddr *)
 
 let set_timeout sock t =
   Lwt_unix.setsockopt_float sock.fd Lwt_unix.SO_RCVTIMEO t

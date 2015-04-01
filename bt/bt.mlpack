@@ -15,10 +15,8 @@ PeerMgr
 Choker
 Client
 Rate
-Addr
 UDP
 Wire
-IO
 Handshake
 Requester
 DHT
