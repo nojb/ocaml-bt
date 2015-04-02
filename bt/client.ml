@@ -200,9 +200,7 @@ let peer_interested peers id =
 
 let welcome push mode fd exts id =
   let p = Peer.create id in
-  Peer.start p push;
-  (* let _ = reader_loop push fd p in *)
-  (* let _, send = writer_loop fd in *)
+  Peer.start p push fd;
   Peer.extended_handshake p;
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
   p

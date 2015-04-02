@@ -310,7 +310,6 @@ and t =
     extbits : Bits.t;
     extensions : (string, int) Hashtbl.t;
 
-    mutable act_reqs : int;
     mutable strikes : int;
 
     mutable info : meta_info;
@@ -388,7 +387,6 @@ let create id info =
     peer_choking = true; peer_interested = false;
     extbits = Bits.create (8 * 8);
     extensions = Hashtbl.create 3;
-    act_reqs = 0;
     info;
     download = Speedometer.create ();
     upload = Speedometer.create ();
@@ -496,7 +494,6 @@ let supported_extensions =
 let got_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
-    p.act_reqs <- 0;
     Choked p.id
   end else
     NoEvent
@@ -566,7 +563,7 @@ let got_cancel p i ofs len =
   NoEvent
 
 let got_piece p idx off s =
-  p.act_reqs <- p.act_reqs - 1;
+  (* p.act_reqs <- p.act_reqs - 1; *)
   p.piece_data_time <- Unix.time ();
   Speedometer.add p.download (Cstruct.len s);
   match p.info with
@@ -643,7 +640,7 @@ let send_block p i b s =
       assert false
 
 let send_request p (i, ofs, len) =
-  p.act_reqs <- p.act_reqs + 1;
+  (* p.act_reqs <- p.act_reqs + 1; *)
   Wire.REQUEST (i, ofs, len)
 
 let extended_handshake p =
