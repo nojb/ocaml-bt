@@ -27,7 +27,7 @@ type t
 
 open Event
 
-val create : SHA1.t -> (event -> unit) -> Lwt_unix.file_descr -> [ `Plain | `Encrypted of ARC4.key * ARC4.key ] -> t
+val create : SHA1.t -> (event -> unit) -> Lwt_unix.file_descr -> (ARC4.key * ARC4.key) option -> t
 
 val id : t -> SHA1.t
 (** The peer ID. *)

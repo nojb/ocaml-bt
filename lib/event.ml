@@ -34,7 +34,7 @@ type addr = Unix.inet_addr * int
 type event =
   | PeersReceived of addr list
 
-  | PeerConnected of [ `Plain | `Encrypted of ARC4.key * ARC4.key ] * Lwt_unix.file_descr * Bits.t * SHA1.t
+  | PeerConnected of (ARC4.key * ARC4.key) option * Lwt_unix.file_descr * Bits.t * SHA1.t
 
   | PieceVerified of int
 

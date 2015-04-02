@@ -744,8 +744,8 @@ let writer_loop p push fd key =
 let start p push fd mode =
   let my_key, her_key =
     match mode with
-    | `Plain -> None, None
-    | `Encrypted (my_key, her_key) -> Some my_key, Some her_key
+    | None -> None, None
+    | Some (my_key, her_key) -> Some my_key, Some her_key
   in
   ignore (reader_loop p push fd her_key);
   ignore (writer_loop p push fd my_key)

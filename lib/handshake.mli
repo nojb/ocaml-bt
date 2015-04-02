@@ -30,7 +30,7 @@ type encryption_mode =
 
 type ret =
   [ `Ok of t * Cstruct.t option
-  | `Success of [ `Plain | `Encrypted of ARC4.key * ARC4.key ] * Cstruct.t
+  | `Success of (ARC4.key * ARC4.key) option * Cstruct.t
   | `Error of string ]
 
 val incoming : info_hash:SHA1.t -> encryption_mode -> ret

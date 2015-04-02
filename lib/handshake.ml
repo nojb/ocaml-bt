@@ -263,8 +263,8 @@ let handle_client t state =
         let padD, buf = Cstruct.split buf padD_len in
         let { ARC4.key = her_key } = ARC4.decrypt ~key:her_key padD in
         let mode = match crypto_select with
-          | 1l -> `Plain
-          | 2l -> `Encrypted (my_key, her_key)
+          | 1l -> None
+          | 2l -> Some (my_key, her_key)
           | _ -> failwith "bad crypto_select"
         in
         `Success (mode, buf)
@@ -465,7 +465,7 @@ let handle t buf =
 
 type ret =
   [ `Ok of t * Cstruct.t option
-  | `Success of [ `Plain | `Encrypted of ARC4.key * ARC4.key ] * Cstruct.t
+  | `Success of (ARC4.key * ARC4.key) option * Cstruct.t
   | `Error of string ]
 
 let outgoing ~info_hash mode =
