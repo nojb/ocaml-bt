@@ -125,11 +125,12 @@ let connect_to_peer info_hash ip port timeout =
       assert false
 
 let connect_to_peer info_hash push ((ip, port) as addr) timeout =
-  Lwt.try_bind
-    (fun () -> connect_to_peer info_hash ip port timeout)
-    (fun (mode, fd, ext, peer_id) ->
-       Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_bin (Cstruct.to_string ext), peer_id))
-    (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr)
+  ignore
+    (Lwt.try_bind
+       (fun () -> connect_to_peer info_hash ip port timeout)
+       (fun (mode, fd, ext, peer_id) ->
+          Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_bin (Cstruct.to_string ext), peer_id))
+       (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
 
 let buf_size = 1024
 
@@ -247,6 +248,13 @@ let peer_interested peers id =
   with
   | Not_found -> false
 
+(* let metadata_piece peers id len i data = *)
+(*   try *)
+(*     let p = Hashtbl.find peers id in *)
+(*     Peer.metadata_piece p len i data *)
+(*   with *)
+(*   | Not_found -> Wire.KEEP_ALIVE *)
+
 let welcome push mode fd exts id =
   let p = Peer.create_no_meta id in
   let _ = reader_loop push fd p in
@@ -304,6 +312,7 @@ let rechoke peers send =
   0
 
 let share_torrent bt meta dl peers =
+  let send id m = try let p, send = Hashtbl.find peers id in send (m p) with Not_found -> () in
   (* let r = Requester.create meta dl in *)
   (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
   let rec loop () =
@@ -338,7 +347,7 @@ let share_torrent bt meta dl peers =
         loop ()
 
     | ConnectPeer (addr, timeout) ->
-        Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
+        connect_to_peer bt.ih bt.push addr timeout;
         loop ()
 
     | Choked _ ->
@@ -361,9 +370,9 @@ let share_torrent bt meta dl peers =
         (* Requester.got_bitfield r b; *)
         loop ()
 
-    | MetaRequested (p, i) ->
-        (* Peer.send_meta_piece p i (Metadata.length meta, Metadata.get_piece meta i); *)
-        (* FIXME FIXME *)
+    | MetaRequested (id, i) ->
+        send id
+          (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i));
         loop ()
 
     | GotMetaPiece _
@@ -415,7 +424,7 @@ let share_torrent bt meta dl peers =
         (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
         (* (\* Peer.send_have_bitfield p (Torrent.have tor) *\) *)
         (* (\* FIXME *\) *)
-        Hashtbl.replace peers id p;
+        Hashtbl.replace peers id (p, send);
         loop ()
 
     | AvailableMetadata _
@@ -430,6 +439,7 @@ let load_torrent bt meta =
 
 let rec fetch_metadata bt =
   let peers = Hashtbl.create 20 in
+  let send id m = try let p, send = Hashtbl.find peers id in send (m p) with Not_found -> () in
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
     match m, e with
@@ -447,7 +457,7 @@ let rec fetch_metadata bt =
         loop m
 
     | _, ConnectPeer (addr, timeout) ->
-        Lwt.async (fun () -> connect_to_peer bt.ih bt.push addr timeout);
+        connect_to_peer bt.ih bt.push addr timeout;
         loop m
 
     | None, PeerConnected (mode, fd, exts, id) ->
@@ -471,9 +481,8 @@ let rec fetch_metadata bt =
         bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop m
 
-    | _, MetaRequested (id, _) ->
-        (* Peer.send_reject_meta p i; *)
-        (* FIXME *)
+    | _, MetaRequested (id, i) ->
+        send id (Peer.reject_metadata_request i);
         loop m
 
     | Some m', GotMetaPiece (p, i, s) ->

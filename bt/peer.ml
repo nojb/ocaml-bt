@@ -109,7 +109,7 @@ let got_ut_metadata p data =
   | _ ->
       NoEvent
 
-let send_reject_meta p piece =
+let reject_metadata_request piece p =
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let m =
     let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
@@ -117,15 +117,15 @@ let send_reject_meta p piece =
   in
   Wire.EXTENDED (id, m)
 
-let send_meta_piece p piece (len, s) =
+let metadata_piece len i data p =
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let m =
     let d =
-      [ "msg_type", Bcode.Int 1L;
-        "piece", Bcode.Int (Int64.of_int piece);
+      [ "msg_type",   Bcode.Int 1L;
+        "piece",      Bcode.Int (Int64.of_int i);
         "total_size", Bcode.Int (Int64.of_int len) ]
     in
-    Cs.(Bcode.encode (Bcode.Dict d) <+> s)
+    Cs.(Bcode.encode (Bcode.Dict d) <+> data)
   in
   Wire.EXTENDED (id, m)
 
@@ -417,11 +417,6 @@ let request_meta_piece p idx =
       "piece", Bcode.Int (Int64.of_int idx) ]
   in
   Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
-
-let upload_rate p = Rate.get p.upload
-let download_rate p = Rate.get p.download
-
-let reset_rates p = Rate.reset p.upload; Rate.reset p.download
 
 let create id info =
   { id;

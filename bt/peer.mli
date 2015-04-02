@@ -93,23 +93,14 @@ val send_cancel : t -> int * int -> Wire.message
 val send_port : t -> int -> Wire.message
 (** Send a PORT message (used for DHT). *)
 
-val send_reject_meta : t -> int -> Wire.message
+val reject_metadata_request : int -> t -> Wire.message
 (** Reject a request for a metainfo piece. *)
 
-val send_meta_piece : t -> int -> int * Cstruct.t -> Wire.message
+val metadata_piece : int -> int -> Cstruct.t -> t -> Wire.message
 (** Send a metainfo piece. *)
 
 val send_block : t -> int -> int -> string -> Wire.message
 (** Send a block. *)
-
-val upload_rate : t -> float
-(** The current upload speed. *)
-
-val download_rate : t -> float
-(** The current download speed. *)
-
-val reset_rates : t -> unit
-(** Reset the download/upload speed computation. *)
 
 val worked_on_piece : t -> int -> bool
 (** Whether this peer has sent us blocks of a particular piece. *)
