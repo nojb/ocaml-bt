@@ -81,8 +81,6 @@ let request_pipeline_max = 5
 let info_piece_size = 16 * 1024
 let default_block_size = 16 * 1024
 
-exception Timeout
-
 open Event
 
 type addr = Unix.inet_addr * int

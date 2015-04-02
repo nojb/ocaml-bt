@@ -27,8 +27,6 @@ type addr = Unix.inet_addr * int
 
 val keepalive_delay : float
 
-exception Timeout
-
 open Event
 
 type event_callback = event -> unit
