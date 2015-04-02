@@ -123,7 +123,7 @@ val close : t -> unit
 
 val got_message : t -> Wire.message -> event
 
-val send_pex : t -> addr list -> unit
+val send_pex : addr list -> t -> Wire.message
 (** Sends a periodic PEX message (if supported).  The address list passed
     is the list of currently connected peers. *)
 

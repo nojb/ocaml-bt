@@ -21,6 +21,62 @@
 
 module Cs = Nocrypto.Uncommon.Cs
 
+module Speedometer : sig
+
+  type t
+
+  val create : ?resolution:int -> ?seconds:int -> unit -> t
+  val add : t -> int -> unit
+  val speed : t -> float
+
+end = struct
+
+  let max_tick = 65535 (* 0xFFFF *)
+
+  type t =
+    { resolution : float;
+      size : int;
+      mutable last : float;
+      mutable pointer : int;
+      buffer : int array }
+
+  let create ?(resolution = 4) ?(seconds = 5) () =
+    if resolution <= 0 || seconds <= 0 then invalid_arg "Speedometer.create";
+    let size = seconds * resolution in
+    let resolution = float resolution in
+    let last = (Unix.gettimeofday () -. 1.) *. resolution in
+    { resolution; size; last; buffer = Array.make size 0; pointer = 1 }
+
+  let update t =
+    let now = Unix.gettimeofday () *. t.resolution in
+    let dist = int_of_float (now -. t.last) land max_tick in
+    let dist = if dist > t.size then t.size else dist in
+    t.last <- now;
+
+    let rec copy dist pointer =
+      let pointer = if pointer = t.size then 0 else pointer in
+      if dist > 0 then begin
+        t.buffer.(pointer) <- t.buffer.(if pointer = 0 then t.size - 1 else pointer - 1);
+        copy (dist - 1) (pointer + 1)
+      end else
+        pointer
+    in
+    t.pointer <- copy dist t.pointer
+
+  let add t delta =
+    update t;
+    let pointer = if t.pointer = 0 then t.size - 1 else t.pointer in
+    t.buffer.(pointer) <- t.buffer.(pointer) + delta
+
+  let speed t =
+    update t;
+    let top = t.buffer.(if t.pointer = 0 then t.size - 1 else t.pointer) in
+    let btm = t.buffer.(t.pointer) in
+    float (top - btm) *. t.resolution /. float t.size
+    (* = float (top - btm) /. t.seconds *)
+
+end
+
 let keepalive_delay = 20. (* FIXME *)
 let request_pipeline_max = 5
 let info_piece_size = 16 * 1024
@@ -57,15 +113,12 @@ and t =
     mutable act_reqs : int;
     mutable strikes : int;
 
-    (* send_queue : Wire.message Lwt_sequence.t; *)
-    (* send_waiters : Wire.message Lwt.u Lwt_sequence.t; *)
-
     on_stop : unit Lwt_condition.t;
 
     mutable info : meta_info;
 
-    mutable upload : Rate.t;
-    mutable download : Rate.t;
+    mutable upload : Speedometer.t;
+    mutable download : Speedometer.t;
 
     mutable time : float;
     mutable piece_data_time : float;
@@ -247,8 +300,7 @@ let got_cancel p i ofs len =
 let got_piece p idx off s =
   p.act_reqs <- p.act_reqs - 1;
   p.piece_data_time <- Unix.time ();
-  Rate.add p.download (Cstruct.len s);
-  (* Lwt_condition.broadcast p.on_can_request (); *)
+  Speedometer.add p.download (Cstruct.len s);
   match p.info with
   | HasMeta info ->
       Bits.set info.blame idx;
@@ -425,12 +477,10 @@ let create id info =
     extbits = Bits.create (8 * 8);
     extensions = Hashtbl.create 3;
     act_reqs = 0;
-    (* send_queue = Lwt_sequence.create (); *)
-    (* send_waiters = Lwt_sequence.create (); *)
     on_stop = Lwt_condition.create ();
     info;
-    download = Rate.create ();
-    upload = Rate.create ();
+    download = Speedometer.create ();
+    upload = Speedometer.create ();
     strikes = 0;
     time = Unix.time ();
     piece_data_time = 0.0;
@@ -498,13 +548,14 @@ let send_ut_pex p added dropped =
   (* debug "sent pex to %s added %d dropped %d" (string_of_node p.node) *)
     (* (List.length added) (List.length dropped) *)
 
-let send_pex p pex =
+let send_pex pex p =
   if supports p ut_pex then begin
     let added = List.filter (fun a -> not (List.mem a p.last_pex)) pex in
     let dropped = List.filter (fun a -> not (List.mem a pex)) p.last_pex in
-    send_ut_pex p added dropped;
-    p.last_pex <- pex
-  end
+    p.last_pex <- pex;
+    send_ut_pex p added dropped
+  end else
+    Wire.KEEP_ALIVE
 
 let is_snubbing p =
   let now = Unix.time () in
@@ -515,10 +566,10 @@ let to_string p =
   (* string_of_node p.node *)
 
 let download_speed p =
-  0.0
+  Speedometer.speed p.download
 
 let upload_speed p =
-  0.0
+  Speedometer.speed p.upload
 
 let is_seeder p =
   false
