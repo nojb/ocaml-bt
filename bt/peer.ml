@@ -773,19 +773,14 @@ let metadata_piece len i data p =
 
 (* Event loop *)
 
-let encrypt mode cs =
-  match mode with
-  | `Plain -> `Plain, cs
-  | `Encrypted (my_key, her_key) ->
-      let { ARC4.key = my_key; message = cs } = ARC4.encrypt ~key:my_key cs in
-      `Encrypted (my_key, her_key), cs
+let encrypt key cs =
+  match key with
+  | None -> None, cs
+  | Some key ->
+      let { ARC4.key; message = cs } = ARC4.encrypt ~key cs in
+      Some key, cs
 
-let decrypt mode cs =
-  match mode with
-  | `Plain -> `Plain, cs
-  | `Encrypted (my_key, her_key) ->
-      let { ARC4.key = my_key; message = cs } = ARC4.decrypt ~key:her_key cs in
-      `Encrypted (my_key, her_key), cs
+let decrypt = encrypt
 
 let (>>=) = Lwt.(>>=)
 
@@ -796,51 +791,55 @@ let handle_err p push fd e =
   push (PeerDisconnected p.id);
   Lwt_unix.close fd
 
-let reader_loop p push fd mode =
+let reader_loop p push fd key =
   let buf = Cstruct.create buf_size in
-  let rec loop mode r =
-    Lwt_unix.with_timeout keepalive_delay
-      (fun () -> Lwt_cstruct.read fd buf) >>= function
+  let rec loop key r =
+    Lwt_unix.with_timeout keepalive_delay (fun () -> Lwt_cstruct.read fd buf) >>= function
     | 0 ->
         failwith "eof"
     | n ->
-        let mode, msgs = decrypt mode (Cstruct.sub buf 0 n) in
+        let key, msgs = decrypt key (Cstruct.sub buf 0 n) in
         let r, msgs = Wire.R.handle r msgs in
         List.iter (fun msg -> push (got_message p msg)) msgs;
-        loop mode r
+        loop key r
   in
-  loop mode Wire.R.empty
+  loop key Wire.R.empty
 
-let reader_loop p push fd mode =
-  Lwt.catch (fun () -> reader_loop p push fd mode) (handle_err p push fd)
+let reader_loop p push fd key =
+  Lwt.catch (fun () -> reader_loop p push fd key) (handle_err p push fd)
 
-let writer_loop p fd mode =
-  let write m mode =
+let writer_loop p fd key =
+  let write m key =
     let cs = Util.W.to_cstruct (Wire.writer m) in
-    let mode, cs = encrypt mode cs in
+    let key, cs = encrypt key cs in
     Lwt_cstruct.(complete (write fd) @@ Util.W.to_cstruct (Wire.writer m)) >>= fun () ->
-    Lwt.return mode
+    Lwt.return key
   in
-  let rec loop mode =
+  let rec loop key =
     Lwt.pick
       [ (Lwt_condition.wait p.send >>= fun () -> Lwt.return `Ok);
         (Lwt_unix.sleep keepalive_delay >>= fun () -> Lwt.return `Timeout) ]
     >>= function
     | `Ok ->
-        Lwt_sequence.fold_l (fun m t -> t >>= write m) p.queue (Lwt.return mode) >>=
+        Lwt_sequence.fold_l (fun m t -> t >>= write m) p.queue (Lwt.return key) >>=
         loop
     | `Timeout ->
-        write Wire.KEEP_ALIVE mode >>=
+        write Wire.KEEP_ALIVE key >>=
         loop
   in
-  loop mode
+  loop key
 
-let writer_loop p push fd mode =
-  Lwt.catch (fun () -> writer_loop p fd mode) (handle_err p push fd)
+let writer_loop p push fd key =
+  Lwt.catch (fun () -> writer_loop p fd key) (handle_err p push fd)
 
 let start p push fd mode =
-  ignore (reader_loop p push fd mode);
-  ignore (writer_loop p push fd mode)
+  let my_key, her_key =
+    match mode with
+    | `Plain -> None, None
+    | `Encrypted (my_key, her_key) -> Some my_key, Some her_key
+  in
+  ignore (reader_loop p push fd her_key);
+  ignore (writer_loop p push fd my_key)
 
 let stop p =
   assert false
