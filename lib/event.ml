@@ -74,8 +74,6 @@ type event =
 
   | DHTPort of SHA1.t * int
 
-  | ConnectPeer of addr * float
-
   | ConnectFailed of addr
 
   | NoEvent

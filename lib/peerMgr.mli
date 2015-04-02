@@ -31,10 +31,10 @@ type swarm
 
 val create : ?size:int -> unit -> swarm
 
-val add : swarm -> addr -> event
+val add : swarm -> addr -> (addr * float) option
 
-val peer_disconnected : swarm -> SHA1.t -> event
+val peer_disconnected : swarm -> SHA1.t -> (addr * float) option
 
 val handshake_ok : swarm -> addr -> SHA1.t -> unit
 
-val handshake_failed : swarm -> addr -> event
+val handshake_failed : swarm -> addr -> (addr * float) option

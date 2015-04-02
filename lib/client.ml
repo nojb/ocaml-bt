@@ -110,13 +110,16 @@ let connect_to_peer info_hash ip port timeout =
   | `Error _ ->
       assert false
 
-let connect_to_peer info_hash push ((ip, port) as addr) timeout =
-  ignore
-    (Lwt.try_bind
-       (fun () -> connect_to_peer info_hash ip port timeout)
-       (fun (mode, fd, ext, peer_id) ->
-          Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_cstruct ext, peer_id))
-       (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
+let connect_to_peer info_hash push = function
+  | Some (addr, timeout) ->
+      let ip, port = addr in
+      ignore
+        (Lwt.try_bind
+           (fun () -> connect_to_peer info_hash ip port timeout)
+           (fun (mode, fd, ext, peer_id) ->
+              Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_cstruct ext, peer_id))
+           (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
+  | None -> ()
 
   (* | TorrentLoaded dl -> *)
   (*         (\* debug "torrent loaded (good=%d,total=%d)" *\) *)
@@ -203,11 +206,8 @@ let rechoke_compare (p1, salt1) (p2, salt2) =
     compare salt1 salt2
 
 let rechoke peers =
-
   let rec loop opt nopt =
-
     let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
-
     let wires =
       let add _ p wires =
         match Peer.is_seeder p, opt with
@@ -221,20 +221,15 @@ let rechoke peers =
       in
       Hashtbl.fold add peers []
     in
-
     let wires = List.sort rechoke_compare wires in
-
     let rec select n acc = function
-
       | (p, _) as w :: wires when n < rechoke_slots ->
           let n = if Peer.peer_interested p then n + 1 else n in
           select n (w :: acc) wires
-
       | wires ->
           begin match opt with
           | Some _ ->
               acc, wires, opt, nopt
-
           | None ->
               let wires = List.filter (fun (p, _) -> Peer.peer_interested p) wires in
               if List.length wires > 0 then
@@ -243,17 +238,12 @@ let rechoke peers =
               else
                 acc, wires, None, nopt
           end
-
     in
-
     let unchoke, choke, opt, nopt = select 0 [] wires in
-
     List.iter (fun (p, _) -> Peer.unchoke p) unchoke;
     List.iter (fun (p, _) -> Peer.choke p) choke;
-
     Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt
   in
-
   loop None rechoke_optimistic_duration
 
 let share_torrent bt meta dl peers =
@@ -264,7 +254,7 @@ let share_torrent bt meta dl peers =
     Lwt_stream.next bt.chan >>= function
     | PeersReceived addrs ->
         (* debug "received %d peers" (List.length addrs); *)
-        List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
+        List.iter (fun addr -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop ()
 
     | PieceVerified i ->
@@ -281,18 +271,15 @@ let share_torrent bt meta dl peers =
         loop ()
 
     | ConnectFailed addr ->
-        bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop ()
 
     | PeerDisconnected id ->
-        bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
+        connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
+        Hashtbl.remove peers id;
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
         (* Requester.peer_declined_all_requests r id; FIXME FIXME *)
         (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
-        loop ()
-
-    | ConnectPeer (addr, timeout) ->
-        connect_to_peer bt.ih bt.push addr timeout;
         loop ()
 
     | Choked _ ->
@@ -345,7 +332,7 @@ let share_torrent bt meta dl peers =
     | GotPEX (p, added, dropped) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
-        List.iter (fun (addr, _) -> bt.push (PeerMgr.add bt.peer_mgr addr)) added;
+        List.iter (fun (addr, _) -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop ()
 
     | DHTPort _ ->
@@ -401,11 +388,7 @@ let rec fetch_metadata bt =
 
     | _, PeersReceived addrs ->
         (* debug "received %d peers" (List.length addrs); *)
-        List.iter (fun addr -> bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
-        loop m
-
-    | _, ConnectPeer (addr, timeout) ->
-        connect_to_peer bt.ih bt.push addr timeout;
+        List.iter (fun addr -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop m
 
     | _, PeerConnected (mode, fd, exts, id) ->
@@ -414,12 +397,12 @@ let rec fetch_metadata bt =
         loop m
 
     | _, PeerDisconnected id ->
-        bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
+        connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         loop m
 
     | _, ConnectFailed addr ->
-        bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop m
 
     | _, MetaRequested (id, i) ->
@@ -447,7 +430,7 @@ let rec fetch_metadata bt =
     | _, GotPEX (p, added, dropped) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
-        List.iter (fun (addr, _) -> bt.push (PeerMgr.add bt.peer_mgr addr)) added;
+        List.iter (fun (addr, _) -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop m
 
     | _, DHTPort (p, i) ->

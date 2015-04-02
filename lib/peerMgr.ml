@@ -47,19 +47,19 @@ let create ?(size = default_size) () =
 
 let drain sw =
   if List.length sw.connections >= sw.size then
-    NoEvent
+    None
   else
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
     | None ->
-        NoEvent
+        None
     | Some addr ->
         let p = Hashtbl.find sw.peers addr in
         sw.connections <- addr :: sw.connections;
-        ConnectPeer (addr, p.timeout)
+        Some (addr, p.timeout)
 
 let add sw addr =
   if Hashtbl.mem sw.peers addr then
-    NoEvent
+    None
   else begin
     Hashtbl.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
     Queue.push addr sw.queue;
@@ -92,11 +92,6 @@ let handshake_ok sw addr id =
 let handshake_failed sw addr =
   sw.connections <- List.filter (fun addr' -> addr <> addr') sw.connections;
   drain sw
-
-(* let max_peer_count = 20 *)
-
-(* let need_more_peers bt = *)
-(*   (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count) (\* && not (is_complete bt) *\) *)
 
 (* let min_upload_idle_secs = 60.0 *)
 (* let max_upload_idle_secs = 60.0 *. 5.0 *)
