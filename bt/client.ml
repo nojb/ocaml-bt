@@ -71,20 +71,6 @@ let parse_handshake cs =
 
 let buf_size = 1024
 
-let encrypt mode cs =
-  match mode with
-  | `Plain -> `Plain, cs
-  | `Encrypted (my_key, her_key) ->
-      let { ARC4.key = my_key; message = cs } = ARC4.encrypt ~key:my_key cs in
-      `Encrypted (my_key, her_key), cs
-
-let decrypt mode cs =
-  match mode with
-  | `Plain -> `Plain, cs
-  | `Encrypted (my_key, her_key) ->
-      let { ARC4.key = my_key; message = cs } = ARC4.decrypt ~key:her_key cs in
-      `Encrypted (my_key, her_key), cs
-
 let negotiate fd t =
   let read_buf = Cstruct.create buf_size in
   let rec loop = function
@@ -200,7 +186,7 @@ let peer_interested peers id =
 
 let welcome push mode fd exts id =
   let p = Peer.create id in
-  Peer.start p push fd;
+  Peer.start p push fd mode;
   Peer.extended_handshake p;
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
   p

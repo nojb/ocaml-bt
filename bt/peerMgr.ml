@@ -98,53 +98,6 @@ let handshake_failed sw addr =
 (* let need_more_peers bt = *)
 (*   (Hashtbl.length bt.peers + Hashtbl.length bt.connecting < max_peer_count) (\* && not (is_complete bt) *\) *)
 
-
-(* let peer_finished bt id = *)
-(*   (\* debug "peer %s disconnected" (Peer.to_string p); *\) *)
-(*   (\* (\\* Peer.close p; *\\) *\) *)
-(*   (\* Hashtbl.remove bt.peers (Peer.addr p) *\) *)
-(*   (\* FIXME FIXME FIXME *\) *)
-(*   assert false *)
-
-(* let handle_incoming_peer bt sock = *)
-(*   let addr = IO.addr sock in *)
-(*   if not (know_peer bt addr) then *)
-(*     if need_more_peers bt then begin *)
-(*       debug "will contact incoming peer %s" (Addr.to_string addr); *)
-(*       Hashtbl.add bt.connecting addr (); *)
-(*       let hs = *)
-(*         Handshake.incoming ~id:bt.id ~ih:bt.ih Handshake.(Crypto Prefer) sock *)
-(*           (handshake_done bt sock) *)
-(*       in *)
-(*       () *)
-(*     end else begin *)
-(*       debug "too many peers, disconnecting and saving incoming peer %s" (Addr.to_string addr); *)
-(*       bt.saved <- addr :: bt.saved; *)
-(*       Lwt.async (fun () -> IO.close sock) *)
-(*     end *)
-
-(* let handle_received_peer bt addr = *)
-(*   if not (know_peer bt addr) then begin *)
-(*     bt.saved <- addr :: bt.saved *)
-(*   end *)
-
-(* let fold_peers f pm x = *)
-(*   Hashtbl.fold (fun _ p l -> f p l) pm.peers x *)
-
-(* let iter_peers f pm = *)
-(*   Hashtbl.iter (fun _ p -> f p) pm.peers *)
-
-(* let close_peer pm p = *)
-(*   Peer.close p *)
-
-(* let is_seed pm = *)
-(*   match pm.info with *)
-(*   | HasMeta (_, tor, _) -> Torrent.is_complete tor *)
-(*   | NoMeta _ -> false *)
-
-(* let peer_count pm = *)
-(*   Hashtbl.length pm.peers *)
-
 (* let min_upload_idle_secs = 60.0 *)
 (* let max_upload_idle_secs = 60.0 *. 5.0 *)
 
@@ -196,10 +149,6 @@ let handshake_failed sw addr =
 (*   iter_peers (fun p -> Peer.send_pex p pex) pm; *)
 (*   Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm *)
 
-(* let start pm = *)
-(*   Lwt.async (fun () -> reconnect_pulse pm); *)
-(*   Lwt.async (fun () -> pex_pulse pm) *)
-
 (* let torrent_loaded pm m tor get_next_requests = *)
 (*   debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor); *)
 (*   Hashtbl.iter (fun _ p -> Peer.got_metadata p m (get_next_requests p)) pm.peers; *)
@@ -218,18 +167,3 @@ let handshake_failed sw addr =
 (*       if Peer.worked_on_piece p i then *)
 (*         if Peer.strike p >= max_bad_pieces_per_peer then *)
 (*           close_peer pm p) pm *)
-
-(* let got_piece pm i = *)
-(*   iter_peers (fun p -> Peer.send_have p i) pm *)
-
-(* let upload_speed pm = *)
-(*   fold_peers (fun p ul -> ul +. Peer.upload_rate p) pm 0.0 *)
-
-(* let download_speed pm = *)
-(*   fold_peers (fun p dl -> dl +. Peer.download_rate p) pm 0.0 *)
-
-(* let num_connected_peers pm = *)
-(*   Hashtbl.length pm.peers *)
-
-(* let num_total_peers pm = *)
-(*   Hashtbl.length pm.peers + Hashtbl.length pm.connecting + List.length pm.saved *)

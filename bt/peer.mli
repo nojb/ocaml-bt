@@ -21,6 +21,8 @@
 
 (** Peer *)
 
+module ARC4 = Nocrypto.Cipher_stream.ARC4
+
 type t
 
 open Event
@@ -130,5 +132,5 @@ val send_pex : addr list -> t -> unit
 
 val stop : t -> unit
 
-val start : t -> (event -> unit) -> Lwt_unix.file_descr -> unit
+val start : t -> (event -> unit) -> Lwt_unix.file_descr -> [ `Plain | `Encrypted of ARC4.key * ARC4.key ] -> unit
 (** Disconnect this peer. *)
