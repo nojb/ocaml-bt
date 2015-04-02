@@ -37,9 +37,6 @@ val compare : t -> t -> int
 val equal : t -> t -> bool
 (** Whether two hashes are identical. *)
 
-val hash : t -> int
-(** A suitable function for {!Hashtbl.Make}. *)
-
 val to_raw : t -> Cstruct.t
 (** The underlying data.  WARNING: this is not a copy, so it is possibly to
     modify in-place.  *)

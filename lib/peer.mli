@@ -27,7 +27,7 @@ type t
 
 open Event
 
-val create : SHA1.t -> t
+val create : SHA1.t -> (event -> unit) -> Lwt_unix.file_descr -> [ `Plain | `Encrypted of ARC4.key * ARC4.key ] -> t
 
 val id : t -> SHA1.t
 (** The peer ID. *)
@@ -56,9 +56,6 @@ val worked_on_piece : t -> int -> bool
 val strike : t -> int
 (** Mark this peer as having participated in a piece that failed its SHA1 hash
     check.  Returns the updated number of strikes. *)
-
-val seeding : t -> bool
-(** Whether this peer already has all the pieces. *)
 
 val time : t -> float
 (** Peer creation time. *)
@@ -109,7 +106,7 @@ val have : t -> int -> unit
 val have_bitfield : t -> Bits.t -> unit
 (** Send a BITFIELD message. *)
 
-val send_cancel : t -> int * int -> unit
+val send_cancel : t -> int -> int -> int -> unit
 (** Send a CANCEL message. *)
 
 val send_port : t -> int -> unit
@@ -121,16 +118,9 @@ val reject_metadata_request : t -> int -> unit
 val metadata_piece : int -> int -> Cstruct.t -> t -> unit
 (** Send a metainfo piece. *)
 
-val send_block : t -> int -> int -> string -> unit
+val send_block : t -> int -> int -> Cstruct.t -> unit
 (** Send a block. *)
 
 val send_pex : addr list -> t -> unit
 (** Sends a periodic PEX message (if supported).  The address list passed
     is the list of currently connected peers. *)
-
-(** Event loop *)
-
-val stop : t -> unit
-
-val start : t -> (event -> unit) -> Lwt_unix.file_descr -> [ `Plain | `Encrypted of ARC4.key * ARC4.key ] -> unit
-(** Disconnect this peer. *)

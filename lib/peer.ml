@@ -140,7 +140,7 @@ end = struct
     | INTERESTED -> "interested"
     | NOT_INTERESTED -> "not interested"
     | HAVE i -> sprintf "have %d" i
-    | BITFIELD b -> sprintf "bitfield with %d/%d pieces" (Bits.count b) (Bits.length b)
+    | BITFIELD b -> sprintf "bitfield with %d/%d pieces" (Bits.count_ones b) (Bits.length b)
     | REQUEST (i, off, len) -> sprintf "request %d off:%d len:%d" i off len
     | PIECE (i, off, _) -> sprintf "piece %d off:%d" i off
     | CANCEL (i, off, len) -> sprintf "cancel %d off:%d len:%d" i off len
@@ -168,7 +168,7 @@ end = struct
     | HAVE i ->
         byte 4 <+> int i
     | BITFIELD bits ->
-        byte 5 <+> string (Bits.to_bin bits)
+        byte 5 <+> immediate (Bits.to_cstruct bits)
     | REQUEST (i, off, len) ->
         byte 6 <+> int i <+> int off <+> int len
     | PIECE (i, off, s) ->
@@ -209,7 +209,7 @@ end = struct
     | 4 ->
         HAVE (int cs 1)
     | 5 ->
-        BITFIELD (Bits.of_bin @@ Cstruct.to_string @@ Cstruct.shift cs 1)
+        BITFIELD (Bits.of_cstruct @@ Cstruct.shift cs 1)
     | 6 ->
         REQUEST (int cs 1, int cs 5, int cs 9)
     | 7 ->
@@ -287,20 +287,7 @@ open Event
 
 type addr = Unix.inet_addr * int
 
-type has_meta_info =
-  { have : Bits.t;
-    blame : Bits.t;
-    meta : Metadata.t }
-
-and no_meta_info =
-  { mutable have : int list;
-    mutable has_all : bool }
-
-and meta_info =
-  | HasMeta of has_meta_info
-  | NoMeta of no_meta_info
-
-and t =
+type t =
   { id : SHA1.t;
 
     mutable am_choking : bool;
@@ -308,12 +295,12 @@ and t =
     mutable peer_choking : bool;
     mutable peer_interested : bool;
 
+    blame : Bits.t;
+    have : Bits.t;
     extbits : Bits.t;
     extensions : (string, int) Hashtbl.t;
 
     mutable strikes : int;
-
-    mutable info : meta_info;
 
     mutable upload : Speedometer.t;
     mutable download : Speedometer.t;
@@ -349,21 +336,16 @@ let peer_interested p =
 
 let has_piece p idx =
   assert (0 <= idx);
-  match p.info with
-  | HasMeta nfo -> Bits.is_set nfo.have idx
-  | NoMeta nfo -> nfo.has_all || List.mem idx nfo.have
+  Bits.is_set p.have idx
 
 let has p =
-  match p.info with
-  | HasMeta nfo -> Bits.copy nfo.have
-  | NoMeta _ -> failwith "Peer.have: no meta info"
+  p.have
 
 let am_choking p =
   p.am_choking
 
 let am_interested p =
   p.am_interested
-
 
 let is_snubbing p =
   let now = Unix.time () in
@@ -382,50 +364,12 @@ let upload_speed p =
 let is_seeder p =
   false
 
-let create id info =
-  { id;
-    am_choking = true; am_interested = false;
-    peer_choking = true; peer_interested = false;
-    extbits = Bits.create (8 * 8);
-    extensions = Hashtbl.create 3;
-    info;
-    download = Speedometer.create ();
-    upload = Speedometer.create ();
-    strikes = 0;
-    time = Unix.time ();
-    piece_data_time = 0.0;
-    last_pex = [];
-    send = Lwt_condition.create ();
-    queue = Lwt_sequence.create () }
-
-let create id =
-  let info = NoMeta { have = []; has_all = false } in
-  create id info
-
-(* let create_has_meta id m = *)
-(*   let npieces = Metadata.piece_count m in *)
-(*   let info = HasMeta *)
-(*       { have = Bits.create npieces; *)
-(*         blame = Bits.create npieces; *)
-(*         meta = m } *)
-(*   in *)
-(*   create id info *)
-
 let worked_on_piece p i =
-  match p.info with
-  | HasMeta info ->
-      Bits.is_set info.blame i
-  | NoMeta _ ->
-      false
+  Bits.is_set p.blame i
 
 let strike p =
   p.strikes <- p.strikes + 1;
   p.strikes
-
-let seeding p =
-  match p.info with
-  | NoMeta _ -> false
-  | HasMeta info -> Bits.has_all info.have
 
 let time p =
   p.time
@@ -524,34 +468,17 @@ let got_not_interested p =
     NoEvent
 
 let got_have_bitfield p b =
-  begin match p.info with
-  | HasMeta n ->
-      Bits.blit b 0 n.have 0 (Bits.length n.have);
-      HaveBitfield (p.id, n.have)
-  | NoMeta n ->
-      let rec loop acc i =
-        if i >= Bits.length b then List.rev acc else
-        if Bits.is_set b i then loop (i :: acc) (i+1)
-        else loop acc (i+1)
-      in
-      n.have <- loop [] 0;
-      HaveBitfield (p.id, b)
-  end
+  Bits.resize p.have (Bits.length b);
+  Bits.blit b 0 p.have 0 (Bits.length b);
+  HaveBitfield (p.id, p.have)
 
-let got_have p idx =
-  match p.info with
-  | HasMeta nfo ->
-      if not (Bits.is_set nfo.have idx) then begin
-        Bits.set nfo.have idx;
-        Have (p.id, idx)
-      end else
-        NoEvent
-  | NoMeta n ->
-      if not (List.mem idx n.have) && not n.has_all then begin
-        n.have <- idx :: n.have;
-        Have (p.id, idx)
-      end else
-        NoEvent
+let got_have p i =
+  Bits.resize p.have (i + 1);
+  if not (Bits.is_set p.have i) then begin
+    Bits.set p.have i;
+    Have (p.id, i)
+  end else
+    NoEvent
 
 let got_cancel p i ofs len =
   (* Lwt_sequence.iter_node_l (fun n -> *)
@@ -567,12 +494,9 @@ let got_piece p idx off s =
   (* p.act_reqs <- p.act_reqs - 1; *)
   p.piece_data_time <- Unix.time ();
   Speedometer.add p.download (Cstruct.len s);
-  match p.info with
-  | HasMeta info ->
-      Bits.set info.blame idx;
-      BlockReceived (p.id, idx, Metadata.block_number info.meta idx off, Cstruct.to_string s)
-  | NoMeta _ ->
-      failwith "Peer.got_piece: no meta info"
+  Bits.resize p.blame (idx + 1);
+  Bits.set p.blame idx;
+  BlockReceived (p.id, idx, off, s)
 
 let got_extended_handshake p bc =
   let m =
@@ -593,14 +517,9 @@ let got_extended p id data =
   f p data
 
 let got_request p idx off len =
-  match p.info with
-  | HasMeta info ->
-      let b = Metadata.block_number info.meta idx off in
-      let _, _, l = Metadata.block info.meta idx b in
-      assert (l = len);
-      BlockRequested (p.id, idx, b)
-  | _ ->
-      NoEvent
+  (* TODO FIXME FIXME *)
+  BlockRequested (p.id, idx, off, len)
+
 (* FIXME send REJECT if fast extension is supported *)
 
 let got_port p i =
@@ -631,14 +550,9 @@ let send p m =
   ignore (Lwt_sequence.add_r m p.queue);
   Lwt_condition.signal p.send ()
 
-let send_block p i b s =
-  match p.info with
-  | HasMeta info ->
-      let i, o, l = Metadata.block info.meta i b in
-      assert (l = String.length s);
-      send p @@ Wire.PIECE (i, o, Cstruct.of_string s)
-  | _ ->
-      assert false
+let send_block p i o s =
+  (* FIXME TODO FIXME *)
+  send p @@ Wire.PIECE (i, o, s)
 
 let send_request p (i, ofs, len) =
   (* p.act_reqs <- p.act_reqs + 1; *)
@@ -698,13 +612,8 @@ let have p idx =
 let have_bitfield p bits =
   send p @@ Wire.BITFIELD bits
 
-let send_cancel p (i, j) =
-  match p.info with
-  | HasMeta n ->
-      let i, ofs, len = Metadata.block n.meta i j in
-      send p @@ Wire.CANCEL (i, ofs, len)
-  | NoMeta _ ->
-      failwith "send_cancel: no meta info"
+let send_cancel p i o l =
+  send p @@ Wire.CANCEL (i, o, l)
 
 let send_port p i =
   send p @@ Wire.PORT i
@@ -841,5 +750,23 @@ let start p push fd mode =
   ignore (reader_loop p push fd her_key);
   ignore (writer_loop p push fd my_key)
 
-let stop p =
-  assert false
+let create id push fd mode =
+  let p =
+    { id;
+      am_choking = true; am_interested = false;
+      peer_choking = true; peer_interested = false;
+      extbits = Bits.create (8 * 8);
+      extensions = Hashtbl.create 3;
+      download = Speedometer.create ();
+      upload = Speedometer.create ();
+      strikes = 0;
+      time = Unix.time ();
+      blame = Bits.create 0;
+      have = Bits.create 0;
+      piece_data_time = 0.0;
+      last_pex = [];
+      send = Lwt_condition.create ();
+      queue = Lwt_sequence.create () }
+  in
+  start p push fd mode;
+  p

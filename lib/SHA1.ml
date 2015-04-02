@@ -40,9 +40,6 @@ let compare s1 s2 =
 let equal cs1 cs2 =
   Nocrypto.Uncommon.Cs.equal cs1 cs2
 
-let hash (s : t) =
-  Hashtbl.hash s
-
 let to_raw x =
   x
 

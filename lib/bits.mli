@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,55 +19,57 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(** Bitfields *)
+(** bitfields *)
 
 type t
 
 val create : int -> t
-(** Create a bitfield of a given length. *)
 
 val length : t -> int
-(** The length of the bitfield. *)
+
+val resize : t -> int -> unit
 
 val clear : t -> unit
-(** Fill the bitfield with zeroes. *)
+(** [clear b] sets every bit of [b] to [0]. *)
 
 val set_all : t -> unit
-(** Fill the bitfield with ones. *)
+(** [set_all b] sets every bit of [b] to [1]. *)
 
 val copy : t -> t
 (** Copy the bitfield. *)
 
-val count : t -> int
-(** The number of ones in the bitfield. *)
+val count_ones : t -> int
+(** [count_ones b] is the number of [1]'s in [b]. *)
 
-val equal : t -> t -> bool
+val count_zeroes : t -> int
+(** [count_zeroes b size] is the number of those [i], [0 <= i < size] such
+    that the [i]-th bit of [b] is [0]. *)
+
+(* val equal : t -> t -> bool *)
 (** Whether two bitfields are equal.  They must have the same length to be
     equal. *)
 
 val set : t -> int -> unit
-(** Set a bit to one. *)
+(** [set b i] sets the [i]-th bit of [b] to [1]. *)
 
 val unset : t -> int -> unit
-(** Set a bit to zero. *)
+(** [unset b i] sets the [i]-th bit of [b] to [0]. *)
 
 val is_set : t -> int -> bool
-(** Whether a bit is set. *)
+(** [unset b i] is [true] if the [i]-th bit of [b] is [1], else [false]. *)
 
-val of_bin : string -> t
+val of_cstruct : Cstruct.t -> t
 (** Make a bitfield from the bits of the input string. *)
 
-val to_bin : t -> string
+val to_cstruct : t -> Cstruct.t
 (** Pack the bitfield into bytes.  The length of the output string is the
     smallest integer larger or equal to [l/8] where [l] is the length of the
     bitfield. *)
 
-val blit : t -> int -> t -> int -> int -> unit
-(** [blit b1 pos1 b2 pos2 len] copies len bits from [b1], starting at position
-    [pos1] to [b2], starting at position [pos2].  [b1] and [b2] may be equal. *)
+(* val copy_into : t -> t -> unit *)
+(** [copy_into b1 b2] copies [b1] into [b2], enlargin [b2] if necessary. *)
 
 val has_all : t -> bool
-(** Whether all the bits in the bitfield are set. *)
+(** [has_all b size] is [count_zeroes b size = 0]. *)
 
-val missing : t -> int
-(** The number of zeroes in the bitfield. *)
+val blit : t -> int -> t -> int -> int -> unit

@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -20,208 +20,98 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type t =
-  string
+  { mutable data : bytes;
+    mutable length : int }
 
-external get_byte: string -> int -> int = "%string_unsafe_get"
-external set_byte: string -> int -> int -> unit = "%string_unsafe_set"
+let _get s i =
+  Bytes.get s i <> '\x00'
 
-let create len =
-  String.make len '\000'
+let _set s i b =
+  Bytes.set s i (if b then '\x01' else '\x00')
 
-let length v =
-  String.length v
+let create length =
+  { data = Bytes.make length '\x00';
+    length; }
 
-let clear v =
-  String.fill v 0 (String.length v) '\000'
+let resize b i =
+  if i > b.length then
+    if i <= Bytes.length b.data then
+      b.length <- i
+    else begin
+      let new_size =
+        let rec loop n = if i <= n then n else loop (2 * n + 1) in
+        loop (Bytes.length b.data)
+      in
+      let new_data = Bytes.make new_size '\x00' in
+      Bytes.blit b.data 0 new_data 0 (Bytes.length b.data);
+      b.data <- new_data;
+      b.length <- i
+    end
 
-let set_all v =
-  String.fill v 0 (String.length v) '\001'
+let length b =
+  b.length
 
-let copy v =
-  String.copy v
+let clear b =
+  Bytes.fill b.data 0 b.length '\x00'
 
-let count v =
-  let rec loop acc i =
-    if i >= String.length v then acc
-    else
-      if get_byte v i <> 0 then loop (acc+1) (i+1)
-      else loop acc (i+1)
-  in loop 0 0
+let set_all b =
+  Bytes.fill b.data 0 b.length '\x01'
 
-let equal v1 v2 =
-  let len = String.length v1 in
-  if len <> String.length v2 then false
-  else
-    let rec loop i =
-      if i >= len then true
-      else
-        let b1 = get_byte v1 i <> 0 in
-        let b2 = get_byte v2 i <> 0 in
-        if b1 && not b2 || not b1 && b2 then false
-        else loop (i+1)
-    in loop 0
+let copy b =
+  { b with data = Bytes.sub b.data 0 b.length }
 
-let check_args name i len =
-  if i < 0 || i >= len then invalid_arg name
-
-let set v i =
-  check_args "Bits.set" i (String.length v);
-  set_byte v i 1
-
-let unset v i =
-  check_args "Bits.unset" i (String.length v);
-  set_byte v i 0
-
-let toggle v i =
-  check_args "Bits.toggle" i (String.length v);
-  set_byte v i (lnot (get_byte v i))
-
-let is_set v i =
-  check_args (Printf.sprintf "Bits.is_set: i=%d len=%d" i (String.length v)) i (String.length v);
-  get_byte v i <> 0
-
-let lognot v =
-  let v' = String.copy v in
-  for i = 0 to (String.length v)-1 do
-    set_byte v' i (if get_byte v' i <> 0 then 0 else 1)
+let count_ones b =
+  let c = ref 0 in
+  for i = 0 to b.length - 1 do
+    if _get b.data i then incr c
   done;
-  v'
+  !c
 
-let logand v1 v2 =
-  let n = String.length v1 in
-  if n <> String.length v2 then invalid_arg "Bits.logand";
-  let s = String.create n in
-  for i = 0 to n-1 do
-    set_byte s i ((get_byte v1 i) land (get_byte v2 i))
-  done;
-  s
+let count_zeroes b =
+  b.length - count_ones b
 
-let logor v1 v2 =
-  let n = String.length v1 in
-  if n <> String.length v2 then invalid_arg "Bits.logor";
-  let s = String.create n in
-  for i = 0 to n-1 do
-    set_byte s i ((get_byte v1 i) lor (get_byte v2 i))
-  done;
-  s
+let set b i =
+  if i < 0 || i >= b.length then invalid_arg "Bits.set";
+  _set b.data i true
 
-let logandnot v1 v2 =
-  logand v1 (lognot v2)
+let unset b i =
+  if i < 0 || i >= b.length then invalid_arg "Bits.unset";
+  _set b.data i false
 
-let iter f v =
-  let n = String.length v in
-  for i = 0 to n-1 do
-    f (get_byte v i <> 0)
-  done
+let is_set b i =
+  if i < 0 (* || i >= b.length *) then invalid_arg "Bits.is_set";
+  _get b.data i
 
-let iteri f v =
-  let n = String.length v in
-  for i = 0 to n-1 do
-    f i (get_byte v i <> 0)
-  done
-
-let map f v =
-  let n = String.length v in
-  let s = String.create n in
-  for i = 0 to n-1 do
-    set_byte s i (if f (get_byte s i <> 0) then 1 else 0)
-  done;
-  s
-
-let fold_left_i f x v =
-  let n = String.length v in
-  let rec loop acc i =
-    if i >= n then acc
-    else loop (f acc i (get_byte v i <> 0)) (i+1)
-  in loop x 0
-
-let to_string v =
-  let n = String.length v in
-  let s = String.create n in
-  for i = 0 to n-1 do
-    String.unsafe_set s i (if get_byte v i <> 0 then '1' else '0')
-  done;
-  s
-
-let of_bin b =
-  let len = String.length b in
-  let b' = String.create (len*8) in
-  for i = 0 to len-1 do
-    let n = get_byte b i in
+let of_cstruct cs =
+  let data = Bytes.create (Cstruct.len cs * 8) in
+  for i = 0 to Cstruct.len cs - 1 do
+    let n = Cstruct.get_uint8 cs i in
     for j = 0 to 7 do
-      set_byte b' (i*8 + j) ((n lsr (7-j)) land 1)
+      _set data (i * 8 + j) @@ (0 <> (n lsr (7 - j)) land 1)
     done
   done;
-  b'
+  { data; length = Cstruct.len cs * 8 }
 
-let round_up n r = (n + r - 1) / r * r
-
-let to_bin v =
-  let len = String.length v in
-  let len' = round_up len 8 in
-  let n = len/8 in
-  let b = String.make (len'/8) '\000' in
-  for i = 0 to n-1 do
+let to_cstruct b =
+  let len = (b.length + 7) / 8 in
+  let cs = Cstruct.create len in
+  for i = 0 to len - 1 do
     let rec loop acc j =
       if j >= 8 then
-        set_byte b i acc
-      else if get_byte v (i*8 + j) <> 0 then
-        loop (acc lor (1 lsl (7-j))) (j+1)
+        Cstruct.set_uint8 cs i acc
       else
-        loop acc (j+1)
-    in loop 0 0
+      if _get b.data (i * 8 + j) then
+        loop (acc lor (1 lsl (7 - j))) (j + 1)
+      else
+        loop acc (j + 1)
+    in
+    loop 0 0
   done;
-  b
-
-let blit src srcoff dst dstoff len =
-  String.blit src srcoff dst dstoff len
-
-let to_array v =
-  Array.init (String.length v) (is_set v)
-
-let of_array a =
-  let n = Array.length a in
-  let s = String.create n in
-  for i = 0 to n-1 do
-    s.[i] <- if a.(i) then '\001' else '\000'
-  done;
-  s
-
-let to_list v =
-  let rec loop i =
-    if i >= String.length v then []
-    else
-      if is_set v i then i :: loop (i+1)
-      else loop (i+1)
-  in
-  loop 0
-
-let of_list l =
-  let m = List.fold_left max 0 l in
-  let v = String.make (m + 1) '\000' in
-  List.iter (fun i -> if i >= 0 then v.[i] <- '\001' else invalid_arg "Bits.of_list") l;
-  v
-  
-(* let arbitrary len = *)
-(*   let int_multiples m n = *)
-(*     QCheck.Arbitrary.(map (map n (fun x -> x / m)) (fun x -> x * m)) *)
-(*   in *)
-(*   QCheck.Arbitrary.(string_len (int_multiples 8 len)) *)
-
-(* let _ = *)
-(*   let test = QCheck.mk_test ~n:100 ~name:"Binary encoding/decoding" *)
-(*     ~pp:to_string *)
-(*     (arbitrary QCheck.Arbitrary.(int_range ~start:0 ~stop:100)) *)
-(*     (fun b -> equal (of_bin (to_bin b)) b && equal (to_bin (of_bin b)) b) in *)
-(*   QCheck.run test *)
-
-let missing b =
-  let rec loop n i =
-    if i >= String.length b then n else
-    if b.[i] = '\000' then loop (n+1) (i+1)
-    else loop n (i+1)
-  in
-  loop 0 0
+  cs
 
 let has_all b =
-  missing b = 0
+  count_zeroes b = 0
+
+let blit b1 o1 b2 o2 l =
+  if o1 < 0 || o1 + l > b1.length || o2 < 0 || o2 + l > b2.length then invalid_arg "Bits.blit";
+  Bytes.blit b1.data o1 b2.data o2 l

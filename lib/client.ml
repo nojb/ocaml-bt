@@ -46,7 +46,7 @@ let extensions =
   let bits = Bits.create (8 * 8) in
   (* Bits.set bits Wire.ltep_bit; *)
   (* Bits.set bits Wire.dht_bit; *)
-  Cstruct.of_string @@ Bits.to_bin bits
+  Bits.to_cstruct bits
 
 let handshake_len =
   Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
@@ -115,7 +115,7 @@ let connect_to_peer info_hash push ((ip, port) as addr) timeout =
     (Lwt.try_bind
        (fun () -> connect_to_peer info_hash ip port timeout)
        (fun (mode, fd, ext, peer_id) ->
-          Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_bin (Cstruct.to_string ext), peer_id))
+          Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_cstruct ext, peer_id))
        (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
 
   (* | TorrentLoaded dl -> *)
@@ -185,8 +185,7 @@ let peer_interested peers id =
   | Not_found -> false
 
 let welcome push mode fd exts id =
-  let p = Peer.create id in
-  Peer.start p push fd mode;
+  let p = Peer.create id push fd mode in
   Peer.extended_handshake p;
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
   p
@@ -325,7 +324,7 @@ let share_torrent bt meta dl peers =
     | RejectMetaPiece _ ->
         loop ()
 
-    | BlockRequested (p, idx, b) ->
+    | BlockRequested (p, idx, off, len) ->
         (* if Torrent.has_piece dl idx then begin *)
         (*   let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in *)
         (*   Lwt.async aux *)

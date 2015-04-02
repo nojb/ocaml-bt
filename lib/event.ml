@@ -54,9 +54,9 @@ type event =
 
   | HaveBitfield of SHA1.t * Bits.t
 
-  | BlockRequested of SHA1.t * int * int
+  | BlockRequested of SHA1.t * int * int * int
 
-  | BlockReceived of SHA1.t * int * int * string
+  | BlockReceived of SHA1.t * int * int * Cstruct.t
 
   | PeerDisconnected of SHA1.t
 

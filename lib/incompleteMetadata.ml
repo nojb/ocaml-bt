@@ -28,12 +28,9 @@ type t =
 let metadata_block_size = 1 lsl 14
 let metadata_max_size = 1 lsl 22
 
-let roundup n r =
-  (n + r - 1) / r * r
-
 let create ~info_hash ~length =
-  let npieces = roundup length metadata_block_size / metadata_block_size in
-  { info_hash; length; pieces = Bits.create npieces; raw = Cstruct.create length }
+  let size = (length + metadata_block_size - 1) / metadata_block_size in
+  { info_hash; length; pieces = Bits.create size; raw = Cstruct.create length }
 
 let add m n buf =
   if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";

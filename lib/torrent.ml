@@ -43,7 +43,7 @@ let create meta handle =
   Store.create (Metadata.files meta) >>= fun store ->
   let dl = {
     meta; store;
-    completed = Array.init numpieces (fun i -> Bits.create (Metadata.block_count meta i));
+    completed = Array.init numpieces (fun i -> Bits.create @@ Metadata.block_count meta i);
     up = 0L; down = 0L;
     amount_left = Metadata.total_length meta;
     handle
@@ -77,9 +77,13 @@ let get_block t i b =
 
 let is_complete self =
   let rec loop i =
-    if i >= Array.length self.completed then true else
-    if Bits.has_all self.completed.(i) then loop (i+1)
-    else false
+    if i >= Array.length self.completed then
+      true
+    else
+    if Bits.has_all self.completed.(i) then
+      loop (i + 1)
+    else
+      false
   in
   loop 0
 
@@ -131,7 +135,7 @@ let has_block t i j =
   Bits.is_set t.completed.(i) j
 
 let missing_blocks_in_piece t i =
-  Bits.missing t.completed.(i)
+  Bits.count_zeroes t.completed.(i)
 
 let have_size t =
   let n = ref 0L in
