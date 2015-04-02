@@ -12,6 +12,5 @@ Util
 Torrent
 PeerMgr
 Client
-Wire
 Handshake
 Event

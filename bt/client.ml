@@ -132,39 +132,6 @@ let connect_to_peer info_hash push ((ip, port) as addr) timeout =
           Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_bin (Cstruct.to_string ext), peer_id))
        (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
 
-let buf_size = 1024
-
-let reader_loop push fd p =
-  let buf = Cstruct.create buf_size in
-  let rec loop r =
-    Lwt_unix.with_timeout Peer.keepalive_delay
-      (fun () -> Lwt_cstruct.read fd buf) >>= function
-    | 0 ->
-        failwith "eof"
-    | n ->
-        let r, msgs = Wire.R.handle r (Cstruct.sub buf 0 n) in
-        List.iter (fun msg -> push (Peer.got_message p msg)) msgs;
-        loop r
-  in
-  Lwt.catch
-    (fun () -> loop Wire.R.empty)
-    (fun e ->
-       Printf.eprintf "unexpected exc: %S\n%!" (Printexc.to_string e);
-       push (PeerDisconnected (Peer.id p));
-       Lwt_unix.close fd)
-
-let writer_loop fd =
-  let ss, send = Lwt_stream.create () in
-  let rec loop () =
-    Lwt.pick
-      [ (Lwt_stream.next ss);
-        (Lwt_unix.sleep Peer.keepalive_delay >>= fun () -> Lwt.return Wire.KEEP_ALIVE) ]
-    >>= fun m ->
-    Lwt_cstruct.complete
-      (Lwt_cstruct.write fd) (Util.W.to_cstruct @@ Wire.writer m) >>= loop
-  in
-  loop (), (fun x -> send (Some x))
-
   (* | TorrentLoaded dl -> *)
   (*         (\* debug "torrent loaded (good=%d,total=%d)" *\) *)
   (*         (\*   (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl); *\) *)
@@ -232,14 +199,15 @@ let peer_interested peers id =
   | Not_found -> false
 
 let welcome push mode fd exts id =
-  let p = Peer.create_no_meta id in
-  let _ = reader_loop push fd p in
-  let _, send = writer_loop fd in
-  send @@ Peer.extended_handshake p;
+  let p = Peer.create id in
+  Peer.start p push;
+  (* let _ = reader_loop push fd p in *)
+  (* let _, send = writer_loop fd in *)
+  Peer.extended_handshake p;
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
-  p, send
+  p
 
-let rechoke_compare (p1, _, salt1) (p2, _, salt2) =
+let rechoke_compare (p1, salt1) (p2, salt2) =
   if Peer.download_speed p1 <> Peer.download_speed p2 then
     compare (Peer.download_speed p2) (Peer.download_speed p1)
   else
@@ -258,15 +226,15 @@ let rechoke peers =
     let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
 
     let wires =
-      let add _ (p, send) wires =
+      let add _ p wires =
         match Peer.is_seeder p, opt with
         | true, _ ->
-            send (Peer.choke p);
+            Peer.choke p;
             wires
         | false, Some opt when SHA1.equal (Peer.id p) opt ->
             wires
         | false, _ ->
-            (p, send, Random.int max_int) :: wires
+            (p, Random.int max_int) :: wires
       in
       Hashtbl.fold add peers []
     in
@@ -275,7 +243,7 @@ let rechoke peers =
 
     let rec select n acc = function
 
-      | (p, _, _) as w :: wires when n < rechoke_slots ->
+      | (p, _) as w :: wires when n < rechoke_slots ->
           let n = if Peer.peer_interested p then n + 1 else n in
           select n (w :: acc) wires
 
@@ -285,9 +253,9 @@ let rechoke peers =
               acc, wires, opt, nopt
 
           | None ->
-              let wires = List.filter (fun (p, _, _) -> Peer.peer_interested p) wires in
+              let wires = List.filter (fun (p, _) -> Peer.peer_interested p) wires in
               if List.length wires > 0 then
-                let (p, _, _) as opt = List.nth wires (Random.int (List.length wires)) in
+                let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
                 (opt :: acc), wires, Some (Peer.id p), rechoke_optimistic_duration
               else
                 acc, wires, None, nopt
@@ -297,8 +265,8 @@ let rechoke peers =
 
     let unchoke, choke, opt, nopt = select 0 [] wires in
 
-    List.iter (fun (p, send, _) -> send (Peer.unchoke p)) unchoke;
-    List.iter (fun (p, send, _) -> send (Peer.choke p)) choke;
+    List.iter (fun (p, _) -> Peer.unchoke p) unchoke;
+    List.iter (fun (p, _) -> Peer.choke p) choke;
 
     Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt
   in
@@ -306,7 +274,7 @@ let rechoke peers =
   loop None rechoke_optimistic_duration
 
 let share_torrent bt meta dl peers =
-  let send id m = try let p, send = Hashtbl.find peers id in send (m p) with Not_found -> () in
+  let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   (* let r = Requester.create meta dl in *)
   (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
   let rec loop () =
@@ -365,7 +333,7 @@ let share_torrent bt meta dl peers =
         loop ()
 
     | MetaRequested (id, i) ->
-        send id
+        peer id
           (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i));
         loop ()
 
@@ -411,14 +379,14 @@ let share_torrent bt meta dl peers =
         loop ()
 
     | PeerConnected (mode, sock, exts, id) ->
-        let p, send = welcome bt.push mode sock exts id in
+        let p = welcome bt.push mode sock exts id in
         (* let p = Peer.create_has_meta id meta (\*  (Requester.get_next_requests r) *\) in *)
         (* Lwt.async (fun () -> reader_loop bt.push sock p); *)
         (* if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p; *)
         (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
         (* (\* Peer.send_have_bitfield p (Torrent.have tor) *\) *)
         (* (\* FIXME *\) *)
-        Hashtbl.replace peers id (p, send);
+        Hashtbl.replace peers id p;
         loop ()
 
     | AvailableMetadata _
@@ -433,7 +401,7 @@ let load_torrent bt meta =
 
 let rec fetch_metadata bt =
   let peers = Hashtbl.create 20 in
-  let send id m = try let p, send = Hashtbl.find peers id in send (m p) with Not_found -> () in
+  let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
     match m, e with
@@ -441,13 +409,11 @@ let rec fetch_metadata bt =
         (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
         (* FIXME *)
         let m' = IncompleteMetadata.create bt.ih len in
-        IncompleteMetadata.iter_missing
-          (fun i -> send id (Peer.request_metadata_piece i)) m';
+        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
         loop (Some m')
 
     | Some m', AvailableMetadata (id, len) ->
-        IncompleteMetadata.iter_missing
-          (fun i -> send id (Peer.request_metadata_piece i)) m';
+        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
         loop m
 
     | _, PeersReceived addrs ->
@@ -460,8 +426,8 @@ let rec fetch_metadata bt =
         loop m
 
     | _, PeerConnected (mode, fd, exts, id) ->
-        let p, send = welcome bt.push mode fd exts id in
-        Hashtbl.replace peers id (p, send);
+        let p = welcome bt.push mode fd exts id in
+        Hashtbl.replace peers id p;
         loop m
 
     | _, PeerDisconnected id ->
@@ -474,7 +440,7 @@ let rec fetch_metadata bt =
         loop m
 
     | _, MetaRequested (id, i) ->
-        send id (Peer.reject_metadata_request i);
+        peer id (fun p -> Peer.reject_metadata_request p i);
         loop m
 
     | Some m', GotMetaPiece (p, i, s) ->
