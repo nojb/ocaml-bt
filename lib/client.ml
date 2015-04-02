@@ -44,8 +44,8 @@ let proto = Cstruct.of_string "\019BitTorrent protocol"
 
 let extensions =
   let bits = Bits.create (8 * 8) in
-  Bits.set bits Wire.ltep_bit;
-  Bits.set bits Wire.dht_bit;
+  (* Bits.set bits Wire.ltep_bit; *)
+  (* Bits.set bits Wire.dht_bit; *)
   Cstruct.of_string @@ Bits.to_bin bits
 
 let handshake_len =
@@ -482,7 +482,7 @@ let rec fetch_metadata bt =
   loop None
 
 let start bt =
-  List.iter (fun tier -> Lwt.async (fun () -> announce ~info_hash:bt.ih tier bt.push bt.id)) bt.trackers;
+  List.iter (fun tier -> ignore (announce ~info_hash:bt.ih tier bt.push bt.id)) bt.trackers;
   fetch_metadata bt >>= fun meta ->
   load_torrent bt meta >>= fun tor ->
   assert false
@@ -506,8 +506,7 @@ let create mg =
   let chan, push = Lwt_stream.create () in
   let push x = push (Some x) in
   let id = SHA1.generate ~prefix:"OCAML" () in
-  let ih = mg.Magnet.xt in
   let peer_mgr = PeerMgr.create () in
   Lwt.async (fun () -> start_server push);
-  { id; ih; trackers = mg.Magnet.tr; chan;
+  { id; ih = mg.Magnet.xt; trackers = mg.Magnet.tr; chan;
     push; peer_mgr }

@@ -1,2 +1,4 @@
 true: package(nocrypto), package(cstruct), package(cstruct.lwt), package(lwt), package(uri), package(cohttp)
 true: bin_annot
+<otorrent/otorrent.*>: package(cmdliner)
+<lib/*.cmx>: for-pack(Bt)

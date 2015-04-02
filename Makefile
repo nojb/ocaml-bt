@@ -1,9 +1,7 @@
 OCAMLBUILD = ocamlbuild -classic-display -use-ocamlfind
 
-all: bt/bt.cma
-
-%.cma:
-	$(OCAMLBUILD) $@
+all:
+	$(OCAMLBUILD) otorrent/otorrent.native
 
 clean:
 	$(OCAMLBUILD) -clean
