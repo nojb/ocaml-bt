@@ -437,12 +437,17 @@ let rec fetch_metadata bt =
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
     match m, e with
-    | None, AvailableMetadata (p, len) ->
+    | None, AvailableMetadata (id, len) ->
         (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
         (* FIXME *)
-        let m = IncompleteMetadata.create bt.ih len in
-        loop (Some m)
-    | Some _, AvailableMetadata _ ->
+        let m' = IncompleteMetadata.create bt.ih len in
+        IncompleteMetadata.iter_missing
+          (fun i -> send id (Peer.request_metadata_piece i)) m';
+        loop (Some m')
+
+    | Some m', AvailableMetadata (id, len) ->
+        IncompleteMetadata.iter_missing
+          (fun i -> send id (Peer.request_metadata_piece i)) m';
         loop m
 
     | _, PeersReceived addrs ->
@@ -454,15 +459,8 @@ let rec fetch_metadata bt =
         connect_to_peer bt.ih bt.push addr timeout;
         loop m
 
-    | None, PeerConnected (mode, fd, exts, id) ->
+    | _, PeerConnected (mode, fd, exts, id) ->
         let p, send = welcome bt.push mode fd exts id in
-        Hashtbl.replace peers id (p, send);
-        loop m
-
-    | Some m', PeerConnected (mode, fd, exts, id) ->
-        let p, send = welcome bt.push mode fd exts id in
-        IncompleteMetadata.iter_missing
-          (fun i -> send @@ Peer.request_meta_piece p i) m';
         Hashtbl.replace peers id (p, send);
         loop m
 

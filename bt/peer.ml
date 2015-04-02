@@ -408,7 +408,7 @@ let send_cancel p (i, j) =
 let send_port p i =
   Wire.PORT i
 
-let request_meta_piece p idx =
+let request_metadata_piece idx p =
   assert (idx >= 0);
   assert (Hashtbl.mem p.extensions "ut_metadata");
   let id = Hashtbl.find p.extensions "ut_metadata" in
