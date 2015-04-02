@@ -136,3 +136,5 @@ val to_string : t -> string
 val download_speed : t -> float
 
 val upload_speed : t -> float
+
+val is_seeder : t -> bool

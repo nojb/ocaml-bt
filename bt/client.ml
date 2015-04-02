@@ -165,23 +165,6 @@ let writer_loop fd =
   in
   loop (), (fun x -> send (Some x))
 
-(* let request_blocks_loop p = *)
-(*   match p.info with *)
-(*   | HasMeta nfo -> *)
-(*       let rec loop () = *)
-(*         (\* Log.debug "request_block_loop: %s" (Addr.to_string (addr p)); *\) *)
-(*         let ps = nfo.request p (request_pipeline_max - p.act_reqs) in *)
-(*         List.iter (fun (i, j) -> send_request p (Metadata.block nfo.meta i j)) ps; *)
-(*         Lwt.pick [(Lwt_condition.wait p.on_can_request >|= fun () -> `CanRequest); *)
-(*                   (Lwt_condition.wait p.on_choke >|= fun () -> `OnChoke)] >>= *)
-(*         function *)
-(*         | `CanRequest -> loop () *)
-(*         | `OnChoke -> Lwt_condition.wait p.on_unchoke >>= loop *)
-(*       in *)
-(*       Lwt_condition.wait p.on_unchoke >>= loop *)
-(*   | NoMeta _ -> *)
-(*       failwith "Peer.request_loop: no meta info" *)
-
   (* | TorrentLoaded dl -> *)
   (*         (\* debug "torrent loaded (good=%d,total=%d)" *\) *)
   (*         (\*   (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl); *\) *)
@@ -248,13 +231,6 @@ let peer_interested peers id =
   with
   | Not_found -> false
 
-(* let metadata_piece peers id len i data = *)
-(*   try *)
-(*     let p = Hashtbl.find peers id in *)
-(*     Peer.metadata_piece p len i data *)
-(*   with *)
-(*   | Not_found -> Wire.KEEP_ALIVE *)
-
 let welcome push mode fd exts id =
   let p = Peer.create_no_meta id in
   let _ = reader_loop push fd p in
@@ -263,7 +239,7 @@ let welcome push mode fd exts id =
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
   p, send
 
-let rechoke_compare (_, p1, salt1) (_, p2, salt2) =
+let rechoke_compare (p1, _, salt1) (p2, _, salt2) =
   if Peer.download_speed p1 <> Peer.download_speed p2 then
     compare (Peer.download_speed p2) (Peer.download_speed p1)
   else
@@ -275,41 +251,59 @@ let rechoke_compare (_, p1, salt1) (_, p2, salt2) =
   else
     compare salt1 salt2
 
-let rechoke peers send =
-  (* let rec loop opt = *)
-  (*   let wires = *)
-  (*     let add id p wires = *)
-  (*       match opt with *)
-  (*       | Some opt when id = opt -> *)
-  (*           wires *)
-  (*       | _ -> *)
-  (*           (id, p, Random.int max_int) :: wires *)
-  (*     in *)
-  (*     Hashtbl.fold add peers [] *)
-  (*   in *)
+let rechoke peers =
 
-  (*   List.iter (fun (id, p) -> if is_seeder id then choke id) wires; *)
+  let rec loop opt nopt =
 
-  (*   let wires = List.sort rechoke_compare wires in *)
+    let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
 
-  (*   let rec select n acc = function *)
-  (*     | (_, w) :: wires when n < rechoke_slots -> *)
-  (*         let n = if interested w then n + 1 else n in *)
-  (*         select n (w :: acc) wires *)
+    let wires =
+      let add _ (p, send) wires =
+        match Peer.is_seeder p, opt with
+        | true, _ ->
+            send (Peer.choke p);
+            wires
+        | false, Some opt when SHA1.equal (Peer.id p) opt ->
+            wires
+        | false, _ ->
+            (p, send, Random.int max_int) :: wires
+      in
+      Hashtbl.fold add peers []
+    in
 
-  (*     | wires -> *)
-  (*         begin match opt with *)
-  (*         | Some opt -> *)
-  (*             acc, wires *)
-  (*         | None -> *)
-  (*             let wires = List.filter (fun w -> interested w) wires in *)
-  (*             if List.length wires > 0 then *)
-  (*               let opt = List.nth wires (Random.int (List.length wires)) in *)
-  (*         end *)
-  (*   in *)
-  (*   let unchoke, choke = loop 0 [] wires in *)
-  (*   unchoke unchoke, choke choke *)
-  0
+    let wires = List.sort rechoke_compare wires in
+
+    let rec select n acc = function
+
+      | (p, _, _) as w :: wires when n < rechoke_slots ->
+          let n = if Peer.peer_interested p then n + 1 else n in
+          select n (w :: acc) wires
+
+      | wires ->
+          begin match opt with
+          | Some _ ->
+              acc, wires, opt, nopt
+
+          | None ->
+              let wires = List.filter (fun (p, _, _) -> Peer.peer_interested p) wires in
+              if List.length wires > 0 then
+                let (p, _, _) as opt = List.nth wires (Random.int (List.length wires)) in
+                (opt :: acc), wires, Some (Peer.id p), rechoke_optimistic_duration
+              else
+                acc, wires, None, nopt
+          end
+
+    in
+
+    let unchoke, choke, opt, nopt = select 0 [] wires in
+
+    List.iter (fun (p, send, _) -> send (Peer.unchoke p)) unchoke;
+    List.iter (fun (p, send, _) -> send (Peer.choke p)) choke;
+
+    Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt
+  in
+
+  loop None rechoke_optimistic_duration
 
 let share_torrent bt meta dl peers =
   let send id m = try let p, send = Hashtbl.find peers id in send (m p) with Not_found -> () in

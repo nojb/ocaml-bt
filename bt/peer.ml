@@ -489,10 +489,9 @@ let send_ut_pex p added dropped =
     cs
   in
   let c l = Cs.concat (List.map c l) in
-  let added_f = Cstruct.of_string (String.make (List.length added) '\x00') in
   let d =
     [ "added", Bcode.String (c added);
-      "added.f", Bcode.String added_f;
+      "added.f", Bcode.String (Cs.create_with (List.length added) 0);
       "dropped", Bcode.String (c dropped) ]
   in
   Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
@@ -520,3 +519,6 @@ let download_speed p =
 
 let upload_speed p =
   0.0
+
+let is_seeder p =
+  false
