@@ -45,7 +45,7 @@ end = struct
     let size = seconds * resolution in
     let resolution = float resolution in
     let last = (Unix.gettimeofday () -. 1.) *. resolution in
-    { resolution; size; last; buffer = Array.make size 0; pointer = 1 }
+    { resolution; size; last; buffer = Array.make size 0; pointer = 0 }
 
   let update t =
     let now = Unix.gettimeofday () *. t.resolution in
@@ -54,10 +54,10 @@ end = struct
     t.last <- now;
 
     let rec copy dist pointer =
-      let pointer = if pointer = t.size then 0 else pointer in
       if dist > 0 then begin
+        let pointer = if pointer = t.size - 1 then 0 else pointer + 1 in
         t.buffer.(pointer) <- t.buffer.(if pointer = 0 then t.size - 1 else pointer - 1);
-        copy (dist - 1) (pointer + 1)
+        copy (dist - 1) pointer
       end else
         pointer
     in
@@ -65,13 +65,12 @@ end = struct
 
   let add t delta =
     update t;
-    let pointer = if t.pointer = 0 then t.size - 1 else t.pointer in
-    t.buffer.(pointer) <- t.buffer.(pointer) + delta
+    t.buffer.(t.pointer) <- t.buffer.(t.pointer) + delta
 
   let speed t =
     update t;
-    let top = t.buffer.(if t.pointer = 0 then t.size - 1 else t.pointer) in
-    let btm = t.buffer.(t.pointer) in
+    let top = t.buffer.(t.pointer) in
+    let btm = t.buffer.(if t.pointer = t.size - 1 then 0 else t.pointer + 1) in
     float (top - btm) *. t.resolution /. float t.size
     (* = float (top - btm) /. t.seconds *)
 
