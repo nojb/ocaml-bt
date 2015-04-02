@@ -48,6 +48,13 @@ let resize b i =
       b.length <- i
     end
 
+let set_length b size =
+  if size < 0 then invalid_arg "Bits.set_length";
+  if size <= Bytes.length b.data then
+    b.length <- size
+  else
+    resize b size
+
 let length b =
   b.length
 

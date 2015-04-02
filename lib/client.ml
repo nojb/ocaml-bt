@@ -324,7 +324,7 @@ let share_torrent bt meta dl peers =
     | RejectMetaPiece _ ->
         loop ()
 
-    | BlockRequested (p, idx, off, len) ->
+    | BlockRequested (p, idx, off, len, _) ->
         (* if Torrent.has_piece dl idx then begin *)
         (*   let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in *)
         (*   Lwt.async aux *)

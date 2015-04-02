@@ -29,6 +29,8 @@ val length : t -> int
 
 val resize : t -> int -> unit
 
+val set_length : t -> int -> unit
+
 val clear : t -> unit
 (** [clear b] sets every bit of [b] to [0]. *)
 

@@ -57,15 +57,6 @@ val strike : t -> int
 (** Mark this peer as having participated in a piece that failed its SHA1 hash
     check.  Returns the updated number of strikes. *)
 
-val time : t -> float
-(** Peer creation time. *)
-
-val piece_data_time : t -> float
-(** The last time this peer sent us a block. *)
-
-val is_snubbing : t -> bool
-(** Whether the peer has sent any block in the last 30 seconds. *)
-
 val to_string : t -> string
 (** Print out the peer's id (in shortened form) and address. *)
 
@@ -106,7 +97,7 @@ val have : t -> int -> unit
 val have_bitfield : t -> Bits.t -> unit
 (** Send a BITFIELD message. *)
 
-val send_cancel : t -> int -> int -> int -> unit
+val cancel : t -> int -> int -> int -> unit
 (** Send a CANCEL message. *)
 
 val send_port : t -> int -> unit
@@ -118,7 +109,9 @@ val reject_metadata_request : t -> int -> unit
 val metadata_piece : int -> int -> Cstruct.t -> t -> unit
 (** Send a metainfo piece. *)
 
-val send_block : t -> int -> int -> Cstruct.t -> unit
+val request : t -> int -> int -> int -> Cstruct.t Lwt.t
+
+val piece : t -> int -> int -> Cstruct.t -> unit
 (** Send a block. *)
 
 val send_pex : addr list -> t -> unit

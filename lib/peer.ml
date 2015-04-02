@@ -302,13 +302,15 @@ type t =
 
     mutable strikes : int;
 
+    mutable uploaded : int64;
+    mutable downloaded : int64;
     mutable upload : Speedometer.t;
     mutable download : Speedometer.t;
 
-    mutable time : float;
-    mutable piece_data_time : float;
-
     mutable last_pex : addr list;
+
+    requests : ((int * int * int) * Cstruct.t Lwt.u) Lwt_sequence.t;
+    peer_requests : (int * int * int) Lwt_sequence.t;
 
     send : unit Lwt_condition.t;
     queue : Wire.message Lwt_sequence.t }
@@ -347,10 +349,6 @@ let am_choking p =
 let am_interested p =
   p.am_interested
 
-let is_snubbing p =
-  let now = Unix.time () in
-  now -. p.piece_data_time <= 30.0
-
 let to_string p =
   SHA1.to_hex_short p.id
   (* string_of_node p.node *)
@@ -370,14 +368,6 @@ let worked_on_piece p i =
 let strike p =
   p.strikes <- p.strikes + 1;
   p.strikes
-
-let time p =
-  p.time
-
-let piece_data_time p =
-  p.piece_data_time
-
-(* Incoming *)
 
 let got_ut_metadata p data =
   let m, data = Bcode.decode_partial data in
@@ -436,127 +426,24 @@ let supported_extensions =
   [ 1, ("ut_metadata", got_ut_metadata);
     2, ("ut_pex", got_ut_pex) ]
 
-let got_choke p =
-  if not p.peer_choking then begin
-    p.peer_choking <- true;
-    Choked p.id
-  end else
-    NoEvent
-
-let got_unchoke p =
-  if p.peer_choking then begin
-    (* debug "%s is no longer choking us" (string_of_node p.node); *)
-    p.peer_choking <- false;
-    Unchoked p.id
-  end else
-    NoEvent
-
-let got_interested p =
-  if not p.peer_interested then begin
-    (* debug "%s is interested in us" (string_of_node p.node); *)
-    p.peer_interested <- true;
-    Interested p.id
-  end else
-    NoEvent
-
-let got_not_interested p =
-  if p.peer_interested then begin
-    (* debug "%s is no longer interested in us" (string_of_node p.node); *)
-    p.peer_interested <- false;
-    NotInterested p.id
-  end else
-    NoEvent
-
-let got_have_bitfield p b =
-  Bits.resize p.have (Bits.length b);
-  Bits.blit b 0 p.have 0 (Bits.length b);
-  HaveBitfield (p.id, p.have)
-
-let got_have p i =
-  Bits.resize p.have (i + 1);
-  if not (Bits.is_set p.have i) then begin
-    Bits.set p.have i;
-    Have (p.id, i)
-  end else
-    NoEvent
-
-let got_cancel p i ofs len =
-  (* Lwt_sequence.iter_node_l (fun n -> *)
-  (*   match Lwt_sequence.get n with *)
-  (*   | Wire.PIECE (i1, ofs1, s) when i = i1 && ofs = ofs1 && Cstruct.len s = len -> *)
-  (*       Lwt_sequence.remove n *)
-  (*   | _ -> *)
-  (*       ()) p.send_queue; *)
-  (* FIXME broadcast event *)
-  NoEvent
-
-let got_piece p idx off s =
-  (* p.act_reqs <- p.act_reqs - 1; *)
-  p.piece_data_time <- Unix.time ();
-  Speedometer.add p.download (Cstruct.len s);
-  Bits.resize p.blame (idx + 1);
-  Bits.set p.blame idx;
-  BlockReceived (p.id, idx, off, s)
-
-let got_extended_handshake p bc =
-  let m =
-    Bcode.find "m" bc |> Bcode.to_dict |>
-    List.map (fun (name, id) -> (name, Bcode.to_int id))
-  in
-  List.iter (fun (name, id) ->
-    if id = 0 then Hashtbl.remove p.extensions name
-    else Hashtbl.replace p.extensions name id) m;
-  (* debug "%s supports %s" (string_of_node p.node) (strl fst m); *)
-  if Hashtbl.mem p.extensions "ut_metadata" then
-    AvailableMetadata (p.id, Bcode.find "metadata_size" bc |> Bcode.to_int)
-  else
-    NoEvent
-
-let got_extended p id data =
-  let (_, f) = List.assoc id supported_extensions in
-  f p data
-
-let got_request p idx off len =
-  (* TODO FIXME FIXME *)
-  BlockRequested (p.id, idx, off, len)
-
-(* FIXME send REJECT if fast extension is supported *)
-
-let got_port p i =
-  DHTPort (p.id, i)
-
-let got_message p m =
-  match m with
-  | Wire.KEEP_ALIVE              -> NoEvent
-  | Wire.CHOKE                   -> got_choke p
-  | Wire.UNCHOKE                 -> got_unchoke p
-  | Wire.INTERESTED              -> got_interested p
-  | Wire.NOT_INTERESTED          -> got_not_interested p
-  | Wire.HAVE i                  -> got_have p i
-  | Wire.BITFIELD b              -> got_have_bitfield p b
-  | Wire.REQUEST (idx, off, len) -> got_request p idx off len
-  | Wire.PIECE (idx, off, s)     -> got_piece p idx off s
-  | Wire.CANCEL (idx, off, len)  -> got_cancel p idx off len
-  (* | Wire.HAVE_ALL *)
-  (* | Wire.HAVE_NONE -> raise (InvalidProtocol m) *)
-  | Wire.EXTENDED (0, s)         -> got_extended_handshake p (Bcode.decode s)
-  | Wire.EXTENDED (id, s)        -> got_extended p id s
-  | Wire.PORT i                  -> got_port p i
-  | _                            -> NoEvent
-
 (* Outgoing *)
 
 let send p m =
   ignore (Lwt_sequence.add_r m p.queue);
   Lwt_condition.signal p.send ()
 
-let send_block p i o s =
-  (* FIXME TODO FIXME *)
-  send p @@ Wire.PIECE (i, o, s)
+let piece p i o buf =
+  p.uploaded <- Int64.add p.uploaded (Int64.of_int @@ Cstruct.len buf);
+  Speedometer.add p.upload (Cstruct.len buf);
+  (* TODO emit Uploaded event *)
+  send p @@ Wire.PIECE (i, o, buf)
 
-let send_request p (i, ofs, len) =
-  (* p.act_reqs <- p.act_reqs + 1; *)
-  Wire.REQUEST (i, ofs, len)
+let request p i ofs len =
+  if p.peer_choking then invalid_arg "Peer.request";
+  let t, u = Lwt.wait () in
+  ignore (Lwt_sequence.add_r ((i, ofs, len), u) p.requests);
+  send p @@ Wire.REQUEST (i, ofs, len);
+  t
 
 let extended_handshake p =
   let m =
@@ -567,13 +454,12 @@ let extended_handshake p =
   send p @@ Wire.EXTENDED (0, Bcode.encode m)
 
 let choke p =
-  match p.am_choking with
-  | false ->
-      p.am_choking <- true;
-      (* debug "choking %s" (string_of_node p.node); *)
-      send p Wire.CHOKE
-  | true ->
-      ()
+  if not p.am_choking then begin
+    p.am_choking <- true;
+    Lwt_sequence.iter_node_l Lwt_sequence.remove p.peer_requests;
+    (* debug "choking %s" (string_of_node p.node); *)
+    send p Wire.CHOKE
+  end
 
 let unchoke p =
   match p.am_choking with
@@ -612,8 +498,15 @@ let have p idx =
 let have_bitfield p bits =
   send p @@ Wire.BITFIELD bits
 
-let send_cancel p i o l =
-  send p @@ Wire.CANCEL (i, o, l)
+let cancel p i o l =
+  send p @@ Wire.CANCEL (i, o, l);
+  try
+    let n = Lwt_sequence.find_node_l (fun ((i', o', l'), _) -> i = i' && o' = o && l = l') p.requests in
+    Lwt_sequence.remove n;
+    let _, u = Lwt_sequence.get n in
+    Lwt.wakeup_exn u (Failure "request was cancelled")
+  with
+  | Not_found -> () (* TODO log warning *)
 
 let send_port p i =
   send p @@ Wire.PORT i
@@ -680,6 +573,133 @@ let metadata_piece len i data p =
   in
   send p @@ Wire.EXTENDED (id, m)
 
+(* Incoming *)
+
+let on_choke p =
+  if not p.peer_choking then begin
+    p.peer_choking <- true;
+    Lwt_sequence.iter_node_l
+      (fun n ->
+         let _, u = Lwt_sequence.get n in
+         Lwt.wakeup_exn u (Failure "peer is choking");
+         Lwt_sequence.remove n) p.requests;
+    Choked p.id
+  end else
+    NoEvent
+
+let on_unchoke p =
+  if p.peer_choking then begin
+    (* debug "%s is no longer choking us" (string_of_node p.node); *)
+    p.peer_choking <- false;
+    Unchoked p.id
+  end else
+    NoEvent
+
+let on_interested p =
+  if not p.peer_interested then begin
+    (* debug "%s is interested in us" (string_of_node p.node); *)
+    p.peer_interested <- true;
+    Interested p.id
+  end else
+    NoEvent
+
+let on_not_interested p =
+  if p.peer_interested then begin
+    (* debug "%s is no longer interested in us" (string_of_node p.node); *)
+    p.peer_interested <- false;
+    NotInterested p.id
+  end else
+    NoEvent
+
+let on_have p i =
+  Bits.resize p.have (i + 1);
+  if not (Bits.is_set p.have i) then begin
+    Bits.set p.have i;
+    Have (p.id, i)
+  end else
+    NoEvent
+
+let on_bitfield p b =
+  Bits.set_length p.have (Bits.length b);
+  Bits.blit b 0 p.have 0 (Bits.length b);
+  HaveBitfield (p.id, p.have)
+
+let on_request p i off len =
+  if not p.am_choking then begin
+    let t, u = Lwt.wait () in
+    ignore (Lwt_sequence.add_r (i, off, len) p.peer_requests);
+    ignore Lwt.(t >>= Lwt.wrap4 piece p i off);
+    BlockRequested (p.id, i, off, len, u)
+  end else
+    NoEvent
+
+let on_piece p i off s =
+  begin match
+    Lwt_sequence.find_node_opt_l
+      (fun ((i', off', len'), _) -> i = i && off = off' && len' = Cstruct.len s)
+      p.requests
+  with
+  | None -> ()
+  | Some n -> let _, u = Lwt_sequence.get n in Lwt.wakeup u s
+  end;
+  p.downloaded <- Int64.add p.downloaded (Int64.of_int @@ Cstruct.len s);
+  Speedometer.add p.download (Cstruct.len s);
+  Bits.resize p.blame (i + 1);
+  Bits.set p.blame i;
+  (* TODO emit Downloaded event *)
+  BlockReceived (p.id, i, off, s)
+
+let on_cancel p i off len =
+  let n =
+    Lwt_sequence.find_node_l
+      (fun (i', off', len') -> i = i && off = off' && len = len')
+      p.peer_requests
+  in
+  Lwt_sequence.remove n;
+  (* FIXME broadcast event *)
+  NoEvent
+
+let on_extended_handshake p s =
+  let bc = Bcode.decode s in
+  let m =
+    Bcode.find "m" bc |> Bcode.to_dict |>
+    List.map (fun (name, id) -> (name, Bcode.to_int id))
+  in
+  List.iter (fun (name, id) ->
+    if id = 0 then Hashtbl.remove p.extensions name
+    else Hashtbl.replace p.extensions name id) m;
+  (* debug "%s supports %s" (string_of_node p.node) (strl fst m); *)
+  if Hashtbl.mem p.extensions "ut_metadata" then
+    AvailableMetadata (p.id, Bcode.find "metadata_size" bc |> Bcode.to_int)
+  else
+    NoEvent
+
+let on_extended p id data =
+  let (_, f) = List.assoc id supported_extensions in
+  f p data
+
+let on_port p i =
+  DHTPort (p.id, i)
+
+let on_message p m =
+  match m with
+  | Wire.KEEP_ALIVE -> NoEvent
+  | Wire.CHOKE -> on_choke p
+  | Wire.UNCHOKE -> on_unchoke p
+  | Wire.INTERESTED -> on_interested p
+  | Wire.NOT_INTERESTED -> on_not_interested p
+  | Wire.HAVE i -> on_have p i
+  | Wire.BITFIELD b -> on_bitfield p b
+  | Wire.REQUEST (i, off, len) -> on_request p i off len
+  | Wire.PIECE (i, off, s) -> on_piece p i off s
+  | Wire.CANCEL (i, off, len) -> on_cancel p i off len
+  (* | Wire.HAVE_ALL *)
+  (* | Wire.HAVE_NONE -> raise (InvalidProtocol m) *)
+  | Wire.EXTENDED (0, s) -> on_extended_handshake p s
+  | Wire.EXTENDED (id, data) -> on_extended p id data
+  | Wire.PORT i -> on_port p i
+  | _ -> NoEvent
+
 (* Event loop *)
 
 let encrypt key cs =
@@ -709,7 +729,7 @@ let reader_loop p push fd key =
     | n ->
         let key, msgs = decrypt key (Cstruct.sub buf 0 n) in
         let r, msgs = Wire.R.handle r msgs in
-        List.iter (fun msg -> push (got_message p msg)) msgs;
+        List.iter (fun msg -> push (on_message p msg)) msgs;
         loop key r
   in
   loop key Wire.R.empty
@@ -757,14 +777,16 @@ let create id push fd mode =
       peer_choking = true; peer_interested = false;
       extbits = Bits.create (8 * 8);
       extensions = Hashtbl.create 3;
+      uploaded = 0L;
+      downloaded = 0L;
       download = Speedometer.create ();
       upload = Speedometer.create ();
       strikes = 0;
-      time = Unix.time ();
       blame = Bits.create 0;
       have = Bits.create 0;
-      piece_data_time = 0.0;
       last_pex = [];
+      requests = Lwt_sequence.create ();
+      peer_requests = Lwt_sequence.create ();
       send = Lwt_condition.create ();
       queue = Lwt_sequence.create () }
   in
