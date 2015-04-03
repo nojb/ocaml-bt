@@ -155,90 +155,59 @@ end = struct
   let writer x =
     let open Util.W in
     match x with
-    | KEEP_ALIVE ->
-        empty
-    | CHOKE ->
-        byte 0
-    | UNCHOKE ->
-        byte 1
-    | INTERESTED ->
-        byte 2
-    | NOT_INTERESTED ->
-        byte 3
-    | HAVE i ->
-        byte 4 <+> int i
-    | BITFIELD bits ->
-        byte 5 <+> immediate (Bits.to_cstruct bits)
-    | REQUEST (i, off, len) ->
-        byte 6 <+> int i <+> int off <+> int len
-    | PIECE (i, off, s) ->
-        byte 7 <+> int i <+> int off <+> immediate s
-    | CANCEL (i, off, len) ->
-        byte 8 <+> int i <+> int off <+> int len
-    | PORT i ->
-        byte 9 <+> int16 i
-    | SUGGEST i ->
-        byte 13 <+> int i
-    | HAVE_ALL ->
-        byte 14
-    | HAVE_NONE ->
-        byte 15
-    | REJECT (i, off, len) ->
-        byte 16 <+> int i <+> int off <+> int len
-    | ALLOWED pieces ->
-        byte 17 <+> concat (List.map int pieces)
-    | EXTENDED (id, s) ->
-        byte 20 <+> byte id <+> immediate s
+    | KEEP_ALIVE            -> empty
+    | CHOKE                 -> byte 0
+    | UNCHOKE               -> byte 1
+    | INTERESTED            -> byte 2
+    | NOT_INTERESTED        -> byte 3
+    | HAVE i                -> byte 4 <+> int i
+    | BITFIELD bits         -> byte 5 <+> immediate (Bits.to_cstruct bits)
+    | REQUEST (i, off, len) -> byte 6 <+> int i <+> int off <+> int len
+    | PIECE (i, off, s)     -> byte 7 <+> int i <+> int off <+> immediate s
+    | CANCEL (i, off, len)  -> byte 8 <+> int i <+> int off <+> int len
+    | PORT i                -> byte 9 <+> int16 i
+    | SUGGEST i             -> byte 13 <+> int i
+    | HAVE_ALL              -> byte 14
+    | HAVE_NONE             -> byte 15
+    | REJECT (i, off, len)  -> byte 16 <+> int i <+> int off <+> int len
+    | ALLOWED pieces        -> byte 17 <+> concat (List.map int pieces)
+    | EXTENDED (id, s)      -> byte 20 <+> byte id <+> immediate s
 
   let writer x =
     let open Util.W in
     let w = writer x in
     int (len w) <+> w
 
+  let parse_allowed cs =
+    let rec loop o =
+      if Cstruct.len cs >= o + 4 then
+        let p = Int32.to_int @@ Cstruct.BE.get_uint32 cs o in
+        p :: loop (o + 4)
+      else
+        []
+    in
+    loop 0
+
   let parse cs =
     let int cs o = Int32.to_int @@ Cstruct.BE.get_uint32 cs o in
     match Cstruct.get_uint8 cs 0 with
-    | 0 ->
-        CHOKE
-    | 1 ->
-        UNCHOKE
-    | 2 ->
-        INTERESTED
-    | 3 ->
-        NOT_INTERESTED
-    | 4 ->
-        HAVE (int cs 1)
-    | 5 ->
-        BITFIELD (Bits.of_cstruct @@ Cstruct.shift cs 1)
-    | 6 ->
-        REQUEST (int cs 1, int cs 5, int cs 9)
-    | 7 ->
-        PIECE (int cs 1, int cs 5, Cstruct.shift cs 9)
-    | 8 ->
-        CANCEL (int cs 1, int cs 5, int cs 9)
-    | 9 ->
-        PORT (Cstruct.BE.get_uint16 cs 1)
-    | 13 ->
-        SUGGEST (int cs 1)
-    | 14 ->
-        HAVE_ALL
-    | 15 ->
-        HAVE_NONE
-    | 16 ->
-        REJECT (int cs 1, int cs 5, int cs 9)
-    | 17->
-        let rec loop cs =
-          if Cstruct.len cs >= 4 then
-            let p, cs = Cstruct.split cs 4 in
-            int p 0 :: loop cs
-          else
-            []
-        in
-        ALLOWED (loop @@ Cstruct.shift cs 1)
-    | 20 ->
-        EXTENDED (Cstruct.get_uint8 cs 1, Cstruct.shift cs 2)
-    | _ ->
-        failwith "can't parse msg"
+    | 00 -> CHOKE
+    | 01 -> UNCHOKE
+    | 02 -> INTERESTED
+    | 03 -> NOT_INTERESTED
+    | 04 -> HAVE (int cs 1)
+    | 05 -> BITFIELD (Bits.of_cstruct @@ Cstruct.shift cs 1)
+    | 06 -> REQUEST (int cs 1, int cs 5, int cs 9)
+    | 07 -> PIECE (int cs 1, int cs 5, Cstruct.shift cs 9)
+    | 08 -> CANCEL (int cs 1, int cs 5, int cs 9)
+    | 09 -> PORT (Cstruct.BE.get_uint16 cs 1)
+    | 13 -> SUGGEST (int cs 1)
+    | 14 -> HAVE_ALL
+    | 15 -> HAVE_NONE
+    | 16 -> REJECT (int cs 1, int cs 5, int cs 9)
+    | 17 -> ALLOWED (parse_allowed @@ Cstruct.shift cs 1)
+    | 20 -> EXTENDED (Cstruct.get_uint8 cs 1, Cstruct.shift cs 2)
+    | _  -> failwith "can't parse msg"
 
   let parse cs =
     if Cstruct.len cs = 0 then
@@ -304,8 +273,8 @@ type t =
 
     mutable uploaded : int64;
     mutable downloaded : int64;
-    mutable upload : Speedometer.t;
-    mutable download : Speedometer.t;
+    upload : Speedometer.t;
+    download : Speedometer.t;
 
     mutable last_pex : addr list;
 
@@ -683,22 +652,20 @@ let on_port p i =
 
 let on_message p m =
   match m with
-  | Wire.KEEP_ALIVE -> NoEvent
-  | Wire.CHOKE -> on_choke p
-  | Wire.UNCHOKE -> on_unchoke p
-  | Wire.INTERESTED -> on_interested p
-  | Wire.NOT_INTERESTED -> on_not_interested p
-  | Wire.HAVE i -> on_have p i
-  | Wire.BITFIELD b -> on_bitfield p b
+  | Wire.KEEP_ALIVE            -> NoEvent
+  | Wire.CHOKE                 -> on_choke p
+  | Wire.UNCHOKE               -> on_unchoke p
+  | Wire.INTERESTED            -> on_interested p
+  | Wire.NOT_INTERESTED        -> on_not_interested p
+  | Wire.HAVE i                -> on_have p i
+  | Wire.BITFIELD b            -> on_bitfield p b
   | Wire.REQUEST (i, off, len) -> on_request p i off len
-  | Wire.PIECE (i, off, s) -> on_piece p i off s
-  | Wire.CANCEL (i, off, len) -> on_cancel p i off len
-  (* | Wire.HAVE_ALL *)
-  (* | Wire.HAVE_NONE -> raise (InvalidProtocol m) *)
-  | Wire.EXTENDED (0, s) -> on_extended_handshake p s
-  | Wire.EXTENDED (id, data) -> on_extended p id data
-  | Wire.PORT i -> on_port p i
-  | _ -> NoEvent
+  | Wire.PIECE (i, off, s)     -> on_piece p i off s
+  | Wire.CANCEL (i, off, len)  -> on_cancel p i off len
+  | Wire.EXTENDED (0, s)       -> on_extended_handshake p s
+  | Wire.EXTENDED (id, data)   -> on_extended p id data
+  | Wire.PORT i                -> on_port p i
+  | _                          -> NoEvent
 
 (* Event loop *)
 
