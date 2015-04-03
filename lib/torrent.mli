@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -24,23 +24,21 @@
 
 open Event
 
-type event_callback = event -> unit
-
 type t
 
-val create : Metadata.t -> event_callback -> t Lwt.t
+val create : Metadata.t -> (event -> unit) -> t Lwt.t
 (** Create a torrent object corresponding to the given metadata dictionary.
     This loads any partially downloaded data from disk and re-checks all the hashes
     to be sure which pieces are valid. *)
 
-val get_block : t -> int -> int -> Cstruct.t Lwt.t
+val get_block : t -> int -> int -> int -> Cstruct.t Lwt.t
 (** Called to read a block from the already downloaded data with the intention
     of sending it to another peer who has requested it. *)
 
 val is_complete : t -> bool
 (** Whether we have all the pieces. *)
 
-val got_block : t -> Peer.t -> int -> int -> Cstruct.t -> unit
+val got_block : t -> int -> int -> Cstruct.t -> unit
 (** Called when we receive a block from a peer. *)
 
 val amount_left : t -> int64
@@ -55,7 +53,7 @@ val have : t -> Bits.t
 val has_piece : t -> int -> bool
 (** Whether we have a particular piece. *)
 
-val has_block : t -> int -> int -> bool
+val has_block : t -> int -> int -> int -> bool
 (** Whether we have a particular block. *)
 
 val missing_blocks_in_piece : t -> int -> int

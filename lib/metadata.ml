@@ -19,8 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let _ = Random.self_init ()
-
 type file_info =
   { file_path     : string list;
     file_size     : int64 }
@@ -174,9 +172,8 @@ let piece_length info i =
   if i < Array.length info.hashes - 1 then info.piece_length
   else Int64.(sub info.total_length (mul (of_int i) (of_int info.piece_length))) |> Int64.to_int
 
-let piece_offset info i =
-  assert (i >= 0 && i < Array.length info.hashes);
-  Int64.(mul (of_int i) (of_int info.piece_length))
+let offset m i off =
+  Int64.(add (mul (of_int i) (of_int m.piece_length)) (of_int off))
 
 let pp fmt info =
   Format.fprintf fmt "@[<v>";
@@ -193,25 +190,11 @@ let block_count meta i =
   let len = piece_length meta i in
   (len + meta.block_size - 1) / meta.block_size
 
-let block_size info i j =
-  assert (0 <= i && i < piece_count info);
-  assert (0 <= j && j < block_count info i);
-  let n = piece_count info in
-  if i < n - 1 then info.block_size else
-  if j < block_count info i - 1 then info.block_size
-  else piece_length info i mod info.block_size
-
-let block_offset m i j =
-  Int64.add (piece_offset m i) (Int64.of_int (j * m.block_size))
+let block_size m =
+  m.block_size
 
 let hash m i =
   m.hashes.(i)
 
-let block m i j =
-  (i, j * m.block_size, block_size m i j)
-
 let files m =
   List.map (fun fi -> fi.file_path, fi.file_size) m.files
-
-let block_number m _ off =
-  off / m.block_size
