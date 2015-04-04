@@ -23,9 +23,47 @@
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 
-type t
+type addr = Unix.inet_addr * int
 
-open Event
+type pex_flags =
+  { pex_encryption : bool;
+    pex_seed : bool;
+    pex_utp : bool;
+    pex_holepunch : bool;
+    pex_outgoing : bool }
+
+type event =
+  | Choked
+
+  | Unchoked
+
+  | Interested
+
+  | NotInterested
+
+  | Have of int
+
+  | HaveBitfield of Bits.t
+
+  | BlockRequested of int * int * int * Cstruct.t Lwt.u
+
+  | BlockReceived of int * int * Cstruct.t
+
+  | PeerDisconnected
+
+  | AvailableMetadata of int
+
+  | MetaRequested of int
+
+  | GotMetaPiece of int * Cstruct.t
+
+  | RejectMetaPiece of int
+
+  | GotPEX of (addr * pex_flags) list * addr list
+
+  | DHTPort of int
+
+type t
 
 val create : SHA1.t -> (event -> unit) -> Lwt_unix.file_descr -> (ARC4.key * ARC4.key) option -> t
 

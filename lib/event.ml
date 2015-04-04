@@ -21,14 +21,6 @@
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 
-type pex_flags = {
-  pex_encryption : bool;
-  pex_seed : bool;
-  pex_utp : bool;
-  pex_holepunch : bool;
-  pex_outgoing : bool
-}
-
 type addr = Unix.inet_addr * int
 
 type event =
@@ -36,44 +28,16 @@ type event =
 
   | PeerConnected of (ARC4.key * ARC4.key) option * Lwt_unix.file_descr * Bits.t * SHA1.t
 
+  | IncomingConnection of Lwt_unix.file_descr * Unix.sockaddr
+
   | PieceVerified of int
 
   | PieceFailed of int
 
+  | ConnectFailed of addr
+
   | TorrentComplete
 
-  | Choked of SHA1.t
-
-  | Unchoked of SHA1.t
-
-  | Interested of SHA1.t
-
-  | NotInterested of SHA1.t
-
-  | Have of SHA1.t * int
-
-  | HaveBitfield of SHA1.t * Bits.t
-
-  | BlockRequested of SHA1.t * int * int * int * Cstruct.t Lwt.u
-
-  | BlockReceived of SHA1.t * int * int * Cstruct.t
-
-  | PeerDisconnected of SHA1.t
-
-  | AvailableMetadata of SHA1.t * int
-
-  | MetaRequested of SHA1.t * int
-
-  | IncomingConnection of Lwt_unix.file_descr * Unix.sockaddr
-
-  | GotMetaPiece of SHA1.t * int * Cstruct.t
-
-  | RejectMetaPiece of SHA1.t * int
-
-  | GotPEX of SHA1.t * (addr * pex_flags) list * addr list
-
-  | DHTPort of SHA1.t * int
-
-  | ConnectFailed of addr
+  | PeerEvent of SHA1.t * Peer.event
 
   | NoEvent

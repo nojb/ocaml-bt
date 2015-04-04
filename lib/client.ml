@@ -190,7 +190,7 @@ let peer_interested peers id =
   | Not_found -> false
 
 let welcome push mode fd exts id =
-  let p = Peer.create id push fd mode in
+  let p = Peer.create id (fun e -> push (PeerEvent (id, e))) fd mode in
   Peer.extended_handshake p;
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
   p
@@ -534,7 +534,7 @@ let share_torrent bt meta dl peers =
         connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop ()
 
-    | PeerDisconnected id ->
+    | PeerEvent (id, Peer.PeerDisconnected) ->
         connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
@@ -542,36 +542,36 @@ let share_torrent bt meta dl peers =
         (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
         loop ()
 
-    | Choked _ ->
+    | PeerEvent (_, Peer.Choked) ->
         (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
         loop ()
 
-    | Unchoked _ ->
+    | PeerEvent (_, Peer.Unchoked) ->
         loop ()
 
-    | Interested id
-    | NotInterested id ->
+    | PeerEvent (_, Peer.Interested)
+    | PeerEvent (_, Peer.NotInterested) ->
         (* if not (am_choking peers id) then Choker.rechoke ch; *)
         loop ()
 
-    | Have (p, i) ->
+    | PeerEvent (_, Peer.Have i) ->
         (* Requester.got_have r i; *)
         loop ()
 
-    | HaveBitfield (p, b) ->
+    | PeerEvent (_, Peer.HaveBitfield b) ->
         (* Requester.got_bitfield r b; *)
         loop ()
 
-    | MetaRequested (id, i) ->
+    | PeerEvent (id, Peer.MetaRequested i) ->
         peer id
           (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i));
         loop ()
 
-    | GotMetaPiece _
-    | RejectMetaPiece _ ->
+    | PeerEvent (_, Peer.GotMetaPiece _)
+    | PeerEvent (_, Peer.RejectMetaPiece _) ->
         loop ()
 
-    | BlockRequested (p, idx, off, len, _) ->
+    | PeerEvent (_, Peer.BlockRequested (i, off, len, _)) ->
         (* if Torrent.has_piece dl idx then begin *)
         (*   let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in *)
         (*   Lwt.async aux *)
@@ -579,7 +579,7 @@ let share_torrent bt meta dl peers =
         (* FIXME FIXME *)
         loop ()
 
-    | BlockReceived (p, idx, b, s) ->
+    | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
         (* FIXME *)
         (* debug "got block %d/%d (piece %d) from %s" b *)
         (*   (Metadata.block_count meta idx) idx (Peer.to_string p); *)
@@ -589,13 +589,13 @@ let share_torrent bt meta dl peers =
         (* FIXME FIXME *)
         loop ()
 
-    | GotPEX (p, added, dropped) ->
+    | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
         List.iter (fun (addr, _) -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop ()
 
-    | DHTPort _ ->
+    | PeerEvent (_, Peer.DHTPort _) ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -619,7 +619,7 @@ let share_torrent bt meta dl peers =
         Hashtbl.replace peers id p;
         loop ()
 
-    | AvailableMetadata _
+    | PeerEvent (_, Peer.AvailableMetadata _)
     | NoEvent ->
         loop ()
   in
@@ -673,14 +673,14 @@ let rec fetch_metadata bt =
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
     match m, e with
-    | None, AvailableMetadata (id, len) ->
+    | None, PeerEvent (id, Peer.AvailableMetadata len) ->
         (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
         (* FIXME *)
         let m' = IncompleteMetadata.create bt.ih len in
         peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
         loop (Some m')
 
-    | Some m', AvailableMetadata (id, len) ->
+    | Some m', PeerEvent (id, Peer.AvailableMetadata len) ->
         peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
         loop m
 
@@ -694,7 +694,7 @@ let rec fetch_metadata bt =
         Hashtbl.replace peers id p;
         loop m
 
-    | _, PeerDisconnected id ->
+    | _, PeerEvent (id, Peer.PeerDisconnected) ->
         connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         loop m
@@ -703,11 +703,11 @@ let rec fetch_metadata bt =
         connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop m
 
-    | _, MetaRequested (id, i) ->
+    | _, PeerEvent (id, Peer.MetaRequested i) ->
         peer id (fun p -> Peer.reject_metadata_request p i);
         loop m
 
-    | Some m', GotMetaPiece (p, i, s) ->
+    | Some m', PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
         (* debug "got metadata piece %d/%d from %s" i *)
         (*   (IncompleteMetadata.piece_count m) (Peer.to_string p); *)
         begin match IncompleteMetadata.add m' i s with
@@ -722,16 +722,16 @@ let rec fetch_metadata bt =
             loop m
         end
 
-    | None, GotMetaPiece _ ->
+    | None, PeerEvent (_, Peer.GotMetaPiece _) ->
         loop m
 
-    | _, GotPEX (p, added, dropped) ->
+    | _, PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
         List.iter (fun (addr, _) -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop m
 
-    | _, DHTPort (p, i) ->
+    | _, PeerEvent (_, Peer.DHTPort i) ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -747,15 +747,15 @@ let rec fetch_metadata bt =
     | _, PieceVerified _
     | _, PieceFailed _
     | _, TorrentComplete
-    | _, Unchoked _
-    | _, Choked _
-    | _, Interested _
-    | _, NotInterested _
-    | _, Have _
-    | _, HaveBitfield _
-    | _, RejectMetaPiece _
-    | _, BlockRequested _
-    | _, BlockReceived _
+    | _, PeerEvent (_, Peer.Unchoked)
+    | _, PeerEvent (_, Peer.Choked)
+    | _, PeerEvent (_, Peer.Interested)
+    | _, PeerEvent (_, Peer.NotInterested)
+    | _, PeerEvent (_, Peer.Have _)
+    | _, PeerEvent (_, Peer.HaveBitfield _)
+    | _, PeerEvent (_, Peer.RejectMetaPiece _)
+    | _, PeerEvent (_, Peer.BlockRequested _)
+    | _, PeerEvent (_, Peer.BlockReceived _)
     | _, NoEvent ->
         loop m
   in
