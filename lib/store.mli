@@ -34,6 +34,8 @@ val create : (string list * int64) list -> t Lwt.t
 val close : t -> unit Lwt.t
 (** Close all the files in the store. *)
 
+val digest : t -> int64 -> int -> SHA1.t Lwt.t
+
 val read : t -> int64 -> int -> Cstruct.t Lwt.t
 (** [read st ofs len] reads [len] bytes starting at offset [ofs] from the store
     [st].  The offset and the length can span multiple files in the store. *)

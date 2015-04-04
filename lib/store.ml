@@ -44,6 +44,20 @@ let rec get_chunks files offset size =
   in
   loop offset size files
 
+let digest files off len =
+  let chunks = get_chunks files off len in
+  let max_len = List.fold_left (fun n (_, _, len, _) -> max n len) 0 chunks in
+  let buf = Cstruct.create max_len in
+  let sha = Nocrypto.Hash.SHA1.init () in
+  Lwt_list.iter_s (fun (fd, off, len, m) ->
+    Lwt_mutex.with_lock m
+      (fun () ->
+         let buf = Cstruct.sub buf 0 len in
+         Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
+         Lwt_cstruct.complete (Lwt_cstruct.read fd) buf >>= fun () ->
+         Lwt.wrap2 Nocrypto.Hash.SHA1.feed sha buf)) chunks >>= fun () ->
+  Lwt.wrap1 SHA1.of_raw (Nocrypto.Hash.SHA1.get sha)
+
 let read files off len =
   let read_chunk buf (fd, off, len, m) =
     Lwt_mutex.with_lock m

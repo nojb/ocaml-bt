@@ -471,7 +471,6 @@ end
 
 let share_torrent bt meta dl peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  (* let r = Requester.create meta dl in *)
   (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
   let rec loop () =
     Lwt_stream.next bt.chan >>= function
