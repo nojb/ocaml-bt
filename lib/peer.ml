@@ -109,14 +109,11 @@ module Wire : sig
   val string_of_message : message -> string
   val writer : message -> Util.W.t
 
-  val ltep_bit : int
-  val dht_bit : int
+  (* val ltep_bit : int *)
+  (* val dht_bit : int *)
 
-  module R : sig
-    type state
-    val empty : state
-    val handle : state -> Cstruct.t -> state * message list
-  end
+  val handle : Cstruct.t -> Cstruct.t * message list
+
 end = struct
   type message =
     | KEEP_ALIVE
@@ -226,34 +223,22 @@ end = struct
 
   let max_packet_len = 32 * 1024
 
-  let ltep_bit = 43 (* 20-th bit from the right *)
-  let dht_bit = 63 (* last bit of the extension bitfield *)
+  (* let ltep_bit = 43 (\* 20-th bit from the right *\) *)
+  (* let dht_bit = 63 (\* last bit of the extension bitfield *\) *)
 
-  module R = struct
+  let rec handle cs =
+    if Cstruct.len cs > 4 then
+      let l = Int32.to_int @@ Cstruct.BE.get_uint32 cs 0 in
+      if l + 4 >= Cstruct.len cs then
+        let packet, cs = Cstruct.split (Cstruct.shift cs 4) l in
+        let cs, packets = handle cs in
+        let packet = parse packet in
+        cs, packet :: packets
+      else
+        cs, []
+    else
+      cs, []
 
-    type state = Cstruct.t
-
-    let empty = Cs.empty
-
-    let (<+>) = Cs.(<+>)
-
-    let handle state buf =
-      let rec loop cs =
-        if Cstruct.len cs > 4 then
-          let l = Int32.to_int @@ Cstruct.BE.get_uint32 cs 0 in
-          if l + 4 >= Cstruct.len cs then
-            let packet, cs = Cstruct.split (Cstruct.shift cs 4) l in
-            let cs, packets = loop cs in
-            let packet = parse packet in
-            cs, packet :: packets
-          else
-            cs, []
-        else
-          cs, []
-      in
-      loop (state <+> buf)
-
-  end
 end
 
 let keepalive_delay = 20. (* FIXME *)
@@ -715,17 +700,17 @@ let handle_err p fd e =
 
 let reader_loop p fd key =
   let buf = Cstruct.create buf_size in
-  let rec loop key r =
+  let rec loop key data =
     Lwt_unix.with_timeout keepalive_delay (fun () -> Lwt_cstruct.read fd buf) >>= function
     | 0 ->
         failwith "eof"
     | n ->
-        let key, msgs = decrypt key (Cstruct.sub buf 0 n) in
-        let r, msgs = Wire.R.handle r msgs in
+        let key, buf = decrypt key (Cstruct.sub buf 0 n) in
+        let data, msgs = Wire.handle Cs.(data <+> buf) in
         List.iter (on_message p) msgs;
-        loop key r
+        loop key data
   in
-  loop key Wire.R.empty
+  loop key Cs.empty
 
 let reader_loop p fd key =
   Lwt.catch (fun () -> reader_loop p fd key) (handle_err p fd)
