@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,58 +19,55 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
+module Log = Log.Make (struct let section = "Store" end)
 
-let failwith fmt = Printf.ksprintf failwith fmt
-let failwith_lwt fmt = Printf.ksprintf (fun msg -> Lwt.fail (Failure msg)) fmt
-let invalid_arg_lwt s = Lwt.fail (Invalid_argument s)
+open Lwt.Infix
 
 type t =
-  { descrs : (Lwt_unix.file_descr * int64) list;
-    lock : Lwt_mutex.t }
+  (Lwt_unix.file_descr * int64 * Lwt_mutex.t) list
 
-let rec get_chunks descrs offset size =
+let rec get_chunks files offset size =
+  if size < 0 || offset < 0L then invalid_arg "Store.get_chunks";
   let open Int64 in
-  assert (size >= 0 && compare offset 0L >= 0);
-  match descrs with
-  | [] -> []
-  | (fd, size1) :: descrs ->
-    if compare offset size1 >= 0 then
-      get_chunks descrs (sub offset size1) size
-    else begin
-      let size1 = sub size1 offset in
-      if compare size1 (of_int size) >= 0 then
-        [fd, offset, size]
-      else
-        let size1 = Int64.to_int size1 in
-        (fd, offset, size1) :: get_chunks descrs 0L (size-size1)
-    end
+  let rec loop offset size = function
+    | [] -> []
+    | (fd, size1, m) :: files ->
+        if offset >= size1 then
+          loop (sub offset size1) size files
+        else
+          let size1 = sub size1 offset in
+          if size1 >= of_int size then
+            [fd, offset, size, m]
+          else
+            let size1 = Int64.to_int size1 in
+            (fd, offset, size1, m) :: loop 0L (size-size1) files
+  in
+  loop offset size files
 
-let read self off len =
-  let read_chunk buf (fd, off, len) =
-    Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
-    Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.sub buf 0 len) >>= fun () ->
-    Lwt.return (Cstruct.shift buf len)
+let read files off len =
+  let read_chunk buf (fd, off, len, m) =
+    Lwt_mutex.with_lock m
+      (fun () ->
+         Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
+         Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.sub buf 0 len) >>= fun () ->
+         Lwt.return (Cstruct.shift buf len))
   in
   let buf = Cstruct.create len in
-  Lwt_mutex.with_lock self.lock
-    (fun () ->
-       Lwt_list.fold_left_s read_chunk buf (get_chunks self.descrs off len) >>= fun _ ->
-       Lwt.return buf)
+  Lwt_list.fold_left_s read_chunk buf (get_chunks files off len) >>= fun _ ->
+  Lwt.return buf
 
-let write self off buf =
-  let write_chunk buf (fd, off, len) =
-    Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
-    Lwt_cstruct.complete (Lwt_cstruct.write fd) (Cstruct.sub buf 0 len) >>= fun () ->
-    Lwt.return (Cstruct.shift buf len)
+let write files off buf =
+  let write_chunk buf (fd, off, len, m) =
+    Lwt_mutex.with_lock m
+      (fun () ->
+         Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
+         Lwt_cstruct.complete (Lwt_cstruct.write fd) (Cstruct.sub buf 0 len) >>= fun () ->
+         Lwt.return (Cstruct.shift buf len))
   in
-  Lwt_mutex.with_lock self.lock
-    (fun () ->
-       Lwt_list.fold_left_s write_chunk buf (get_chunks self.descrs off (Cstruct.len buf)) >>= fun _ ->
-       Lwt.return_unit)
+  Lwt_list.fold_left_s write_chunk buf (get_chunks files off (Cstruct.len buf)) >>= fun _ ->
+  Lwt.return_unit
 
-let cwd path f =
+let cd path f =
   let old_cwd = Sys.getcwd () in
   Lwt_unix.chdir path >>= fun () ->
   Lwt.finalize f (fun () -> Lwt_unix.chdir old_cwd)
@@ -89,28 +86,18 @@ let open_file path size =
       Lwt.return fd
     | dir :: path ->
       if Sys.file_exists dir then
-        cwd dir (fun () -> loop path)
+        cd dir (fun () -> loop path)
       else begin
-        (* Trace.infof "Directory %S does not exist; creating..." dir; *)
+        Log.debug "creating directory %S" dir;
         Lwt_unix.mkdir dir directory_default_perm >>= fun () ->
-        cwd dir (fun () -> loop path)
+        cd dir (fun () -> loop path)
       end
   in
   loop path
 
-let close self =
-  Lwt_mutex.with_lock self.lock
-    (fun () -> Lwt_list.iter_p (fun (fd, _) -> Lwt_unix.close fd) self.descrs)
+let close files =
+  Lwt_list.iter_p (fun (fd, _, m) -> Lwt_mutex.with_lock m (fun () -> Lwt_unix.close fd)) files
 
 let create files =
-  Lwt_list.map_s
-    (fun (path, size) -> open_file path size >>= fun fd -> Lwt.return (fd, size)) files >>= fun descrs ->
-  Lwt.return { descrs; lock = Lwt_mutex.create () }
-
-(* let add_file self path size = *)
-(*   open_file path size >>= fun fd -> *)
-(*   self.descrs <- self.descrs @ [fd, size]; *)
-(*   Lwt.return () *)
-
-let update self =
-  assert false
+  let open_file (path, size) = open_file path size >>= fun fd -> Lwt.return (fd, size, Lwt_mutex.create ()) in
+  Lwt_list.map_s open_file files

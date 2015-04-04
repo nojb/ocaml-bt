@@ -44,10 +44,10 @@ val am_choking : t -> bool
 val am_interested : t -> bool
 (** Whether we are interested in this peer. *)
 
-val has_piece : t -> int -> bool
+val has : t -> int -> bool
 (** Whether this peer has a particular piece. *)
 
-val has : t -> Bits.t
+val bitfield : t -> Bits.t
 (** The bitfield of pieces this peer has. *)
 
 val worked_on_piece : t -> int -> bool
@@ -63,8 +63,6 @@ val to_string : t -> string
 val download_speed : t -> float
 
 val upload_speed : t -> float
-
-val is_seeder : t -> bool
 
 (** Outgoing *)
 

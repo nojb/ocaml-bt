@@ -305,11 +305,11 @@ let peer_choking p =
 let peer_interested p =
   p.peer_interested
 
-let has_piece p idx =
-  assert (0 <= idx);
-  Bits.is_set p.have idx
+let has p i =
+  if i < 0 then invalid_arg "Peer.has";
+  Bits.is_set p.have i
 
-let has p =
+let bitfield p =
   p.have
 
 let am_choking p =
@@ -327,9 +327,6 @@ let download_speed p =
 
 let upload_speed p =
   Speedometer.speed p.upload
-
-let is_seeder p =
-  false
 
 let worked_on_piece p i =
   Bits.is_set p.blame i
@@ -458,7 +455,7 @@ let not_interested p =
       ()
 
 let have p idx =
-  match has_piece p idx with
+  match has p idx with
   | false ->
       send p @@ Wire.HAVE idx
   | true ->

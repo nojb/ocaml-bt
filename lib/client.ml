@@ -212,7 +212,7 @@ let rechoke peers =
     let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
     let wires =
       let add _ p wires =
-        match Peer.is_seeder p, opt with
+        match (* Peer.is_seeder p, *)false, opt with (* FIXME FIXME *)
         | true, _ ->
             Peer.choke p;
             wires
@@ -247,7 +247,6 @@ let rechoke peers =
     Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt
   in
   loop None rechoke_optimistic_duration
-
 
 (* Requester BEGIN *)
 
@@ -364,18 +363,8 @@ let rechoke peers =
 (* let got_have self piece = *)
 (*   self.rarity.(piece) <- self.rarity.(piece) + 1 *)
 
-(* let got_bitfield self b = *)
-(*   for i = 0 to Bits.length b - 1 do *)
-(*     if Bits.is_set b i then got_have self i *)
-(*   done *)
-
 (* let lost_have self piece = *)
 (*   self.rarity.(piece) <- self.rarity.(piece) - 1 *)
-
-(* let lost_bitfield self b = *)
-(*   for i = 0 to Bits.length b - 1 do *)
-(*     if Bits.is_set b i then lost_have self i *)
-(*   done *)
 
 (* let got_piece r i = *)
 (*   let p = lookup r i in *)
