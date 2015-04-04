@@ -32,3 +32,7 @@ val start : t -> unit Lwt.t
 
 (* val stats : t -> Stats.t *)
 (** Return some rudimentary statistics about the current session. *)
+
+module LPD : sig
+  val start : port:int -> info_hash:SHA1.t -> (Event.event -> unit) -> unit
+end

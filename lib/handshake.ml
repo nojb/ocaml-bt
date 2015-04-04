@@ -27,6 +27,8 @@ module SHA1 = Nocrypto.Hash.SHA1
 module Cs   = Nocrypto.Uncommon.Cs
 module Rng  = Nocrypto.Rng
 
+let _ = Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF")
+
 (* let crypto_plain = 0x01l *)
 (* let crypto_rc4 = 0x02l *)
 (* let crypto_provide = crypto_rc4 *)
