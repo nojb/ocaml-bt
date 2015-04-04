@@ -33,6 +33,8 @@ val start : t -> unit Lwt.t
 (* val stats : t -> Stats.t *)
 (** Return some rudimentary statistics about the current session. *)
 
+type addr = Unix.inet_addr * int
+
 module LPD : sig
-  val start : port:int -> info_hash:SHA1.t -> (Event.event -> unit) -> unit
+  val start : port:int -> info_hash:SHA1.t -> (SHA1.t * addr -> unit) -> unit
 end

@@ -24,8 +24,9 @@ module Log  = Log.Make (struct let section = "Client" end)
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
-let (>>=) = Lwt.(>>=)
+open Lwt.Infix
 
+let listen_backlog = 5
 let listen_ports = [50000]
 let choke_timeout = 5.
 let rechoke_interval = 10.
@@ -34,7 +35,26 @@ let rechoke_slots = 10
 let block_size = 1 lsl 14 (* 16384 *)
 let max_requests = 5
 
-open Event
+type addr = Unix.inet_addr * int
+
+type event =
+  | PeersReceived of addr list
+
+  | PeerConnected of (ARC4.key * ARC4.key) option * Lwt_unix.file_descr * Bits.t * SHA1.t
+
+  | IncomingConnection of Lwt_unix.file_descr * Unix.sockaddr
+
+  | PieceVerified of int
+
+  | PieceFailed of int
+
+  | ConnectFailed of addr
+
+  | TorrentComplete
+
+  | PeerEvent of SHA1.t * Peer.event
+
+  | NoEvent
 
 type t =
   { id : SHA1.t;
@@ -886,7 +906,8 @@ module LPD  = struct
           let p = get r.Request.headers "Port" in
           Log.info "Received announce from = %s:%d ih = %s listen = %s"
             (Unix.string_of_inet_addr ip) port ih p;
-          if SHA1.equal (SHA1.of_hex ih) info_hash then push (PeersReceived [ip, int_of_string p]);
+          let ih = SHA1.of_raw @@ Cstruct.of_string @@ ih in
+          push (ih, (ip, int_of_string p));
           loop ()
       | `Ok r ->
           Log.error "Unxpected HTTP method : %S" (Code.string_of_method r.Request.meth);
@@ -900,7 +921,7 @@ module LPD  = struct
     in
     loop ()
 
-  let start fd info_hash push=
+  let start fd info_hash push =
     Lwt.catch
       (fun () -> start fd info_hash push)
       (fun e ->
@@ -952,8 +973,6 @@ let start bt =
   fetch_metadata bt >>= fun meta ->
   load_torrent bt meta >>= fun tor ->
   assert false
-
-let listen_backlog = 5
 
 let start_server ?(port = 0) push =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
