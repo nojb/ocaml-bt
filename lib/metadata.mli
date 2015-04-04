@@ -23,6 +23,8 @@
 
 type t
 
+val block_size : int
+
 val create : Bcode.t -> t
 (** Parse a bencoded metainfo dictionary *)
 
@@ -38,8 +40,6 @@ val total_length : t -> int64
 
 val piece_count : t -> int
 (** Number of pieces. *)
-
-val block_size : t -> int
 
 val piece_length : t -> int -> int
 (** Length of a particular piece.  All the pieces are the same length except,

@@ -378,8 +378,8 @@ module Torrent = struct
         Lwt.return (good, acc)
       else
         let off = Metadata.offset dl.meta i 0 in
-        Store.read dl.store off (plen i) >>= fun s ->
-        if SHA1.(equal (digest s) (Metadata.hash dl.meta i)) then begin
+        Store.digest dl.store off (plen i) >>= fun digest ->
+        if SHA1.equal digest (Metadata.hash dl.meta i) then begin
           Bits.set_all dl.completed.(i);
           loop (good + 1) Int64.(sub acc (of_int (plen i))) (i + 1)
         end else
@@ -404,7 +404,7 @@ module Torrent = struct
 
   let got_block t i off s =
     (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
-    let b = off / Metadata.block_size t.meta in
+    let b = off / Metadata.block_size in
     match Bits.is_set t.completed.(i) b with
     | false ->
         Bits.set t.completed.(i) b;
@@ -453,7 +453,7 @@ module Torrent = struct
     Bits.has_all self.completed.(i)
 
   let has_block t i j _ =
-    Bits.is_set t.completed.(i) (j / Metadata.block_size t.meta)
+    Bits.is_set t.completed.(i) (j / Metadata.block_size)
 
   let missing_blocks_in_piece t i =
     Bits.count_zeroes t.completed.(i)
@@ -469,7 +469,11 @@ module Torrent = struct
 end
 (* Torrent END *)
 
-let share_torrent bt meta dl peers =
+let send_block store i off len u =
+  let off = Int64.(add (mul (of_int i) (of_int Metadata.block_size)) (of_int off)) in
+  Lwt.ignore_result (Store.read store off len >>= Lwt.wrap2 Lwt.wakeup u)
+
+let share_torrent bt meta store have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
   let rec loop () =
@@ -533,12 +537,8 @@ let share_torrent bt meta dl peers =
     | PeerEvent (_, Peer.RejectMetaPiece _) ->
         loop ()
 
-    | PeerEvent (_, Peer.BlockRequested (i, off, len, _)) ->
-        (* if Torrent.has_piece dl idx then begin *)
-        (*   let aux _ = Torrent.get_block dl idx b >|= Peer.send_block p idx b in *)
-        (*   Lwt.async aux *)
-        (* end; *)
-        (* FIXME FIXME *)
+    | PeerEvent (_, Peer.BlockRequested (i, off, len, u)) ->
+        if Bits.is_set have i then send_block store i off len u;
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->

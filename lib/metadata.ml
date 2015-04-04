@@ -28,7 +28,6 @@ type t =
     info_hash : SHA1.t;
     hashes : SHA1.t array;
     piece_length : int;
-    block_size : int;
     last_piece_size : int;
     total_length : int64;
     files : file_info list;
@@ -37,18 +36,19 @@ type t =
 let length info =
   Cstruct.len info.encoded
 
-let info_piece_size = 16 * 1024 (* bytes *)
-let max_block_size = 16 * 1024
+let piece_size = 16 * 1024 (* bytes *)
+let block_size = 16 * 1024
 
 let get_piece info i =
   let l = Cstruct.len info.encoded in
-  let numpieces = (l + info_piece_size - 1) / info_piece_size in
+  let numpieces = (l + piece_size - 1) / piece_size in
   if i >= numpieces || i < 0 then invalid_arg "Info.get_piece";
   if i < numpieces - 1 then
-    Cstruct.sub info.encoded (i * info_piece_size) info_piece_size
+    Cstruct.sub info.encoded (i * piece_size) piece_size
   else
-    let last_piece_size = l mod info_piece_size in
-    Cstruct.sub info.encoded (i * info_piece_size) last_piece_size
+    let last_piece_size = l mod piece_size in
+    let last_piece_size = if last_piece_size = 0 then piece_size else last_piece_size in
+    Cstruct.sub info.encoded (i * piece_size) last_piece_size
 
 (* let comment bc = *)
 (*   try Some (Bcode.find "comment" bc |> Bcode.to_string) *)
@@ -137,28 +137,15 @@ let pp_files fmt files =
         (Util.string_of_file_size fi.file_size) (loop (i+1)) files
   in loop 1 fmt files
 
-(* choose block_size so that piece_size is a multiple of block_size *)
-let compute_block_size piece_size =
-  let rec loop b =
-    if b > max_block_size then loop (b lsr 2)
-    else begin
-      assert (piece_size mod b = 0);
-      b
-    end
-  in
-  loop piece_size
-
 let create bc =
   let name = name bc in
   let hashes = hashes bc in
   let info_hash = info_hash bc in
   let piece_length = piece_length bc in
-  let block_size = compute_block_size piece_length in
-  (* debug "block_size is %d" block_size; *)
   let total_length = total_length bc in
   let files = files bc in
   let last_piece_size = Int64.to_int (Int64.rem total_length (Int64.of_int piece_length)) in
-  { name; info_hash; piece_length; total_length; block_size; last_piece_size;
+  { name; info_hash; piece_length; total_length; last_piece_size;
     hashes; files; encoded = Bcode.encode bc }
 
 let total_length m =
@@ -188,10 +175,7 @@ let pp fmt info =
 
 let block_count meta i =
   let len = piece_length meta i in
-  (len + meta.block_size - 1) / meta.block_size
-
-let block_size m =
-  m.block_size
+  (len + block_size - 1) / block_size
 
 let hash m i =
   m.hashes.(i)
