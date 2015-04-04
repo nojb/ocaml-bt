@@ -471,10 +471,14 @@ module Torrent = struct
 end
 (* Torrent END *)
 
-type piece =
-  | Pending of int
+type piece_state =
+  | Pending
   | Active of int array
   | Finished
+
+type piece =
+  { mutable state : piece_state;
+    length : int }
 
 let request_block parts = function
   | false ->
@@ -508,9 +512,9 @@ let request_endgame pieces has =
     if i >= Array.length pieces then
       None
     else
-      match pieces.(i) with
+      match pieces.(i).state with
       | Finished
-      | Pending _ ->
+      | Pending ->
           loop (i + 1)
       | Active parts ->
           if has i then
@@ -531,11 +535,11 @@ let request_pending pieces has start finish =
     if i >= finish then
       None
     else
-      match pieces.(i) with
-      | Pending length ->
-          let nparts = (length + block_size - 1) / block_size in
+      match pieces.(i).state with
+      | Pending ->
+          let nparts = (pieces.(i).length + block_size - 1) / block_size in
           let parts = Array.make nparts 0 in
-          pieces.(i) <- Active parts;
+          pieces.(i).state <- Active parts;
           begin match request_block parts false with
           | None ->
               assert false
@@ -566,9 +570,9 @@ let request_active pieces has =
     if i >= Array.length pieces then
       request_pending pieces has
     else
-      match pieces.(i) with
+      match pieces.(i).state with
       | Finished
-      | Pending _ ->
+      | Pending ->
           loop (i + 1)
       | Active parts ->
           if has i then
@@ -586,7 +590,10 @@ let request p pieces =
   if Peer.requests p < max_requests then
     match request_active pieces (Peer.has p) with
     | Some (i, j) ->
-        ()
+        let off = j * block_size in
+        let len = pieces.(i).length mod block_size in
+        let len = if len = 0 then block_size else len in
+        Peer.request p i off len
     | None ->
         ()
 
@@ -632,7 +639,7 @@ let share_torrent bt meta store pieces peers =
         (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
         loop ()
 
-    | PeerEvent (_, Peer.Choked) ->
+    | PeerEvent (_, Peer.Choked _) ->
         (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
         loop ()
 
@@ -657,7 +664,7 @@ let share_torrent bt meta store pieces peers =
         loop ()
 
     | PeerEvent (_, Peer.BlockRequested (i, off, len, u)) ->
-        if pieces.(i) = Finished then send_block store i off len u;
+        if pieces.(i).state = Finished then send_block store i off len u;
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
@@ -829,7 +836,7 @@ let rec fetch_metadata bt =
     | _, PieceFailed _
     | _, TorrentComplete
     | _, PeerEvent (_, Peer.Unchoked)
-    | _, PeerEvent (_, Peer.Choked)
+    | _, PeerEvent (_, Peer.Choked _)
     | _, PeerEvent (_, Peer.Interested)
     | _, PeerEvent (_, Peer.NotInterested)
     | _, PeerEvent (_, Peer.Have _)

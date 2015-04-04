@@ -247,7 +247,7 @@ let info_piece_size = 16 * 1024
 let default_block_size = 16 * 1024
 
 type event =
-  | Choked
+  | Choked of (int * int * int) list
 
   | Unchoked
 
@@ -299,7 +299,7 @@ type t =
 
     mutable last_pex : addr list;
 
-    requests : ((int * int * int) * Cstruct.t Lwt.u) Lwt_sequence.t;
+    requests : (int * int * int) Lwt_sequence.t;
     peer_requests : (int * int * int) Lwt_sequence.t;
 
     send : unit Lwt_condition.t;
@@ -432,10 +432,8 @@ let piece p i o buf =
 
 let request p i ofs len =
   if p.peer_choking then invalid_arg "Peer.request";
-  let t, u = Lwt.wait () in
-  ignore (Lwt_sequence.add_r ((i, ofs, len), u) p.requests);
-  send p @@ Wire.REQUEST (i, ofs, len);
-  t
+  ignore (Lwt_sequence.add_r (i, ofs, len) p.requests);
+  send p @@ Wire.REQUEST (i, ofs, len)
 
 let extended_handshake p =
   let m =
@@ -493,10 +491,8 @@ let have_bitfield p bits =
 let cancel p i o l =
   send p @@ Wire.CANCEL (i, o, l);
   try
-    let n = Lwt_sequence.find_node_l (fun ((i', o', l'), _) -> i = i' && o' = o && l = l') p.requests in
-    Lwt_sequence.remove n;
-    let _, u = Lwt_sequence.get n in
-    Lwt.wakeup_exn u (Failure "request was cancelled")
+    let n = Lwt_sequence.find_node_l (fun (i', o', l') -> i = i' && o' = o && l = l') p.requests in
+    Lwt_sequence.remove n
   with
   | Not_found -> () (* TODO log warning *)
 
@@ -570,12 +566,9 @@ let metadata_piece len i data p =
 let on_choke p =
   if not p.peer_choking then begin
     p.peer_choking <- true;
-    Lwt_sequence.iter_node_l
-      (fun n ->
-         let _, u = Lwt_sequence.get n in
-         Lwt.wakeup_exn u (Failure "peer is choking");
-         Lwt_sequence.remove n) p.requests;
-    p.push @@ Choked
+    let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
+    Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) p.requests;
+    p.push @@ Choked reqs
   end
 
 let on_unchoke p =
@@ -622,11 +615,11 @@ let on_request p i off len =
 let on_piece p i off s =
   begin match
     Lwt_sequence.find_node_opt_l
-      (fun ((i', off', len'), _) -> i = i && off = off' && len' = Cstruct.len s)
+      (fun (i', off', len') -> i = i && off = off' && len' = Cstruct.len s)
       p.requests
   with
   | None -> ()
-  | Some n -> let _, u = Lwt_sequence.get n in Lwt.wakeup u s
+  | Some n -> Lwt_sequence.remove n
   end;
   p.downloaded <- Int64.add p.downloaded (Int64.of_int @@ Cstruct.len s);
   Speedometer.add p.download (Cstruct.len s);

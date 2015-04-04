@@ -33,7 +33,7 @@ type pex_flags =
     pex_outgoing : bool }
 
 type event =
-  | Choked
+  | Choked of (int * int * int) list
 
   | Unchoked
 
@@ -147,7 +147,7 @@ val reject_metadata_request : t -> int -> unit
 val metadata_piece : int -> int -> Cstruct.t -> t -> unit
 (** Send a metainfo piece. *)
 
-val request : t -> int -> int -> int -> Cstruct.t Lwt.t
+val request : t -> int -> int -> int -> unit
 
 val piece : t -> int -> int -> Cstruct.t -> unit
 (** Send a block. *)
