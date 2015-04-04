@@ -1,15 +1,12 @@
 lib/Bcode
 lib/SHA1
 lib/Bits
-lib/IncompleteMetadata
 lib/Metadata
-lib/Stats
 lib/Magnet
 lib/Peer
 lib/Store
 lib/Tracker
 lib/Util
-lib/Torrent
 lib/PeerMgr
 lib/Client
 lib/Handshake
