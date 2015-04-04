@@ -31,6 +31,7 @@ let choke_timeout = 5.
 let rechoke_interval = 10.
 let rechoke_optimistic_duration = 2
 let rechoke_slots = 10
+let block_size = 1 lsl 14 (* 16384 *)
 
 open Event
 
@@ -404,7 +405,7 @@ module Torrent = struct
 
   let got_block t i off s =
     (* t.down <- Int64.add t.down (Int64.of_int (String.length s)); *)
-    let b = off / Metadata.block_size in
+    let b = off / block_size in
     match Bits.is_set t.completed.(i) b with
     | false ->
         Bits.set t.completed.(i) b;
@@ -453,7 +454,7 @@ module Torrent = struct
     Bits.has_all self.completed.(i)
 
   let has_block t i j _ =
-    Bits.is_set t.completed.(i) (j / Metadata.block_size)
+    Bits.is_set t.completed.(i) (j / block_size)
 
   let missing_blocks_in_piece t i =
     Bits.count_zeroes t.completed.(i)
@@ -469,8 +470,119 @@ module Torrent = struct
 end
 (* Torrent END *)
 
+type piece =
+  | Pending of int
+  | Active of int array
+  | Finished
+
+let request_block parts = function
+  | false ->
+      let rec loop i =
+        if i >= Array.length parts then
+          None
+        else
+        if parts.(i) = 0 then
+          (parts.(i) <- 1; Some i)
+        else
+          loop (i + 1)
+      in
+      loop 0
+  | true ->
+      let rec loop min index i =
+        if i >= Array.length parts then
+          if index >= 0 then
+            (parts.(index) <- parts.(index) + 1; Some index)
+          else
+            None
+        else
+        if parts.(i) >= 0 && (parts.(i) < min || min < 0) then
+          loop parts.(i) i (i + 1)
+        else
+          loop min index (i + 1)
+      in
+      loop (-1) (-1) 0
+
+let request_endgame pieces has =
+  let rec loop i =
+    if i >= Array.length pieces then
+      None
+    else
+      match pieces.(i) with
+      | Finished
+      | Pending _ ->
+          loop (i + 1)
+      | Active parts ->
+          if has i then
+            match request_block parts true with
+            | Some j ->
+                Some (i, j)
+            | None ->
+                None
+          else
+            loop (i + 1)
+  in
+  loop 0
+
+let request_pending pieces has start finish =
+  if start < 0 || start > finish || finish > Array.length pieces then
+    invalid_arg "request_pending";
+  let rec loop i =
+    if i >= finish then
+      None
+    else
+      match pieces.(i) with
+      | Pending length ->
+          let nparts = (length + block_size - 1) / block_size in
+          let parts = Array.make nparts 0 in
+          pieces.(i) <- Active parts;
+          begin match request_block parts false with
+          | None ->
+              assert false
+          | Some j ->
+              Some (i, j)
+          end
+      | Active _
+      | Finished ->
+          loop (i + 1)
+  in
+  loop start
+
+let request_pending pieces has =
+  let n = Random.int (Array.length pieces + 1) in
+  match request_pending pieces has n (Array.length pieces) with
+  | None ->
+      begin match request_pending pieces has 0 n with
+      | None ->
+          request_endgame pieces has
+      | Some _ as r ->
+          r
+      end
+  | Some _ as r ->
+      r
+
+let request_active pieces has =
+  let rec loop i =
+    if i >= Array.length pieces then
+      request_pending pieces has
+    else
+      match pieces.(i) with
+      | Finished
+      | Pending _ ->
+          loop (i + 1)
+      | Active parts ->
+          if has i then
+            match request_block parts false with
+            | None ->
+                loop (i + 1)
+            | Some j ->
+                Some (i, j)
+          else
+            loop (i + 1)
+  in
+  loop 0
+
 let send_block store i off len u =
-  let off = Int64.(add (mul (of_int i) (of_int Metadata.block_size)) (of_int off)) in
+  let off = Int64.(add (mul (of_int i) (of_int block_size)) (of_int off)) in
   Lwt.ignore_result (Store.read store off len >>= Lwt.wrap2 Lwt.wakeup u)
 
 let share_torrent bt meta store have peers =
