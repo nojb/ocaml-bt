@@ -32,6 +32,7 @@ let rechoke_interval = 10.
 let rechoke_optimistic_duration = 2
 let rechoke_slots = 10
 let block_size = 1 lsl 14 (* 16384 *)
+let max_requests = 5
 
 open Event
 
@@ -581,11 +582,22 @@ let request_active pieces has =
   in
   loop 0
 
+let request p pieces =
+  if Peer.requests p < max_requests then
+    match request_active pieces (Peer.has p) with
+    | Some (i, j) ->
+        ()
+    | None ->
+        ()
+
+let update_requests pieces peers =
+  Hashtbl.iter (fun _ p -> request p pieces) peers
+
 let send_block store i off len u =
   let off = Int64.(add (mul (of_int i) (of_int block_size)) (of_int off)) in
   Lwt.ignore_result (Store.read store off len >>= Lwt.wrap2 Lwt.wakeup u)
 
-let share_torrent bt meta store have peers =
+let share_torrent bt meta store pieces peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
   let rec loop () =
@@ -624,20 +636,15 @@ let share_torrent bt meta store have peers =
         (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
         loop ()
 
-    | PeerEvent (_, Peer.Unchoked) ->
+    | PeerEvent (_, Peer.Unchoked)
+    | PeerEvent (_, Peer.Have _)
+    | PeerEvent (_, Peer.HaveBitfield _) ->
+        update_requests pieces peers;
         loop ()
 
     | PeerEvent (_, Peer.Interested)
     | PeerEvent (_, Peer.NotInterested) ->
         (* if not (am_choking peers id) then Choker.rechoke ch; *)
-        loop ()
-
-    | PeerEvent (_, Peer.Have i) ->
-        (* Requester.got_have r i; *)
-        loop ()
-
-    | PeerEvent (_, Peer.HaveBitfield b) ->
-        (* Requester.got_bitfield r b; *)
         loop ()
 
     | PeerEvent (id, Peer.MetaRequested i) ->
@@ -650,7 +657,7 @@ let share_torrent bt meta store have peers =
         loop ()
 
     | PeerEvent (_, Peer.BlockRequested (i, off, len, u)) ->
-        if Bits.is_set have i then send_block store i off len u;
+        if pieces.(i) = Finished then send_block store i off len u;
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->

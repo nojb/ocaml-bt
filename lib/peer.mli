@@ -102,6 +102,8 @@ val download_speed : t -> float
 
 val upload_speed : t -> float
 
+val requests : t -> int
+
 (** Outgoing *)
 
 val extended_handshake : t -> unit

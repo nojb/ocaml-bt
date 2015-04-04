@@ -351,6 +351,9 @@ let download_speed p =
 let upload_speed p =
   Speedometer.speed p.upload
 
+let requests p =
+  Lwt_sequence.length p.requests
+
 let worked_on_piece p i =
   Bits.is_set p.blame i
 
