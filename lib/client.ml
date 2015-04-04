@@ -138,43 +138,6 @@ let connect_to_peer info_hash push = function
   (*         Choker.start ch *)
 (*     end *)
 
-let max_datagram_size = 1024
-
-let announce ~info_hash url push id =
-  let read_buf = Cstruct.create max_datagram_size in
-  let rec loop fd = function
-    | `Ok (t, (timeout, buf)) ->
-        Lwt_cstruct.write fd buf >>= fun _ ->
-        Lwt_unix.with_timeout timeout (fun () -> Lwt_cstruct.read fd read_buf) >>= fun n ->
-        loop fd (Tracker.handle t (Cstruct.sub read_buf 0 n))
-
-    | `Error s ->
-        Printf.ksprintf failwith "tracker error %S" s
-
-    | `Success (interval, leechers, seeders, peers) ->
-        push (PeersReceived peers);
-        Lwt_unix.sleep interval >>= fun () -> loop fd (Tracker.create ~info_hash ~id `Udp)
-  in
-  match Uri.scheme url with
-  | Some "udp" ->
-      let h = match Uri.host url with None -> assert false | Some h -> h in
-      let p = match Uri.port url with None -> assert false | Some p -> p in
-      Lwt_unix.gethostbyname h >>= fun he ->
-      let ip = he.Unix.h_addr_list.(0) in
-      let fd = Lwt_unix.(socket PF_INET SOCK_DGRAM 0) in
-      let sa = Lwt_unix.ADDR_INET (ip, p) in
-      Lwt_unix.connect fd sa >>= fun () ->
-      loop fd (Tracker.create ~info_hash ~id `Udp)
-  | Some s ->
-      Printf.ksprintf failwith "tracker scheme %S not supported" s
-  | None ->
-      failwith "no tracker scheme"
-
-let announce ~info_hash url push id =
-  Lwt.catch
-    (fun () -> announce ~info_hash url push id)
-    (fun exn -> (* debug ~exn "announce failure"; *) Lwt.return_unit)
-
 let am_choking peers id =
   try
     let p = Hashtbl.find peers id in
@@ -860,7 +823,7 @@ module LPD  = struct
 end
 
 let start bt =
-  List.iter (fun tier -> ignore (announce ~info_hash:bt.ih tier bt.push bt.id)) bt.trackers;
+  List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
   fetch_metadata bt >>= fun meta ->
   load_torrent bt meta >>= fun tor ->
   assert false

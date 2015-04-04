@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Log = Log.Make (struct let section = "Tracker" end)
+
 type event =
   [ `Started
   | `None
@@ -343,3 +345,48 @@ let handle t buf : ret =
       Udp.handle t buf
   | `Http _ as t ->
       Http.handle t buf
+
+(* IO *)
+
+open Lwt.Infix
+
+let max_datagram_size = 1024
+
+let announce ~info_hash url push id =
+  let read_buf = Cstruct.create max_datagram_size in
+  let rec loop fd = function
+    | `Ok (t, (timeout, buf)) ->
+        Lwt_cstruct.write fd buf >>= fun _ ->
+        Lwt_unix.with_timeout timeout (fun () -> Lwt_cstruct.read fd read_buf) >>= fun n ->
+        loop fd (handle t (Cstruct.sub read_buf 0 n))
+
+    | `Error s ->
+        Log.error "error : %S" s;
+        Lwt.fail (Failure s)
+
+    | `Success (interval, leechers, seeders, peers) ->
+        push peers;
+        Lwt_unix.sleep interval >>= fun () ->
+        loop fd (create ~info_hash ~id `Udp)
+  in
+  match Uri.scheme url with
+  | Some "udp" ->
+      let h = match Uri.host url with None -> assert false | Some h -> h in
+      let p = match Uri.port url with None -> assert false | Some p -> p in
+      Lwt_unix.gethostbyname h >>= fun he ->
+      let ip = he.Unix.h_addr_list.(0) in
+      let fd = Lwt_unix.(socket PF_INET SOCK_DGRAM 0) in
+      let sa = Lwt_unix.ADDR_INET (ip, p) in
+      Lwt_unix.connect fd sa >>= fun () ->
+      loop fd (create ~info_hash ~id `Udp)
+  | Some s ->
+      Log.error "tracker scheme %S not support" s;
+      Lwt.fail (Failure "tracker scheme not supported")
+  | None ->
+      Log.error "not tracker scheme : %S" (Uri.to_string url);
+      Lwt.fail (Failure "no tracker scheme")
+
+let announce ~info_hash push id url =
+  Lwt.ignore_result @@ Lwt.catch
+    (fun () -> announce ~info_hash url push id)
+    (fun exn -> (* debug ~exn "announce failure"; *) Lwt.return_unit)

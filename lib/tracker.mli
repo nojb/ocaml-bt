@@ -29,22 +29,4 @@ type event =
 
 type addr = Unix.inet_addr * int
 
-type t
-
-type ret =
-  [ `Ok of t * (float * Cstruct.t)
-  | `Error of string
-  | `Success of float * int * int * addr list ]
-
-val create :
-  ?up:int64 ->
-  ?left:int64 ->
-  ?down:int64 ->
-  ?event:event ->
-  ?port:int ->
-  id:SHA1.t ->
-  info_hash:SHA1.t -> [ `Udp | `Http ] -> ret
-
-val timeout : t -> ret
-
-val handle : t -> Cstruct.t -> ret
+val announce : info_hash:SHA1.t -> (addr list -> unit) -> SHA1.t -> Uri.t -> unit
