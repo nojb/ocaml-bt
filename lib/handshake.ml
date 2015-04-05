@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -19,6 +19,7 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Log  = Log.Make (struct let section = "Handshake" end)
 module S    = SHA1
 module Dh   = Nocrypto.Dh
 module Z    = Nocrypto.Numeric.Z
@@ -117,87 +118,12 @@ let req2 = Cstruct.of_string "req2"
 let req3 = Cstruct.of_string "req3"
 let vc   = Cstruct.of_string "\x00\x00\x00\x00\x00\x00\x00\x00"
 
-let discard = Cstruct.create 1024
-
-let arc4 from secret skey =
-  let key = ARC4.of_secret @@ SHA1.digestv [ from; secret; skey ] in
-  let { ARC4.key } = ARC4.encrypt ~key discard in
-  key
-
-(*
-1 A->B: Diffie Hellman Ya, PadA
-2 B->A: Diffie Hellman Yb, PadB
-3 A->B: HASH('req1', S), HASH('req2', SKEY) xor HASH('req3', S), ENCRYPT(VC, crypto_provide, len(PadC), PadC, len(IA)), ENCRYPT(IA)
-4 B->A: ENCRYPT(VC, crypto_select, len(padD), padD), ENCRYPT2(Payload Stream)
-5 A->B: ENCRYPT2(Payload Stream)
-*)
-
-(* let send_random_padding hs = *)
-(*   let len = Random.int (max_pad_len + 1) in *)
-(*   let pad = Cryptokit.Random.string Cryptokit.Random.secure_rng len in *)
-(*   IO.write_string hs.sock pad *)
-
-(* let sync_and_read_vc hs shared_secret = *)
-(*   let buf = String.create (String.length vc) in *)
-(*   let buf1 = String.create (String.length vc) in *)
-(*   let key = arcfour_key keyB shared_secret hs.skey in *)
-(*   let rec loop p = *)
-(*     if p >= max_pad_len then *)
-(*       fail_lwt "could not find vc" *)
-(*     else begin *)
-(*       let c = arcfour key in *)
-(*       c#transform buf 0 buf1 0 (String.length vc); *)
-(*       if buf1 = vc then *)
-(*         Lwt.return c *)
-(*       else begin *)
-(*         String.blit buf 1 buf 0 (String.length vc - 1); *)
-(*         IO.really_read hs.sock buf (String.length vc - 1) 1 >>= fun () -> *)
-(*         loop (p+1) *)
-(*       end *)
-(*     end *)
-(*   in *)
-(*   IO.really_read hs.sock buf 0 (String.length vc) >>= fun () -> *)
-(*   loop 0 *)
-
-(* let skip_pad hs = *)
-(*   IO.read_int16 hs.sock >>= fun pad_len -> *)
-(*   if 0 <= pad_len && pad_len <= max_pad_len then *)
-(*     IO.read_string hs.sock pad_len >>= fun _ -> *)
-(*     Lwt.return () *)
-(*   else *)
-(*     Lwt.fail (Failure (Printf.sprintf "pad len too long(%d)" pad_len)) *)
-
-(* let read_dh_key hs = *)
-(*   IO.read_string hs.sock key_len >>= fun yb -> *)
-(*   Lwt.return yb *)
-
-(* let req2_xor_req3 hs shared_secret = *)
-(*   let req2 = (SHA1.strings ["req2"; SHA1.to_bin hs.skey] :> string) in *)
-(*   let req3 = (SHA1.strings ["req3"; shared_secret] :> string) in *)
-(*   Cryptokit.xor_string req2 0 req3 0 (String.length req2); *)
-(*   req3 *)
-
-(* let send_payload hs shared_secret = *)
-(*   IO.write_string hs.sock (SHA1.strings ["req1"; shared_secret] :> string) >>= fun () -> *)
-(*   IO.write_string hs.sock (req2_xor_req3 hs shared_secret) >>= fun () -> *)
-(*   let key = arcfour_key keyA shared_secret hs.skey in *)
-(*   let arc4encrypt = arcfour key in *)
-(*   IO.enable_encryption hs.sock arc4encrypt; *)
-(*   IO.write_string hs.sock vc >>= fun () -> *)
-(*   let crypto_provide = crypto_provide hs.mode in *)
-(*   IO.write_int32 hs.sock crypto_provide >>= fun () -> *)
-(*   debug "sent crypto_provide(%lX) to %s" crypto_provide (to_string hs); *)
-(*   IO.write_int16 hs.sock 0 >>= fun () -> *)
-(*   let m = handshake_message hs.id hs.skey in *)
-(*   IO.write_int16 hs.sock (String.length m) >>= fun () -> *)
-(*   IO.write_string hs.sock m *)
-
-(* let send_dh_key hs = *)
-(*   let y = Cryptokit.DH.message dh_params hs.private_key in *)
-(*   IO.write_string hs.sock y >>= fun () -> *)
-(*   let pad_len = Random.int (max_pad_len + 1) in *)
-(*   let pad = Cryptokit.Random.string Cryptokit.Random.secure_rng pad_len in *)
-(*   IO.write_string hs.sock pad *)
+let arc4 =
+  let discard = Cstruct.create 1024 in
+  fun from secret skey ->
+    let key = ARC4.of_secret @@ SHA1.digestv [ from; secret; skey ] in
+    let { ARC4.key } = ARC4.encrypt ~key discard in
+    key
 
 let cs_int16 n =
   let cs = Cstruct.create 2 in
@@ -479,3 +405,33 @@ let outgoing ~info_hash mode =
 
 let incoming ~info_hash mode =
   `Error "not implemented"
+
+(* IO *)
+
+open Lwt.Infix
+
+let buf_size = 1024
+
+let negotiate fd t =
+  let read_buf = Cstruct.create buf_size in
+  let rec loop = function
+    | `Ok (t, Some cs) ->
+        Lwt_cstruct.complete (Lwt_cstruct.write fd) cs >>= fun () ->
+        loop (handle t Cs.empty)
+    | `Ok (t, None) ->
+        Lwt_cstruct.read fd read_buf >>= begin function
+        | 0 ->
+            Lwt.fail End_of_file
+        | n ->
+            loop (handle t (Cstruct.sub read_buf 0 n))
+        end
+    | `Error err ->
+        Log.error "exn : %S" err;
+        Lwt.fail (Failure err)
+    | `Success (mode, rest) ->
+        Lwt.return (`Ok (mode, rest))
+  in
+  loop t
+
+let outgoing ~info_hash fd mode =
+  negotiate fd (outgoing ~info_hash mode)

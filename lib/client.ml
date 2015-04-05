@@ -47,6 +47,76 @@ type event =
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
 
+let log_event = function
+  | PeersReceived peers ->
+      Log.debug "[PeersReceived %d]" (List.length peers)
+      (* let rec loop = function *)
+      (*   | (ip0, p0) :: (ip1, p1) :: (ip2, p2) :: (ip3, p3) :: rest -> *)
+      (*       Log.debug "  %s:%d  %s:%d  %s:%d  %s:%d" *)
+      (*         (Unix.string_of_inet_addr ip0) p0 *)
+      (*         (Unix.string_of_inet_addr ip1) p1 *)
+      (*         (Unix.string_of_inet_addr ip2) p2 *)
+      (*         (Unix.string_of_inet_addr ip3) p3; *)
+      (*       loop rest *)
+      (*   | (ip0, p0) :: (ip1, p1) :: (ip2, p2) :: [] -> *)
+      (*       Log.debug "  %s:%d  %s:%d  %s:%d" *)
+      (*         (Unix.string_of_inet_addr ip0) p0 *)
+      (*         (Unix.string_of_inet_addr ip1) p1 *)
+      (*         (Unix.string_of_inet_addr ip2) p2 *)
+      (*   | (ip0, p0) :: (ip1, p1) :: [] -> *)
+      (*       Log.debug "  %s:%d  %s:%d" *)
+      (*         (Unix.string_of_inet_addr ip0) p0 *)
+      (*         (Unix.string_of_inet_addr ip1) p1 *)
+      (*   | (ip0, p0) :: [] -> *)
+      (*       Log.debug "  %s:%d" (Unix.string_of_inet_addr ip0) p0 *)
+      (*   | [] -> *)
+      (*       () *)
+      (* in *)
+      (* loop peers *)
+  | PeerConnected (_, _, _, id) ->
+      Log.debug "successfully connected to [%s]" (SHA1.to_hex_short id)
+  | IncomingConnection _ ->
+      Log.debug "[IncomingConnection]"
+  | PieceVerified i ->
+      Log.debug "piece [%d] was successfully verified" i
+  | PieceFailed i ->
+      Log.debug "piece [%d] failed verification" i
+  | ConnectFailed (ip, p) ->
+      Log.info "could not connect to [%s:%d]" (Unix.string_of_inet_addr ip) p
+  | PeerEvent (id, Peer.Choked reqs) ->
+      Log.info "[%s] has choked us" (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.Unchoked) ->
+      Log.info "[%s] has unchoked us" (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.Interested) ->
+      Log.info "[%s] is now interested in us" (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.NotInterested) ->
+      Log.info "[%s] is no longer interested in us" (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.Have i) ->
+      Log.info "[%s] has piece %d" (SHA1.to_hex_short id) i
+  | PeerEvent (id, Peer.HaveBitfield b) ->
+      Log.debug "[%s] has %d out of %d pieces" (SHA1.to_hex_short id) (Bits.count_ones b) (Bits.length b)
+  | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
+      Log.debug "[%s] requested block, i = %d, off = %d, len = %d" (SHA1.to_hex_short id) i off len
+  | PeerEvent (id, Peer.BlockReceived (i, off, _)) ->
+      Log.debug "received block from [%s], i = %d, off = %d" (SHA1.to_hex_short id) i off
+  | PeerEvent (id, Peer.PeerDisconnected _) ->
+      Log.debug "[%s] disconnected" (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.AvailableMetadata len) ->
+      Log.debug "[%s] has metadata information available, pieces = %d"
+        (SHA1.to_hex_short id) ((len + block_size - 1) / block_size)
+  | PeerEvent (id, Peer.MetaRequested i) ->
+      Log.debug "[%s] requested metadata piece [%d]" (SHA1.to_hex_short id) i
+  | PeerEvent (id, Peer.GotMetaPiece (i, _)) ->
+      Log.debug "received metadata piece [%d] from [%s]" i (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.RejectMetaPiece i) ->
+      Log.debug "[%s] rejected request for metadata piece [%d]" (SHA1.to_hex_short id) i
+  | PeerEvent (id, Peer.GotPEX _) ->
+      Log.debug "[%s] [GotPEX] " (SHA1.to_hex_short id)
+  | PeerEvent (id, Peer.DHTPort p) ->
+      Log.debug "[%s] [DHTPort %d] " (SHA1.to_hex_short id) p
+  | TorrentComplete ->
+      Log.debug "[TorrentComplete]"
+
 type t =
   { id : SHA1.t;
     ih : SHA1.t;
@@ -57,20 +127,23 @@ type t =
 
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
+let ltep_bit = 43 (* 20-th bit from the right *)
+let dht_bit = 63 (* last bit of the extension bitfield *)
+
 let extensions =
   let bits = Bits.create (8 * 8) in
-  (* Bits.set bits Wire.ltep_bit; *)
+  Bits.set bits ltep_bit;
   (* Bits.set bits Wire.dht_bit; *)
   Bits.to_cstruct bits
 
 let handshake_len =
   Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
 
-let handshake_message peer_id info_hash =
-  Cs.concat [ proto; extensions; SHA1.to_raw info_hash; SHA1.to_raw peer_id ]
+let handshake_message ~id ~info_hash =
+  Cs.concat [ proto; extensions; SHA1.to_raw info_hash; SHA1.to_raw id ]
 
 let parse_handshake cs =
-  assert (Cstruct.len cs = handshake_len);
+  if Cstruct.len cs != handshake_len then invalid_arg "parse_handshake";
   match Cstruct.get_uint8 cs 0 with
   | 19 ->
       let proto' = Cstruct.sub cs 0 20 in
@@ -84,56 +157,45 @@ let parse_handshake cs =
   | _ ->
       failwith "bad proto length"
 
-let buf_size = 1024
-
-let negotiate fd t =
-  let read_buf = Cstruct.create buf_size in
-  let rec loop = function
-    | `Ok (t, Some cs) ->
-        Lwt_cstruct.complete (Lwt_cstruct.write fd) cs >>= fun () ->
-        loop (Handshake.handle t Cs.empty)
-    | `Ok (t, None) ->
-        Lwt_cstruct.read fd read_buf >>= begin function
-        | 0 ->
-            failwith "eof"
-        | n ->
-            loop (Handshake.handle t (Cstruct.sub read_buf 0 n))
-        end
-    | `Error err ->
-        failwith err
-    | `Success (mode, rest) ->
-        Lwt.return (`Ok (mode, rest))
-  in
-  loop t
-
-let connect_to_peer info_hash ip port timeout =
-  let my_id = SHA1.generate () in (* FIXME FIXME *)
-  let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
-  Lwt_unix.gethostbyaddr ip >>= fun he ->
-  let sa = Lwt_unix.ADDR_INET (he.Lwt_unix.h_addr_list.(0), port) in
+let connect_to_peer ~id ~info_hash ip port timeout fd =
+  (* let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in *)
+  let sa = Lwt_unix.ADDR_INET (ip, port) in
+  Log.info "[%s:%d] Connecting..." (Unix.string_of_inet_addr ip) port;
   Lwt_unix.connect fd sa >>= fun () ->
-  negotiate fd Handshake.(outgoing ~info_hash Both) >>= function
-  | `Ok (mode, rest) ->
-      Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message info_hash my_id) >>= fun () ->
+  Log.info "[%s:%d] Connected." (Unix.string_of_inet_addr ip) port;
+  (* Handshake.(outgoing ~info_hash fd Both) >>= function *)
+  (* | `Ok (mode, rest) -> *)
+  let mode = None in
+  let rest = Cs.empty in
+      Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message id info_hash) >>= fun () ->
+      (* Log.debug "[%s:%d] Sent handshake" (Unix.string_of_inet_addr ip) port; *)
       assert (Cstruct.len rest <= handshake_len);
       let hs = Cstruct.create handshake_len in
       Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
       Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
+      (* Log.debug "[%s:%d] Read handshake" (Unix.string_of_inet_addr ip) port; *)
       let ext, info_hash', peer_id = parse_handshake hs in
+      (* Log.debug "[%s:%d] Parsed handshake" (Unix.string_of_inet_addr ip) port; *)
       assert (SHA1.equal info_hash info_hash');
+      Log.info "[%s:%d] welcome %s" (Unix.string_of_inet_addr ip) port (SHA1.to_hex_short peer_id);
       Lwt.return (mode, fd, ext, peer_id)
-  | `Error _ ->
-      assert false
+  (* | `Error err -> *)
+(* Lwt.fail (Failure err) *)
 
-let connect_to_peer info_hash push = function
+let connect_to_peer ~id ~info_hash push = function
   | Some (addr, timeout) ->
       let ip, port = addr in
-      ignore
-        (Lwt.try_bind
-           (fun () -> connect_to_peer info_hash ip port timeout)
-           (fun (mode, fd, ext, peer_id) ->
-              Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_cstruct ext, peer_id))
-           (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
+      let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
+      Lwt.ignore_result @@
+      Lwt.try_bind
+        (fun () ->
+           connect_to_peer ~id ~info_hash ip port timeout fd)
+        (fun (mode, fd, ext, peer_id) ->
+           Lwt.wrap1 push @@ PeerConnected (mode, fd, Bits.of_cstruct ext, peer_id))
+        (fun e ->
+           Log.error "[%s:%d] exn %s" (Unix.string_of_inet_addr ip) port (Printexc.to_string e);
+           Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
+           Lwt.wrap1 push @@ ConnectFailed addr)
   | None -> ()
 
 let am_choking peers id =
@@ -215,6 +277,7 @@ type piece_state =
   | Pending
   | Active of int array
   | Finished
+  | Verified
 
 type piece =
   { mutable state : piece_state;
@@ -257,6 +320,7 @@ let request_endgame pieces has =
     else
       match pieces.(i).state with
       | Finished
+      | Verified
       | Pending ->
           loop (i + 1)
       | Active parts ->
@@ -290,6 +354,7 @@ let request_pending pieces has start finish =
               Some (i, j)
           end
       | Active _
+      | Verified
       | Finished ->
           loop (i + 1)
   in
@@ -315,6 +380,7 @@ let request_active pieces has =
     else
       match pieces.(i).state with
       | Finished
+      | Verified
       | Pending ->
           loop (i + 1)
       | Active parts ->
@@ -345,9 +411,10 @@ let update_requests pieces peers =
 
 let send_block store pieces p i off len =
   match pieces.(i).state with
-  | Finished ->
+  | Verified ->
       let off1 = Int64.(add pieces.(i).offset (of_int off)) in
       Lwt.ignore_result (Store.read store off1 len >>= Lwt.wrap4 Peer.piece p i off)
+  | Finished
   | Pending
   | Active _ ->
       ()
@@ -362,6 +429,7 @@ let verify_piece store peers pieces i push =
 let record_block store peers pieces i off s push =
   match pieces.(i).state with
   | Pending
+  | Verified
   | Finished ->
       Lwt.return_unit
   | Active parts ->
@@ -378,14 +446,16 @@ let record_block store peers pieces i off s push =
       end;
       let off = Int64.(add pieces.(i).offset (of_int off)) in
       Store.write store off s >>= fun () ->
-      if pieces.(i).have = Array.length parts then
+      if pieces.(i).have = Array.length parts then begin
+        pieces.(i).state <- Finished;
         verify_piece store peers pieces i push
-      else
+      end else
         Lwt.return_unit
 
 let request_rejected pieces (i, off, _) =
   match pieces.(i).state with
   | Finished
+  | Verified
   | Pending -> ()
   | Active parts ->
       let j = off / block_size in
@@ -399,29 +469,29 @@ let share_torrent bt meta store pieces have peers =
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have) peers;
   update_requests pieces peers;
   let rec loop () =
-    Lwt_stream.next bt.chan >>= function
+    Lwt_stream.next bt.chan >>= fun e ->
+    log_event e;
+    match e with
     | TorrentComplete ->
-        Log.info "torrent complete";
         (* FIXME TODO FIXME *)
         Lwt.return_unit
 
     | PeersReceived addrs ->
-        (* debug "received %d peers" (List.length addrs); *)
-        List.iter (fun addr -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
+        List.iter (fun addr -> connect_to_peer bt.id bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop ()
 
     | PieceVerified i ->
-        (* debug "piece %d verified and written to disk" i; *)
+        pieces.(i).state <- Verified;
+        Bits.set have i;
         Hashtbl.iter (fun _ p -> Peer.have p i) peers;
         loop ()
 
     | PieceFailed i ->
-        (* debug "piece %d failed hashcheck" i; *)
         (* FIXME FIXME *)
         loop ()
 
     | ConnectFailed addr ->
-        connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        connect_to_peer bt.id bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop ()
 
     | IncomingConnection (fd, sa) ->
@@ -430,7 +500,7 @@ let share_torrent bt meta store pieces have peers =
 
     | PeerEvent (id, Peer.PeerDisconnected reqs) ->
         List.iter (request_rejected pieces) reqs;
-        connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
+        connect_to_peer bt.id bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
         loop ()
@@ -465,19 +535,13 @@ let share_torrent bt meta store pieces have peers =
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
         record_block store peers pieces i off s bt.push;
-        (* debug "got block %d/%d (piece %d) from %s" b *)
-        (*   (Metadata.block_count meta idx) idx (Peer.to_string p); *)
-        (* (Util.string_of_file_size (Int64.of_float (Peer.download_rate p))); *)
         loop ()
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
-        (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
-        (*   (List.length added) (List.length dropped); *)
-        List.iter (fun (addr, _) -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
+        List.iter (fun (addr, _) -> connect_to_peer bt.id bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop ()
 
     | PeerEvent (_, Peer.DHTPort _) ->
-        (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
         (*   DHT.ping bt.dht (addr, i) >|= function *)
@@ -491,12 +555,7 @@ let share_torrent bt meta store pieces have peers =
 
     | PeerConnected (mode, sock, exts, id) ->
         let p = welcome bt.push mode sock exts id in
-        (* let p = Peer.create_has_meta id meta (\*  (Requester.get_next_requests r) *\) in *)
-        (* Lwt.async (fun () -> reader_loop bt.push sock p); *)
-        (* if Bits.is_set exts Wire.ltep_bit then Peer.send_extended_handshake p; *)
-        (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
-        (* (\* Peer.send_have_bitfield p (Torrent.have tor) *\) *)
-        (* (\* FIXME *\) *)
+        Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
         loop ()
 
@@ -565,10 +624,10 @@ let rec fetch_metadata bt =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
+    log_event e;
     match m, e with
     | _, PeersReceived addrs ->
-        (* debug "received %d peers" (List.length addrs); *)
-        List.iter (fun addr -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
+        List.iter (fun addr -> connect_to_peer bt.id bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
         loop m
 
     | _, PeerConnected (mode, fd, exts, id) ->
@@ -577,7 +636,7 @@ let rec fetch_metadata bt =
         loop m
 
     | _, ConnectFailed addr ->
-        connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        connect_to_peer bt.id bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop m
 
     | _, IncomingConnection (fd, sa) ->
@@ -585,7 +644,7 @@ let rec fetch_metadata bt =
         loop m
 
     | _, PeerEvent (id, Peer.PeerDisconnected _) ->
-        connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
+        connect_to_peer bt.id bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         loop m
 
@@ -625,7 +684,7 @@ let rec fetch_metadata bt =
     | _, PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
-        List.iter (fun (addr, _) -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
+        List.iter (fun (addr, _) -> connect_to_peer bt.id bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) added;
         loop m
 
     | _, PeerEvent (_, Peer.DHTPort i) ->

@@ -21,20 +21,10 @@
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 
-type t
-
 type encryption_mode =
   | Encrypted
   | Both
   | Plain
 
-type ret =
-  [ `Ok of t * Cstruct.t option
-  | `Success of (ARC4.key * ARC4.key) option * Cstruct.t
-  | `Error of string ]
-
-val incoming : info_hash:SHA1.t -> encryption_mode -> ret
-
-val outgoing : info_hash:SHA1.t -> encryption_mode -> ret
-
-val handle : t -> Cstruct.t -> ret
+val outgoing : info_hash:SHA1.t -> Lwt_unix.file_descr -> encryption_mode ->
+  [ `Ok of (ARC4.key * ARC4.key) option * Cstruct.t | `Error of string ] Lwt.t

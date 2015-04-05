@@ -19,6 +19,7 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Log  = Log.Make (struct let section = "Peer" end)
 module Cs   = Nocrypto.Uncommon.Cs
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 
@@ -231,7 +232,7 @@ end = struct
   let rec handle cs =
     if Cstruct.len cs >= 4 then
       let l = Int32.to_int @@ Cstruct.BE.get_uint32 cs 0 in
-      if l + 4 >= Cstruct.len cs then
+      if l + 4 <= Cstruct.len cs then
         let packet, cs = Cstruct.split (Cstruct.shift cs 4) l in
         let cs, packets = handle cs in
         let packet = parse packet in
@@ -494,13 +495,12 @@ let cancel p i o l =
 let send_port p i =
   send p @@ Wire.PORT i
 
-let request_metadata_piece p idx =
-  assert (idx >= 0);
-  assert (Hashtbl.mem p.extensions "ut_metadata");
+let request_metadata_piece p i =
+  if i < 0 || not (Hashtbl.mem p.extensions "ut_metadata") then invalid_arg "request_metadata_piece";
   let id = Hashtbl.find p.extensions "ut_metadata" in
   let d =
     [ "msg_type", Bcode.Int 0L;
-      "piece", Bcode.Int (Int64.of_int idx) ]
+      "piece", Bcode.Int (Int64.of_int i) ]
   in
   send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
@@ -682,13 +682,13 @@ let encrypt key cs =
 
 let decrypt = encrypt
 
-let (>>=) = Lwt.(>>=)
+open Lwt.Infix
 
 let handle_err p fd e =
-  Log.error "peer error: %S" (Printexc.to_string e);
+  Log.error "[%s] exn %s" (SHA1.to_hex_short p.id) (Printexc.to_string e);
   let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
   p.push (PeerDisconnected reqs);
-  Lwt_unix.close fd
+  Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
 
 let reader_loop p fd key =
   let buf = Cstruct.create Wire.max_packet_len in
@@ -697,8 +697,11 @@ let reader_loop p fd key =
     | 0 ->
         Lwt.fail End_of_file
     | n ->
+        (* Log.debug "[%s] read %d bytes" (SHA1.to_hex_short p.id) n; *)
         let key, buf = decrypt key (Cstruct.sub buf 0 n) in
         let data, msgs = Wire.handle Cs.(data <+> buf) in
+        (* List.iter (fun m -> Log.debug "read message from [%s] : %s" (SHA1.to_hex_short p.id) *)
+        (*     (Wire.string_of_message m)) msgs; *)
         List.iter (on_message p) msgs;
         loop key data
   in
@@ -709,6 +712,7 @@ let reader_loop p fd key =
 
 let writer_loop p fd key =
   let write m key =
+    Log.debug "sending message to [%s] : %s" (SHA1.to_hex_short p.id) (Wire.string_of_message m);
     let cs = Util.W.to_cstruct (Wire.writer m) in
     let key, cs = encrypt key cs in
     Lwt_cstruct.(complete (write fd) @@ Util.W.to_cstruct (Wire.writer m)) >>= fun () ->
