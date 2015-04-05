@@ -410,6 +410,8 @@ let incoming ~info_hash mode =
 
 open Lwt.Infix
 
+type addr = Unix.inet_addr * int
+
 let buf_size = 1024
 
 let negotiate fd t =
@@ -433,5 +435,76 @@ let negotiate fd t =
   in
   loop t
 
-let outgoing ~info_hash fd mode =
-  negotiate fd (outgoing ~info_hash mode)
+(* let outgoing ~info_hash fd mode = *)
+(*   negotiate fd (outgoing ~info_hash mode) *)
+
+let proto = Cstruct.of_string "\019BitTorrent protocol"
+
+let ltep_bit = 43 (* 20-th bit from the right *)
+let dht_bit = 63 (* last bit of the extension bitfield *)
+
+let extensions =
+  let bits = Bits.create (8 * 8) in
+  Bits.set bits ltep_bit;
+  (* Bits.set bits Wire.dht_bit; *)
+  Bits.to_cstruct bits
+
+let handshake_len =
+  Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
+
+let handshake_message ~id ~info_hash =
+  Cs.concat [ proto; extensions; S.to_raw info_hash; S.to_raw id ]
+
+let parse_handshake cs =
+  if Cstruct.len cs != handshake_len then invalid_arg "parse_handshake";
+  match Cstruct.get_uint8 cs 0 with
+  | 19 ->
+      let proto' = Cstruct.sub cs 0 20 in
+      if Cs.equal proto' proto then
+        let ext = Bits.of_cstruct @@ Cstruct.sub cs 20 8 in
+        let info_hash = Cstruct.sub cs 28 20 in
+        let peer_id = Cstruct.sub cs 48 20 in
+        `Ok (ext, S.of_raw info_hash, S.of_raw peer_id)
+      else
+        `Error (Printf.sprintf "unknown protocol: %S" (Cstruct.to_string proto'))
+  | n ->
+      `Error (Printf.sprintf "bad protocol length %d" n)
+
+type result =
+  | Ok of (ARC4.key * ARC4.key) option * Bits.t * S.t
+  | Failed
+
+let outgoing ~id ~info_hash (ip, port) fd push =
+  (* Handshake.(outgoing ~info_hash fd Both) >>= function *)
+  (* | `Ok (mode, rest) -> *)
+  let mode = None in
+  let rest = Cs.empty in
+  Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message id info_hash) >>= fun () ->
+  (* Log.debug "[%s:%d] Sent handshake" (Unix.string_of_inet_addr ip) port; *)
+  assert (Cstruct.len rest <= handshake_len);
+  let hs = Cstruct.create handshake_len in
+  Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
+  Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
+  (* Log.debug "[%s:%d] Read handshake" (Unix.string_of_inet_addr ip) port; *)
+  begin match parse_handshake hs with
+  | `Ok (ext, info_hash', peer_id) ->
+      (* Log.debug "[%s:%d] Parsed handshake" (Unix.string_of_inet_addr ip) port; *)
+      if S.equal info_hash info_hash' then begin
+        Log.info "+ WELCOME id:%s addr:%s port:%d"
+          (S.to_hex_short peer_id) (Unix.string_of_inet_addr ip) port;
+        Lwt.wrap1 push (Ok (mode, ext, peer_id))
+      end else
+        Lwt.fail (Failure "bad info-hash")
+  | `Error err ->
+      Lwt.fail (Failure err)
+  end
+  (* | `Error err -> *)
+(* Lwt.fail (Failure err) *)
+
+let outgoing ~id ~info_hash addr fd push =
+  Lwt.ignore_result
+    (Lwt.catch
+       (fun () -> outgoing ~id ~info_hash addr fd push)
+       (fun e ->
+          Log.error "exn %s" (Printexc.to_string e);
+          Lwt.wrap1 push @@ Failed))
