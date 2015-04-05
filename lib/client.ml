@@ -383,6 +383,14 @@ let record_block store peers pieces i off s push =
       else
         Lwt.return_unit
 
+let request_rejected pieces (i, off, _) =
+  match pieces.(i).state with
+  | Finished
+  | Pending -> ()
+  | Active parts ->
+      let j = off / block_size in
+      if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
+
 let record_block store peers pieces i off s push =
   Lwt.ignore_result (record_block store peers pieces i off s push)
 
@@ -408,6 +416,7 @@ let share_torrent bt meta store pieces have peers =
 
     | PieceFailed i ->
         (* debug "piece %d failed hashcheck" i; *)
+        (* FIXME FIXME *)
         loop ()
 
     | ConnectFailed addr ->
@@ -419,15 +428,14 @@ let share_torrent bt meta store pieces have peers =
         loop ()
 
     | PeerEvent (id, Peer.PeerDisconnected reqs) ->
+        List.iter (request_rejected pieces) reqs;
         connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
-        (* Requester.peer_declined_all_requests r id; FIXME FIXME *)
-        (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
         loop ()
 
     | PeerEvent (_, Peer.Choked reqs) ->
-        (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
+        List.iter (request_rejected pieces) reqs;
         loop ()
 
     | PeerEvent (_, Peer.Unchoked)
