@@ -87,7 +87,7 @@ let unset b i =
 
 let is_set b i =
   if i < 0 (* || i >= b.length *) then invalid_arg "Bits.is_set";
-  _get b.data i
+  i < b.length && _get b.data i
 
 let of_cstruct cs =
   let data = Bytes.create (Cstruct.len cs * 8) in
