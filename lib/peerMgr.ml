@@ -28,6 +28,7 @@ type peer =
 
 type swarm =
   { size : int;
+    push : addr -> Lwt_unix.file_descr -> unit;
     wires : (SHA1.t, addr) Hashtbl.t;
     mutable connections : addr list;
     queue : addr Queue.t;
@@ -36,29 +37,46 @@ type swarm =
 let default_size = 100
 let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
-let create ?(size = default_size) () =
+open Lwt.Infix
+
+let connect_to_peer push addr wait =
+  let ip, port = addr in
+  let sa = Lwt_unix.ADDR_INET (ip, port) in
+  let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
+  Lwt_unix.sleep wait >>= fun () ->
+  Lwt.catch
+    (fun () ->
+       Log.info "[%s:%d] Connecting..." (Unix.string_of_inet_addr ip) port;
+       Lwt_unix.connect fd sa >>= fun () ->
+       Log.info "[%s:%d] Connected." (Unix.string_of_inet_addr ip) port;
+       Lwt.wrap2 push addr fd)
+    (fun e ->
+       Log.error "[%s:%d] exn %s" (Unix.string_of_inet_addr ip) port (Printexc.to_string e);
+       Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit))
+
+let connect_to_peer push addr wait =
+  Lwt.ignore_result (connect_to_peer push addr wait)
+
+let create ?(size = default_size) push =
   { size;
+    push;
     wires = Hashtbl.create 3;
     connections = [];
     queue = Queue.create ();
     peers = Hashtbl.create 3 }
 
 let drain sw =
-  if List.length sw.connections >= sw.size then
-    None
-  else
+  if List.length sw.connections < sw.size then
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
     | None ->
-        None
+        ()
     | Some addr ->
         let p = Hashtbl.find sw.peers addr in
         sw.connections <- addr :: sw.connections;
-        Some (addr, p.timeout)
+        connect_to_peer sw.push addr p.timeout
 
 let add sw addr =
-  if Hashtbl.mem sw.peers addr then
-    None
-  else begin
+  if not (Hashtbl.mem sw.peers addr) then begin
     Hashtbl.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
     Queue.push addr sw.queue;
     drain sw
@@ -119,39 +137,6 @@ let handshake_failed sw addr =
 
 (* let close_bad_peers pm = *)
 (*   iter_peers (fun p -> if is_bad_peer pm p then close_peer pm p) pm *)
-
-(* let reconnect_pulse_delay = 0.5 *)
-
-(* let rec reconnect_pulse bt = *)
-(*   close_bad_peers bt; *)
-(*   (\* if need_more_peers bt then *\) *)
-(*   (\* debug "reconnect_pulse: will try to connect to %d peers" *\) *)
-(*   (\* (max_peer_count - (Hashtbl.length bt.peers + Hashtbl.length bt.connecting)); *\) *)
-(*   while need_more_peers bt && List.length bt.saved > 0 do *)
-(*     let addr = List.hd bt.saved in *)
-(*     bt.saved <- List.tl bt.saved; *)
-(*     Hashtbl.add bt.connecting addr (); *)
-(*     Lwt.async (fun () -> connect_peer bt addr) *)
-(*   done; *)
-(*   Lwt_unix.sleep reconnect_pulse_delay >>= fun () -> reconnect_pulse bt *)
-
-(* let pex_delay = 60.0 *)
-
-(* let rec pex_pulse pm = *)
-(*   let pex = Hashtbl.fold (fun addr _ l -> addr :: l) pm.peers [] in *)
-(*   iter_peers (fun p -> Peer.send_pex p pex) pm; *)
-(*   Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm *)
-
-(* let torrent_loaded pm m tor get_next_requests = *)
-(*   debug "torrent_loaded (have %d pieces)" (Torrent.numgot tor); *)
-(*   Hashtbl.iter (fun _ p -> Peer.got_metadata p m (get_next_requests p)) pm.peers; *)
-(*   let b = Torrent.have tor in *)
-(*   Hashtbl.iter begin fun _ p -> *)
-(*     for i = 0 to Bits.length b - 1 do *)
-(*       if Bits.is_set b i then Peer.send_have p i *)
-(*     done *)
-(*   end pm.peers; *)
-(*   pm.info <- HasMeta (m, tor, get_next_requests) *)
 
 (* let max_bad_pieces_per_peer = 5 *)
 

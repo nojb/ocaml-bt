@@ -27,12 +27,12 @@ type addr = Unix.inet_addr * int
 
 type swarm
 
-val create : ?size:int -> unit -> swarm
+val create : ?size:int -> (addr -> Lwt_unix.file_descr -> unit) -> swarm
 
-val add : swarm -> addr -> (addr * float) option
+val add : swarm -> addr -> unit
 
-val peer_disconnected : swarm -> SHA1.t -> (addr * float) option
+val peer_disconnected : swarm -> SHA1.t -> unit
 
 val handshake_ok : swarm -> addr -> SHA1.t -> unit
 
-val handshake_failed : swarm -> addr -> (addr * float) option
+val handshake_failed : swarm -> addr -> unit
