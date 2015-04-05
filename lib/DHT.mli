@@ -1,6 +1,6 @@
 (* The MIT License (MIT)
 
-   Copyright (c) 2014 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+   Copyright (c) 2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -21,6 +21,12 @@
 
 (** Distributed Hash Table (DHT).  Shamelessly based on MLdonkey's
     implementation <http://mldonkey.sourceforge.net>. *)
+
+type status =
+  | Good
+  | Bad
+  | Unknown
+  | Pinged
 
 type addr = Unix.inet_addr * int
 
@@ -66,7 +72,7 @@ val create : int -> t
 val start : t -> unit
 (** Start the event loop. *)
 
-val update : t -> Kademlia.status -> SHA1.t -> addr -> unit
+val update : t -> status -> SHA1.t -> addr -> unit
 (** [update dht st id addr] updates the status of the DHT node with contact
     information [(id, addr)] to be [st].  If the node does not exist, it is added. *)
 

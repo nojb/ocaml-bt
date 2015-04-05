@@ -19,12 +19,505 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-let section = Log.make_section "DHT"
+open Lwt.Infix
 
-let debug ?exn fmt = Log.debug section ?exn fmt
+type status =
+  | Good
+  | Bad
+  | Unknown
+  | Pinged
 
-let (>>=) = Lwt.(>>=)
-let (>|=) = Lwt.(>|=)
+let string_of_status = function
+  | Good -> "good"
+  | Bad -> "bad"
+  | Unknown -> "unknown"
+  | Pinged -> "pinged"
+
+module KRPC : sig
+  type msg =
+    | Query of string * (string * Bcode.t) list
+    | Response of (string * Bcode.t) list
+    | Error of int64 * string
+
+  type rpc =
+    | Error
+    | Timeout
+    | Response of (Unix.inet_addr * int) * (string * Bcode.t) list
+
+  type t
+
+  type answer_func = (Unix.inet_addr * int) -> string -> (string * Bcode.t) list -> msg
+
+  val create : answer_func -> int -> t
+
+  val start : t -> unit
+
+  val string_of_msg : msg -> string
+
+  val send_msg : t -> msg -> (Unix.inet_addr * int) -> rpc Lwt.t
+end = struct
+
+  module Log = Log.Make (struct let section = "KRPC" end)
+
+  open Printf
+
+  let alpha = 3
+
+  type msg =
+    | Query of string * (string * Bcode.t) list
+    | Response of (string * Bcode.t) list
+    | Error of int64 * string
+
+  let string_of_msg = function
+    | Query (name, args) -> sprintf "query %s(%s)" name (String.concat "," (List.map fst args))
+    | Response d -> sprintf "response (%s)" (String.concat "," (List.map fst d))
+    | Error (n, s) -> sprintf "error (%Ld,%S)" n s
+
+  let encode t msg =
+    let str s = Bcode.String (Cstruct.of_string s) in
+    let d = match msg with
+      | Query (name, args) ->
+          ["y", str "q"; "q", str name; "a", Bcode.Dict args]
+      | Response dict ->
+          ["y", str "r"; "r", Bcode.Dict dict]
+      | Error (code, s) ->
+          ["y", str "e"; "e", Bcode.List [Bcode.Int code; str s]]
+    in
+    let d = ("t", str t) :: d in
+    Bcode.encode (Bcode.Dict d)
+
+  let decode s =
+    let bc = Bcode.decode s in
+    let t = Bcode.to_string (Bcode.find "t" bc) in
+    let y = Bcode.to_string (Bcode.find "y" bc) in
+    let msg = match y with
+      | "q" ->
+          let q = Bcode.to_string (Bcode.find "q" bc) in
+          let a = Bcode.to_dict (Bcode.find "a" bc) in
+          Query (q, a)
+      | "r" ->
+          let r = Bcode.to_dict (Bcode.find "r" bc) in
+          Response r
+      | "e" ->
+          begin match Bcode.to_list (Bcode.find "e" bc) with
+          | Bcode.Int n :: Bcode.String s :: _ -> Error (n, Cstruct.to_string s)
+          | _ -> failwith "KRPC.decode: bad fields for 'e' entry"
+          end
+      | _ ->
+          failwith (Printf.sprintf "KRPC.decode: unknown message type y %S" y)
+    in
+    (t, msg)
+
+  module Assoc2 : sig
+    type ('a, 'b, 'c) t
+    val create : unit -> ('a, 'b, 'c) t
+    val add : ('a, 'b, 'c) t -> 'a -> 'b -> 'c -> unit
+    val find : ('a, 'b, 'c) t -> 'a -> 'b -> 'c option
+    val remove : ('a, 'b, 'c) t -> 'a -> 'b -> unit
+    val clear : ('a, 'b, 'c) t -> unit
+    val iter : ('a -> 'b -> 'c -> unit) -> ('a, 'b, 'c) t -> unit
+  end = struct
+    type ('a, 'b, 'c) t = ('a, ('b, 'c) Hashtbl.t) Hashtbl.t
+    let create () = Hashtbl.create 3
+    let add h a b c =
+      let hh = try Hashtbl.find h a with Not_found -> Hashtbl.create 3 in
+      Hashtbl.add hh b c;
+      Hashtbl.replace h a hh
+    let find h a b =
+      try Some (Hashtbl.find (Hashtbl.find h a) b) with Not_found -> None
+    let remove h a b =
+      try Hashtbl.remove (Hashtbl.find h a) b with Not_found -> ()
+    let clear h =
+      Hashtbl.clear h
+    let iter f h =
+      Hashtbl.iter (fun a h -> Hashtbl.iter (fun b c -> f a b c) h) h
+  end
+
+  type addr = Unix.inet_addr * int
+
+  type answer_func = addr -> string -> (string * Bcode.t) list -> msg
+
+  type rpc =
+    | Error
+    | Timeout
+    | Response of addr * (string * Bcode.t) list
+
+  type t = {
+    sock : Lwt_unix.file_descr;
+    port : int;
+    answer : answer_func;
+    pending : (addr, string, rpc Lwt.u * float) Assoc2.t;
+    buf : Cstruct.t
+  }
+
+  let max_datagram_size = 1024
+
+  let create answer port =
+    let sock = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
+    let buf = Cstruct.create max_datagram_size in
+    { sock; port; answer; pending = Assoc2.create (); buf }
+
+  let read_one_packet krpc =
+    Lwt_cstruct.recvfrom krpc.sock krpc.buf [] >>= fun (n, sa) ->
+    let addr = match sa with Unix.ADDR_INET (ip, p) -> (ip, p) | Unix.ADDR_UNIX _ -> assert false in
+    let (t, msg) = decode (Cstruct.sub krpc.buf 0 n) in
+    match msg with
+    | Error (code, msg) ->
+        begin match Assoc2.find krpc.pending addr t with
+        | None ->
+            ()
+        (* debug "no t:%S for %s" t (addro_string addr) *)
+        | Some (w, _) ->
+            Assoc2.remove krpc.pending addr t;
+            Lwt.wakeup w Error
+        end;
+        Lwt.return ()
+    | Query (name, args) ->
+        let ret = krpc.answer addr name args in
+        Lwt_cstruct.sendto krpc.sock (encode t ret) [] sa >>= fun _ ->
+        Lwt.return_unit
+    | Response args ->
+        begin match Assoc2.find krpc.pending addr t with
+        | None ->
+            (* debug "no t:%S for %s" t (addro_string addr); *)
+            Lwt.return_unit
+        | Some (w, _) ->
+            Assoc2.remove krpc.pending addr t;
+            Lwt.wakeup w (Response (addr, args));
+            Lwt.return_unit
+        end
+
+  let rec read_loop krpc =
+    read_one_packet krpc >>= fun () -> read_loop krpc
+
+  let fresh_txn =
+    let last = ref 0 in
+    fun () ->
+      let id = string_of_int !last in
+      incr last;
+      id
+
+  let timeout_check_delay = 5.0
+
+  let rec timeout_pulse krpc =
+    let now = Unix.time () in
+    let bad = ref [] in
+    Assoc2.iter
+      (fun addr t (w, at_most) -> if at_most < now then bad := (addr, t, w) :: !bad)
+      krpc.pending;
+    List.iter
+      (fun (addr, t, w) -> Assoc2.remove krpc.pending addr t; Lwt.wakeup w Timeout)
+      !bad;
+    Lwt_unix.sleep timeout_check_delay >>= fun () -> timeout_pulse krpc
+
+  let start krpc =
+    Lwt.async (fun () -> read_loop krpc);
+    Lwt.async (fun () -> timeout_pulse krpc)
+
+  let timeout_delay = 20.0
+
+  let send_msg krpc msg addr =
+    let t = fresh_txn () in (* FIXME only outstanding queries need be unique *)
+    let wait, w = Lwt.wait () in
+    Assoc2.add krpc.pending addr t (w, Unix.time () +. timeout_delay);
+    let sa = let ip, p = addr in Unix.ADDR_INET (ip, p) in
+    Lwt_cstruct.sendto krpc.sock (encode t msg) [] sa >>= fun _ ->
+    wait
+
+end
+
+module Kademlia : sig
+
+  type addr = Unix.inet_addr * int
+
+  type table
+
+  type node_info = SHA1.t * addr
+
+  val create : SHA1.t -> table
+
+  type ping_fun = addr -> (node_info option -> unit) -> unit
+
+
+  val update : table -> ping_fun -> status -> SHA1.t -> addr -> unit
+  (** [update rt ping st id addr] updates the routing table information for [id].
+      If [id] already exists, its address is updated with [addr] and marked fresh,
+      status set to [status].  If [addr] is found in the bucket but with a different
+      id, then the id is replaced by [id], marked fresh and status set to [status].
+      If [id] or [addr] is not found in the bucket, and if the bucket has less than
+      the maximum allowed number of elements, a new fresh node with status [status] is
+      inserted in the bucket.  If the bucket is already maxed out, then if any ``Bad''
+      node is found or a node that has been ``Pinged'', but who we have not heard back
+      from in a long time, it is thrown out and replaced by a new fresh node with id
+      [id] and status [status].  If we get to this stage, then any ``Good'' nodes that
+      we have not heard back from in a long time get marked as ``Unknown''.  Finally,
+      if no bad nodes or expired pinged ones are found, there are two possibilities.
+      If there are no nodes with ``Unknown'' status, we either split the bucket (if
+      the bucket contains our own id) or we reject the node.  On the other hand, if
+      there are some nodes with ``Unknown'' status, we ping them and wait for the
+      responses.  As they arrive we either mark the nodes as ``Good'' (if a response
+      was received) or ``Bad'' (if no response was received).  Once all the
+      ``Unknown'' nodes have been dealt with, the insertion is tried again. *)
+
+  val find_node : table -> SHA1.t -> node_info list
+
+  val refresh : table -> (SHA1.t * node_info list) list
+
+  val size : table -> int
+
+  val bucket_nodes : int
+end = struct
+
+  type addr = Unix.inet_addr * int
+
+  type node_info = SHA1.t * addr (* Addr.t *)
+
+  let node_period = 15.0 *. 60.0
+
+  let bucket_nodes = 8
+
+  type node = {
+    id : SHA1.t;
+    addr : addr;
+    mutable last : float;
+    mutable status : status;
+  }
+
+  let string_of_node n =
+    assert false (* FIXME FIXME *)
+  (* Printf.sprintf "%s at %s was %s %d sec ago" *)
+  (*   (SHA1.to_hex_short n.id) *)
+  (*   (\* (Addr.to_string n.addr) *\) *)
+  (*   (string_of_status n.status) *)
+  (*   (truncate (Unix.time () -. n.last)) *)
+
+  type bucket = {
+    lo : SHA1.t;
+    hi : SHA1.t;
+    mutable last_change : float;
+    mutable nodes : node array
+  }
+
+  let mark n st =
+    Log.debug "mark [%s] as %s" (string_of_node n) (string_of_status st);
+    n.last <- Unix.time ();
+    n.status <- st
+
+  let touch b =
+    b.last_change <- Unix.time ()
+
+  type tree =
+    | L of bucket
+    | N of tree * SHA1.t * tree
+
+  type table = {
+    mutable root : tree;
+    self : SHA1.t
+  }
+
+  (* boundaries inclusive *)
+  let inside n h =
+    not (SHA1.compare h n.lo < 0 || SHA1.compare h n.hi > 0)
+
+  let split lo hi =
+    assert (SHA1.compare lo hi < 0);
+    let mid = Z.div (Z.add (SHA1.to_z lo) (SHA1.to_z hi)) (Z.of_int 2) in
+    SHA1.of_z mid
+
+  let succ h =
+    assert (SHA1.compare h SHA1.last < 0);
+    SHA1.of_z (Z.add (SHA1.to_z h) Z.one)
+
+  let choose_random lo hi =
+    assert (SHA1.compare lo hi < 0);
+    let rec loop a b =
+      if SHA1.compare a b = 0 then a
+      else
+        let mid = split a b in
+        if Random.bool () then loop a mid else loop mid b
+    in
+    loop lo hi
+
+  let make_node id addr status =
+    { id; addr; status; last = Unix.time () }
+
+  let update_bucket_node b status id addr i n =
+    match SHA1.compare n.id id = 0, n.addr = addr with
+    | true, true ->
+        mark n status;
+        touch b;
+        raise Exit
+    | true, false | false, true ->
+        (* debug "conflict [%s] with %s %s, replacing" *)
+        (* (string_of_node n) (SHA1.to_hex_short id) (Addr.to_string addr); *)
+        b.nodes.(i) <- make_node id addr status;
+        touch b;
+        raise Exit
+    | _ ->
+        ()
+
+  let insert_bucket_node b status id addr =
+    (* debug "insert %s %s" (SHA1.to_hex_short id) (Addr.to_string addr); *)
+    b.nodes <- Array.of_list (make_node id addr status :: Array.to_list b.nodes);
+    touch b;
+    raise Exit
+
+  let replace_bucket_node b status id addr i n =
+    let now = Unix.time () in
+    if n.status = Good && now -. n.last > node_period then mark n Unknown;
+    if n.status = Bad || (n.status = Pinged && now -. n.last > node_period) then begin
+      Log.debug "replace [%s] with %s" (string_of_node b.nodes.(i)) (SHA1.to_hex_short id);
+      b.nodes.(i) <- make_node id addr status; (* replace *)
+      touch b;
+      raise Exit
+    end
+
+  let split_bucket b =
+    let mid = split b.lo b.hi in
+    Log.debug "split [lo %s] [hi %s] [mid %s]" (SHA1.to_hex b.lo) (SHA1.to_hex b.hi) (SHA1.to_hex mid);
+    let nodes1, nodes2 = List.partition (fun n -> SHA1.compare n.id mid < 0) (Array.to_list b.nodes) in
+    (* FIXME *)
+    let n1 = { lo = b.lo; hi = mid; last_change = b.last_change; nodes = Array.of_list nodes1 } in
+    let n2 = { lo = succ mid; hi = b.hi; last_change = b.last_change; nodes = Array.of_list nodes2 } in
+    N (L n1, mid, L n2)
+
+  type ping_fun = addr -> (node_info option -> unit) -> unit
+
+  let rec update table (ping : ping_fun) status id addr =
+    let rec loop = function
+      | N (l, mid, r) ->
+          let c = SHA1.compare id mid in
+          if c < 0 || c = 0 then N (loop l, mid, r) else N (l, mid, loop r)
+      | L b ->
+          Array.iteri (update_bucket_node b status id addr) b.nodes;
+          if Array.length b.nodes <> bucket_nodes then insert_bucket_node b status id addr;
+          Array.iteri (replace_bucket_node b status id addr) b.nodes;
+          let unknown n = match n.status with Unknown -> true | _ -> false in
+          let unk = Array.fold_left (fun acc n -> if unknown n then n :: acc else acc) [] b.nodes in
+          match unk with
+          | [] -> (* all nodes are good or waiting to pong *)
+              if inside b table.self && Z.gt (SHA1.distance b.lo b.hi) (Z.of_int 256) then
+                split_bucket b
+              else begin
+                Log.debug "bucket full (%s)" (SHA1.to_hex_short id);
+                raise Exit
+              end
+          | _ ->
+              let count = ref (List.length unk) in
+              Log.debug "ping %d unknown nodes" !count;
+              let on_pong n res =
+                decr count;
+                mark n (match res with Some _ -> Good | None -> Bad);
+                if !count = 0 then begin (* retry *)
+                  Log.debug "all %d pinged, retry %s" (List.length unk) (SHA1.to_hex_short id);
+                  touch b;
+                  update table ping status id addr
+                end
+              in
+              List.iter (fun n -> mark n Pinged; ping n.addr (on_pong n)) unk;
+              raise Exit
+    in
+    if id <> table.self then
+      try
+        while true do table.root <- loop table.root done
+      with
+      | Exit -> ()
+
+  let insert_node table node =
+    let rec loop = function
+      | N (l,mid,r) ->
+          let c = SHA1.compare node.id mid in
+          if c < 0 || c = 0 then N (loop l, mid, r) else N (l, mid, loop r)
+      | L b ->
+          Array.iter begin fun n ->
+            match SHA1.compare n.id node.id = 0, n.addr = node.addr with
+            | true, true ->
+                Log.debug "insert_node: duplicate entry %s" (string_of_node n);
+                raise Exit
+            | true, false | false, true ->
+                Log.debug "insert_node: conflict [%s] with [%s]" (string_of_node n) (string_of_node node);
+                raise Exit
+            | _ -> ()
+          end b.nodes;
+          if Array.length b.nodes <> bucket_nodes then begin
+            b.nodes <- Array.of_list (node :: Array.to_list b.nodes);
+            raise Exit
+          end;
+          if inside b table.self && Z.gt (SHA1.distance b.lo b.hi) (Z.of_int 256) then begin
+            let mid = split b.lo b.hi in
+            let nodes1, nodes2 =
+              List.partition (fun n -> SHA1.compare n.id mid < 0) (Array.to_list b.nodes)
+            in
+            let last_change = List.fold_left (fun acc n -> max acc n.last) 0.0 in
+            let n1 =
+              { lo = b.lo; hi = mid;
+                last_change = last_change nodes1;
+                nodes = Array.of_list nodes1 }
+            in
+            let n2 =
+              { lo = succ mid; hi = b.hi;
+                last_change = last_change nodes2;
+                nodes = Array.of_list nodes2 }
+            in
+            N (L n1, mid, L n2)
+          end
+          else begin
+            Log.debug "insert_node: bucket full [%s]" (string_of_node node);
+            raise Exit
+          end
+    in
+    try
+      while true do table.root <- loop table.root done
+    with
+    | Exit -> ()
+
+  let find_node table id =
+    let rec loop alt = function
+      | N (l, mid, r) ->
+          let c = SHA1.compare id mid in
+          if c < 0 || c = 0 then loop (r :: alt) l else loop (l :: alt) r
+      | L b ->
+          let found = Array.to_list b.nodes in
+          List.map (fun n -> n.id, n.addr) found
+          (* found *)
+          (* if Array.length b.nodes = bucket_nodes then found else found *)
+    in
+    loop [] table.root
+
+  let array_exists f a =
+    let rec loop i = (i < Array.length a) && (f a.(i) || loop (i + 1)) in
+    loop 0
+
+  let refresh table =
+    let now = Unix.time () in
+    let rec loop acc = function
+      | N (l, _, r) ->
+          loop (loop acc l) r
+      | L b when b.last_change +. node_period < now ->
+          if array_exists (fun n -> n.status <> Bad) b.nodes then
+            let nodes = Array.map (fun n -> n.id, n.addr) b.nodes in
+            (choose_random b.lo b.hi, Array.to_list nodes) :: acc
+          else
+            acc (* do not refresh buckets with all bad nodes *)
+      | L _ ->
+          acc
+    in
+    loop [] table.root
+
+  let rec fold f acc = function
+    | N (l, _, r) -> fold f (fold f acc l) r
+    | L b -> f acc b
+
+  let size table =
+    fold (fun acc b -> acc + Array.length b.nodes) 0 table.root
+
+  let create self =
+    { root = L { lo = SHA1.zero; hi = SHA1.last; last_change = Unix.time (); nodes = [| |] };
+      self }
+
+end
+
+module Log = Log.Make (struct let section = "DHT" end)
 
 let alpha = 3
 
@@ -90,7 +583,7 @@ let parse_query name args : SHA1.t * query =
   id, q
 
 let parse_nodes s =
-  let s = Bitstring.bitstring_of_string s in
+  (* let s = Bitstring.bitstring_of_string s in *)
   let rec loop s = []
   (* FIXME FIXME *)
     (* bitmatch s with *)
@@ -104,7 +597,7 @@ let parse_nodes s =
   loop s
 
 let parse_value s =
-  let s = Bitstring.bitstring_of_string s in
+  (* let s = Bitstring.bitstring_of_string s in *)
   assert false (* FIXME FIXME *)
   (* Addr.of_string_compact s *)
   (* bitmatch s with *)
@@ -303,6 +796,8 @@ let encode_response id r : KRPC.msg =
         "values", Bcode.String (encode_values peers);
         "nodes", Bcode.String (encode_nodes nodes) ]
 
+let shuffle_array a = () (* FIXME FIXME *)
+
 let self_get_peers dht h =
   let peers =
     try
@@ -314,7 +809,7 @@ let self_get_peers dht h =
     peers
   else
     let a = Array.of_list peers in
-    Util.shuffle_array a;
+    shuffle_array a;
     Array.to_list (Array.sub a 0 100)
 
 let self_find_node dht h =
@@ -349,7 +844,7 @@ let answer dht secret addr name args =
       let token = make_token addr ih (Secret.current secret) in
       let peers = self_get_peers dht ih in
       let nodes = self_find_node dht ih in
-      debug "answer: %d peers and %d nodes" (List.length peers) (List.length nodes);
+      Log.debug "answer: %d peers and %d nodes" (List.length peers) (List.length nodes);
       assert false (* FIXME FIXME *)
       (* Peers (token, peers, nodes) *)
     | Announce (ih, port, token) ->
@@ -386,16 +881,16 @@ let create port =
 
 let rec refresh dht =
   let ids = Kademlia.refresh dht.rt in
-  debug "refresh: %d buckets" (List.length ids);
+  Log.debug "refresh: %d buckets" (List.length ids);
   let cb prev_id (n, l) =
     let id, addr = n in
-    update dht Kademlia.Good id addr; (* replied *)
+    update dht Good id addr; (* replied *)
     if SHA1.compare id prev_id <> 0 then begin
-      debug "refresh: node %s changed id (was %s)" (string_of_node n) (SHA1.to_hex_short prev_id);
-      update dht Kademlia.Bad prev_id addr
+      Log.debug "refresh: node %s changed id (was %s)" (string_of_node n) (SHA1.to_hex_short prev_id);
+      update dht Bad prev_id addr
     end;
-    debug "refresh: got %d nodes from %s" (List.length l) (string_of_node n);
-    List.iter (fun (id, addr) -> update dht Kademlia.Unknown id addr) l
+    Log.debug "refresh: got %d nodes from %s" (List.length l) (string_of_node n);
+    List.iter (fun (id, addr) -> update dht Unknown id addr) l
   in
   assert false (* FIXME FIXME *)
   (* Lwt_list.iter_p (fun (target, nodes) -> *)
@@ -427,11 +922,11 @@ let rec expire_old_peers h =
       end peers peers
     in
     if Peers.is_empty m then Hashtbl.remove h id else Hashtbl.replace h id m) torrents;
-  debug "Removed %d of %d peers for announced torrents" !rm !total;
+  Log.debug "Removed %d of %d peers for announced torrents" !rm !total;
   Lwt_unix.sleep expire_timer >>= fun () -> expire_old_peers h
 
 let start dht =
-  debug "DHT size : %d self : %s" (Kademlia.size dht.rt) (SHA1.to_hex_short dht.id);
+  Log.debug "DHT size : %d self : %s" (Kademlia.size dht.rt) (SHA1.to_hex_short dht.id);
   KRPC.start dht.krpc;
   Lwt.async (fun () -> refresh dht);
   Lwt.async (fun () -> expire_old_peers dht.torrents)
@@ -480,7 +975,7 @@ module BoundedSet = struct
 end
 
 let lookup_node dht ?nodes target =
-  debug "lookup_node: %s" (SHA1.to_hex_short target);
+  Log.debug "lookup_node: %s" (SHA1.to_hex_short target);
   let start = Unix.time () in
   let queried = Hashtbl.create 13 in
   let module BS = BoundedSet.Make
@@ -512,22 +1007,22 @@ let lookup_node dht ?nodes target =
     inserted, Lwt.join !res
   and query store n =
     Hashtbl.add queried n true;
-    debug "lookup_node: will query node %s" (string_of_node n);
+    Log.debug "lookup_node: will query node %s" (string_of_node n);
     Lwt.catch
       (fun () ->
          let _, addr = n in
          find_node dht addr target >>= fun (n, nodes) ->
          let id, addr = n in
-         if store then update dht Kademlia.Good id addr;
+         if store then update dht Good id addr;
          let inserted, t = loop nodes in
          let s =
            if BS.is_empty found then ""
            else Printf.sprintf ", best %s" (SHA1.to_hex_short (fst (BS.min_elt found)))
          in
-         debug "lookup_node: got %d nodes from %s, useful %d%s" (List.length nodes) (string_of_node n) inserted s;
+         Log.debug "lookup_node: got %d nodes from %s, useful %d%s" (List.length nodes) (string_of_node n) inserted s;
          t)
       (fun exn ->
-         debug "lookup_node: timeout from %s" (string_of_node n);
+         Log.debug "lookup_node: timeout from %s" (string_of_node n);
          Lwt.return ())
   in
   begin match nodes with
@@ -538,25 +1033,25 @@ let lookup_node dht ?nodes target =
     Lwt_list.iter_p (query false) nodes
   end >>= fun () ->
   let result = BS.elements found in
-  debug "lookup_node %s done, queried %d, found %d, elapsed %ds"
+  Log.debug "lookup_node %s done, queried %d, found %d, elapsed %ds"
     (SHA1.to_hex_short target) (Hashtbl.length queried) (List.length result)
     (truncate (Unix.time () -. start));
   Lwt.return result
 
 let query_peers dht id k =
-  debug "query_peers: start %s" (SHA1.to_hex_short id);
+  Log.debug "query_peers: start %s" (SHA1.to_hex_short id);
   lookup_node dht id >>= fun nodes ->
-  debug "query_peers: found nodes %s" (strl string_of_node nodes);
+  Log.debug "query_peers: found nodes %s" (strl string_of_node nodes);
   Lwt_list.iter_p begin fun n ->
     Lwt.catch
       (fun () ->
          get_peers dht (snd n) id >|= fun (node, token, peers, nodes) ->
-         debug "query_peers: got %d peers and %d nodes from %s with token %S"
+         Log.debug "query_peers: got %d peers and %d nodes from %s with token %S"
            (List.length peers) (List.length nodes) (string_of_node node) token;
          k n token peers)
       (fun exn ->
-         debug ~exn "query_peers: get_peers error from %s" (string_of_node n);
-         Lwt.return ())
+         Log.debug "query_peers: get_peers error from %s : %S" (string_of_node n) (Printexc.to_string exn);
+         Lwt.return_unit)
   end nodes
 
 let bootstrap dht addr =
@@ -581,14 +1076,14 @@ let bootstrap dht (host, port) =
 
 let rec auto_bootstrap dht routers =
   lookup_node dht dht.id >>= fun l ->
-  debug "auto bootstrap : found %s" (strl string_of_node l);
+  Log.debug "auto bootstrap : found %s" (strl string_of_node l);
   let rec loop l ok =
     match l, ok with
     | _, true ->
-      debug "bootstrap ok, total nodes : %d" (Kademlia.size dht.rt);
+      Log.debug "bootstrap ok, total nodes : %d" (Kademlia.size dht.rt);
       Lwt.return ()
     | [], false ->
-      debug "bootstrap failed, total nodes : %d; retrying" (Kademlia.size dht.rt);
+      Log.debug "bootstrap failed, total nodes : %d; retrying" (Kademlia.size dht.rt);
       auto_bootstrap dht routers
     | n :: ns, false ->
       bootstrap dht n >>= loop ns

@@ -10,3 +10,4 @@ lib/Util
 lib/PeerMgr
 lib/Client
 lib/Handshake
+lib/DHT
