@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Log = Log.Make (struct let section = "[Swarm]" end)
+
 type addr = Unix.inet_addr * int
 
 type peer =
@@ -30,7 +32,7 @@ type swarm =
   { size : int;
     push : addr -> Lwt_unix.file_descr -> unit;
     wires : (SHA1.t, addr) Hashtbl.t;
-    mutable connections : addr list;
+    connections : (addr, unit) Hashtbl.t;
     queue : addr Queue.t;
     peers : (addr, peer) Hashtbl.t }
 
@@ -39,7 +41,7 @@ let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
 open Lwt.Infix
 
-let connect_to_peer push addr wait =
+let rec connect_to_peer' sw addr wait =
   let ip, port = addr in
   let sa = Lwt_unix.ADDR_INET (ip, port) in
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
@@ -49,73 +51,70 @@ let connect_to_peer push addr wait =
        Log.info "[%s:%d] Connecting..." (Unix.string_of_inet_addr ip) port;
        Lwt_unix.connect fd sa >>= fun () ->
        Log.info "[%s:%d] Connected." (Unix.string_of_inet_addr ip) port;
-       Lwt.wrap2 push addr fd)
+       Lwt.wrap2 sw.push addr fd)
     (fun e ->
        Log.error "[%s:%d] exn %s" (Unix.string_of_inet_addr ip) port (Printexc.to_string e);
-       Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit))
+       Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
+       Lwt.wrap2 handshake_failed sw addr)
 
-let connect_to_peer push addr wait =
-  Lwt.ignore_result (connect_to_peer push addr wait)
+and connect_to_peer sw addr wait =
+  Lwt.ignore_result (connect_to_peer' sw addr wait)
 
-let create ?(size = default_size) push =
-  { size;
-    push;
-    wires = Hashtbl.create 3;
-    connections = [];
-    queue = Queue.create ();
-    peers = Hashtbl.create 3 }
-
-let drain sw =
-  if List.length sw.connections < sw.size then
+and drain sw =
+  if Hashtbl.length sw.connections < sw.size then
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
     | None ->
         ()
     | Some addr ->
         let p = Hashtbl.find sw.peers addr in
-        sw.connections <- addr :: sw.connections;
-        connect_to_peer sw.push addr p.timeout
+        Hashtbl.add sw.connections addr ();
+        connect_to_peer sw addr p.timeout
 
-let add sw addr =
+and add sw addr =
   if not (Hashtbl.mem sw.peers addr) then begin
+    Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr);
     Hashtbl.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
     Queue.push addr sw.queue;
     drain sw
   end
 
-let peer_disconnected sw id =
-  match try Some (Hashtbl.find sw.wires id) with Not_found -> None with
-  | Some addr ->
-      Hashtbl.remove sw.wires id;
-      sw.connections <- List.filter (fun addr' -> addr <> addr') sw.connections;
-      let p = Hashtbl.find sw.peers addr in
-      begin if not p.reconnect || p.retries >= List.length reconnect_wait then
-          Hashtbl.remove sw.peers addr
-        else begin
-          p.timeout <- List.nth reconnect_wait p.retries;
-          p.retries <- p.retries + 1;
-          Queue.push addr sw.queue
-        end
-      end;
-      drain sw
-  | None ->
-      drain sw
+and remove sw addr =
+  let p = Hashtbl.find sw.peers addr in
+  if not p.reconnect || p.retries >= List.length reconnect_wait then begin
+    Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+    Hashtbl.remove sw.peers addr
+  end else begin
+    p.retries <- p.retries + 1;
+    p.timeout <- List.nth reconnect_wait p.retries;
+    Log.debug "SWARM RETRY addr:%s port:%d retries:%d wait:%.0f"
+      (Unix.string_of_inet_addr (fst addr)) (snd addr) p.retries p.timeout;
+    Queue.push addr sw.queue
+  end
 
-let handshake_ok sw addr id =
+and peer_disconnected sw id =
+  let addr = Hashtbl.find sw.wires id in
+  Hashtbl.remove sw.connections addr;
+  Hashtbl.remove sw.wires id;
+  remove sw addr;
+  drain sw
+
+and handshake_ok sw addr id =
   Hashtbl.add sw.wires id addr;
   let p = Hashtbl.find sw.peers addr in
   p.reconnect <- true
 
-let handshake_failed sw addr =
-  sw.connections <- List.filter (fun addr' -> addr <> addr') sw.connections;
-  let p = Hashtbl.find sw.peers addr in
-  if not p.reconnect || p.retries >= List.length reconnect_wait then
-    Hashtbl.remove sw.peers addr
-  else begin
-    p.timeout <- List.nth reconnect_wait p.retries;
-    p.retries <- p.retries + 1;
-    Queue.push addr sw.queue
-  end;
+and handshake_failed sw addr =
+  Hashtbl.remove sw.connections addr;
+  remove sw addr;
   drain sw
+
+let create ?(size = default_size) push =
+  { size;
+    push;
+    wires = Hashtbl.create 3;
+    connections = Hashtbl.create 3;
+    queue = Queue.create ();
+    peers = Hashtbl.create 3 }
 
 (* let min_upload_idle_secs = 60.0 *)
 (* let max_upload_idle_secs = 60.0 *. 5.0 *)
