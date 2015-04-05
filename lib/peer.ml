@@ -625,12 +625,16 @@ let on_piece p i off s =
 
 let on_cancel p i off len =
   let n =
-    Lwt_sequence.find_node_l
+    Lwt_sequence.find_node_opt_l
       (fun (i', off', len') -> i = i && off = off' && len = len')
       p.peer_requests
   in
-  Lwt_sequence.remove n
-  (* FIXME broadcast event *)
+  match n with
+  | Some n ->
+      (* FIXME broadcast event *)
+      Lwt_sequence.remove n
+  | None ->
+      ()
 
 let on_extended_handshake p s =
   let bc = Bcode.decode s in
