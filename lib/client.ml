@@ -409,7 +409,7 @@ let request p pieces =
 let update_requests pieces peers =
   Hashtbl.iter (fun _ p -> if not (Peer.peer_choking p) then request p pieces) peers
 
-let update_interest p pieces =
+let update_interest pieces p =
   let rec loop i =
     if i < Array.length pieces then
       if Peer.has p i then
@@ -426,8 +426,8 @@ let update_interest p pieces =
   in
   loop 0
 
-let update_interest pieces peers =
-  Hashtbl.iter (fun _ p -> update_interest p pieces) peers
+(* let update_interest pieces peers = *)
+(*   Hashtbl.iter (fun _ p -> update_interest pieces p) peers *)
 
 let send_block store pieces p i off len =
   match pieces.(i).state with
@@ -482,8 +482,8 @@ let record_block store peers pieces i off s push =
 
 let share_torrent bt meta store pieces have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  Hashtbl.iter (fun _ p -> Peer.have_bitfield p have) peers;
-  update_interest pieces peers;
+  Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
+  (* update_interest pieces peers; *)
   update_requests pieces peers;
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
@@ -501,6 +501,7 @@ let share_torrent bt meta store pieces have peers =
         pieces.(i).state <- Verified;
         Bits.set have i;
         Hashtbl.iter (fun _ p -> Peer.have p i) peers;
+        (* maybe update interest ? *)
         loop ()
 
     | PieceFailed i ->
@@ -526,10 +527,10 @@ let share_torrent bt meta store pieces have peers =
         List.iter (request_rejected pieces) reqs;
         loop ()
 
-    | PeerEvent (_, Peer.Unchoked)
-    | PeerEvent (_, Peer.Have _)
-    | PeerEvent (_, Peer.HaveBitfield _) ->
-        update_interest pieces peers;
+    | PeerEvent (id, Peer.Unchoked)
+    | PeerEvent (id, Peer.Have _)
+    | PeerEvent (id, Peer.HaveBitfield _) ->
+        peer id (update_interest pieces);
         update_requests pieces peers;
         loop ()
 
@@ -575,7 +576,7 @@ let share_torrent bt meta store pieces have peers =
         let p = welcome bt.push mode sock exts id in
         Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
-        update_interest pieces peers;
+        update_interest pieces p;
         update_requests pieces peers;
         loop ()
 
@@ -825,14 +826,13 @@ module LPD  = struct
     loop ()
 
   let start ~port ~info_hash push =
-    Log.debug "LPD.start";
     let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
     let fd2 = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
     Lwt_unix.setsockopt fd Lwt_unix.SO_REUSEADDR true;
     Lwt_unix.setsockopt fd2 Lwt_unix.SO_REUSEADDR true;
     Lwt_unix.mcast_set_loop fd2 false;
     Lwt_unix.bind fd (Lwt_unix.ADDR_INET (Unix.inet_addr_any, mcast_port));
-    Log.debug "Joining multicast group...";
+    Log.debug "Joining multicast group %s:%d" mcast_addr mcast_port;
     Lwt_unix.mcast_add_membership fd (Unix.inet_addr_of_string mcast_addr);
     Lwt.ignore_result (start fd info_hash push);
     Lwt.ignore_result (announce fd2 port info_hash)
@@ -860,6 +860,7 @@ let start bt =
   List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
   fetch_metadata bt >>= fun (m, peers) ->
   load_torrent bt m >>= fun (store, pieces, have) ->
+  Log.info "Torrent loaded have %d/%d pieces" (Bits.count_ones have) (Bits.length have);
   share_torrent bt m store pieces have peers
 
 let create mg =
