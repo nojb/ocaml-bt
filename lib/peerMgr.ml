@@ -43,7 +43,7 @@ let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
 open Lwt.Infix
 
-let rec connect_to_peer' sw addr wait =
+let rec connect_to_peer sw addr wait =
   let ip, port = addr in
   let sa = Lwt_unix.ADDR_INET (ip, port) in
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
@@ -59,9 +59,6 @@ let rec connect_to_peer' sw addr wait =
        Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
        Lwt.wrap2 handshake_failed sw addr)
 
-and connect_to_peer sw addr wait =
-  Lwt.ignore_result (connect_to_peer' sw addr wait)
-
 and drain sw =
   if H.length sw.connections < sw.size then
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
@@ -70,7 +67,7 @@ and drain sw =
     | Some addr ->
         let p = H.find sw.peers addr in
         H.add sw.connections addr ();
-        connect_to_peer sw addr p.timeout
+        Lwt.ignore_result (connect_to_peer sw addr p.timeout)
 
 and add sw addr =
   if not (H.mem sw.peers addr) then begin
