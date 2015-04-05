@@ -90,20 +90,6 @@ let connect_to_peer ~id ~info_hash addr fd push =
   in
   Handshake.outgoing ~id ~info_hash addr fd push
 
-let am_choking peers id =
-  try
-    let p = Hashtbl.find peers id in
-    Peer.am_choking p
-  with
-  | Not_found -> true
-
-let peer_interested peers id =
-  try
-    let p = Hashtbl.find peers id in
-    Peer.peer_interested p
-  with
-  | Not_found -> false
-
 let welcome push mode fd exts id =
   Peer.create id (fun e -> push (PeerEvent (id, e))) fd mode
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)

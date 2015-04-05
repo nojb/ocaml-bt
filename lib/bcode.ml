@@ -97,8 +97,8 @@ let decode_partial cs =
               Int (Int64.of_string @@ Cstruct.copy cs start (i - start)), (i + 1)
           | '0' .. '9' ->
               loop' (i + 1)
-          | _ ->
-              failwith "Bcode.decode_partial: bad digit"
+          | c ->
+              Printf.ksprintf failwith "Bcode.decode_partial: bad digit %C" c
         in
         loop' start
 
@@ -198,32 +198,3 @@ let encode x =
 (*   in *)
 (*   loop item; *)
 (*   Buffer.contents b *)
-
-(* let test_bdecode () = *)
-(*   let ints = *)
-(*     QCheck.Arbitrary.(map small_int (fun n -> BInt (Int64.of_int n))) in *)
-(*   let strings = *)
-(*     QCheck.Arbitrary.(map string (fun s -> BString s)) in *)
-(*   let any = *)
-(*     QCheck.Arbitrary.(fix ~max:4 ~base:(choose [ints; strings]) *)
-(*       (fun arb -> *)
-(*         let lists = map (list arb) (fun l -> BList l) in *)
-(*         let dicts = map (list (pair string arb)) (fun d -> BDict d) in *)
-(*         choose [lists; dicts])) in *)
-(*   let qc = QCheck.mk_test ~n:100 *)
-(*     ~name:"bencoding" any *)
-(*     (fun item -> Get.run_full bitem (bencode item) = item) in *)
-(*   QCheck.run qc *)
-
-(* let from_file path = *)
-(*   let ic = open_in_bin path in *)
-(*   let len = in_channel_length ic in *)
-(*   let s = String.create len in *)
-(*   really_input ic s 0 len; *)
-(*   Get.run_full bitem s *)
-
-(* let from_string (s : string) : t = *)
-(*   Get.run_full bitem s *)
-
-(* let _ = *)
-(*   test_bdecode () *)
