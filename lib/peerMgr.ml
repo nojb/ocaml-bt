@@ -107,6 +107,14 @@ let handshake_ok sw addr id =
 
 let handshake_failed sw addr =
   sw.connections <- List.filter (fun addr' -> addr <> addr') sw.connections;
+  let p = Hashtbl.find sw.peers addr in
+  if not p.reconnect || p.retries >= List.length reconnect_wait then
+    Hashtbl.remove sw.peers addr
+  else begin
+    p.timeout <- List.nth reconnect_wait p.retries;
+    p.retries <- p.retries + 1;
+    Queue.push addr sw.queue
+  end;
   drain sw
 
 (* let min_upload_idle_secs = 60.0 *)

@@ -74,47 +74,47 @@ let log_event = function
       (* in *)
       (* loop peers *)
   | HandshakeOk (_, _, _, _, id) ->
-      Log.debug "HANDSHAKE SUCCESS TO id:%s" (SHA1.to_hex_short id)
+      Log.info "HANDSHAKE SUCCESS id:%s" (SHA1.to_hex_short id)
   | PeerConnected ((ip, p), _, incoming) ->
-      Log.debug "CONNECT SUCCESS %s addr:%s port:%d" (if incoming then "FROM" else "TO")
+      Log.info "CONNECT SUCCESS %s addr:%s port:%d" (if incoming then "INCOMING" else "OUTGOING")
         (Unix.string_of_inet_addr ip) p
   | PieceVerified i ->
-      Log.debug "PIECE VERIFIED index:%d" i
+      Log.info "PIECE VERIFIED idx:%d" i
   | PieceFailed i ->
-      Log.debug "PIECE FAILED index:%d" i
+      Log.info "PIECE FAILED idx:%d" i
   | HandshakeFailed (ip, p) ->
       Log.info "HANDSHAKE FAIL addr:%s port:%d" (Unix.string_of_inet_addr ip) p
   | PeerEvent (id, Peer.Choked reqs) ->
       Log.info "PEER CHOKED id:%s" (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.Unchoked) ->
-      Log.info "[%s] has unchoked us" (SHA1.to_hex_short id)
+      Log.info "PEER UNCHOKED id:%s" (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.Interested) ->
       Log.info "PEER INTERESTED id:%s" (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.NotInterested) ->
       Log.info "PEER NOT INTERESTED id:%s" (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.Have i) ->
-      Log.info "PEER HAS id:%s index:%d" (SHA1.to_hex_short id) i
+      Log.info "PEER HAS id:%s idx:%d" (SHA1.to_hex_short id) i
   | PeerEvent (id, Peer.HaveBitfield b) ->
-      Log.debug "[%s] has %d out of %d pieces" (SHA1.to_hex_short id) (Bits.count_ones b) (Bits.length b)
+      Log.info "PEER BITFIELD id:%s has:%d total:%d" (SHA1.to_hex_short id) (Bits.count_ones b) (Bits.length b)
   | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
-      Log.debug "PEER REQUEST id:%s index:%d off:%d len:%d" (SHA1.to_hex_short id) i off len
+      Log.info "PEER REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short id) i off len
   | PeerEvent (id, Peer.BlockReceived (i, off, _)) ->
-      Log.debug "PEER PIECE FROM id:%s index:%d off:%d" (SHA1.to_hex_short id) i off
+      Log.info "PEER PIECE FROM id:%s idx:%d off:%d" (SHA1.to_hex_short id) i off
   | PeerEvent (id, Peer.PeerDisconnected _) ->
-      Log.debug "PEER DISCONNECT id:%s" (SHA1.to_hex_short id)
+      Log.info "PEER DISCONNECT id:%s" (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.AvailableMetadata len) ->
-      Log.debug "METADATA AVAILABLE id:%s pieces:%d"
+      Log.info "METADATA AVAILABLE id:%s pieces:%d"
         (SHA1.to_hex_short id) ((len + block_size - 1) / block_size)
   | PeerEvent (id, Peer.MetaRequested i) ->
-      Log.debug "METADATA REQUESTED id:%s index:%d" (SHA1.to_hex_short id) i
+      Log.info "METADATA REQUESTED id:%s idx:%d" (SHA1.to_hex_short id) i
   | PeerEvent (id, Peer.GotMetaPiece (i, _)) ->
-      Log.debug "METADATA RECEIVED index:%d id:%s" i (SHA1.to_hex_short id)
+      Log.info "METADATA RECEIVED idx:%d id:%s" i (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.RejectMetaPiece i) ->
-      Log.debug "METADATA REJECTED id:%s index:%d" (SHA1.to_hex_short id) i
+      Log.info "METADATA REJECTED id:%s idx:%d" (SHA1.to_hex_short id) i
   | PeerEvent (id, Peer.GotPEX _) ->
-      Log.debug "[%s] [GotPEX] " (SHA1.to_hex_short id)
+      Log.info "PEER PEX id:%s" (SHA1.to_hex_short id)
   | PeerEvent (id, Peer.DHTPort p) ->
-      Log.debug "[%s] [DHTPort %d] " (SHA1.to_hex_short id) p
+      Log.info "DHT PORT id:%s port:%d " (SHA1.to_hex_short id) p
   | TorrentComplete ->
       Log.debug "[TorrentComplete]"
 
