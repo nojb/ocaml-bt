@@ -431,6 +431,10 @@ let share_torrent bt meta store pieces peers =
   (* update_requests  *)
   let rec loop () =
     Lwt_stream.next bt.chan >>= function
+    | TorrentComplete ->
+        (* FIXME TODO FIXME *)
+        Lwt.return_unit
+
     | PeersReceived addrs ->
         (* debug "received %d peers" (List.length addrs); *)
         List.iter (fun addr -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
@@ -447,6 +451,10 @@ let share_torrent bt meta store pieces peers =
 
     | ConnectFailed addr ->
         connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        loop ()
+
+    | IncomingConnection (fd, sa) ->
+        (* FIXME TODO FIXME *)
         loop ()
 
     | PeerEvent (id, Peer.PeerDisconnected reqs) ->
@@ -537,30 +545,29 @@ let load_torrent bt meta =
 
 module IncompleteMetadata = struct
   type t =
-    { info_hash : SHA1.t;
-      length : int;
+    { length : int;
       pieces : Bits.t;
       raw : Cstruct.t }
 
   let metadata_block_size = 1 lsl 14
   let metadata_max_size = 1 lsl 22
 
-  let create ~info_hash ~length =
+  let create ~length =
     let size = (length + metadata_block_size - 1) / metadata_block_size in
-    { info_hash; length; pieces = Bits.create size; raw = Cstruct.create length }
+    { length; pieces = Bits.create size; raw = Cstruct.create length }
 
   let add m n buf =
     if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
     Bits.set m.pieces n;
     Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
-    match Bits.has_all m.pieces with
-    | true ->
-        if SHA1.(equal (digest m.raw) m.info_hash) then
-          `Verified m.raw
-        else
-          `Failed
-    | false ->
-        `More
+    Bits.has_all m.pieces
+
+  let verify m info_hash =
+    if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
+    if SHA1.(equal (digest m.raw) info_hash) then
+      Some m.raw
+    else
+      None
 
   let iter_missing f m =
     for i = 0 to Bits.length m.pieces - 1 do
@@ -577,17 +584,6 @@ let rec fetch_metadata bt =
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
     match m, e with
-    | None, PeerEvent (id, Peer.AvailableMetadata len) ->
-        (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
-        (* FIXME *)
-        let m' = IncompleteMetadata.create bt.ih len in
-        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
-        loop (Some m')
-
-    | Some m', PeerEvent (id, Peer.AvailableMetadata len) ->
-        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
-        loop m
-
     | _, PeersReceived addrs ->
         (* debug "received %d peers" (List.length addrs); *)
         List.iter (fun addr -> connect_to_peer bt.ih bt.push (PeerMgr.add bt.peer_mgr addr)) addrs;
@@ -598,13 +594,28 @@ let rec fetch_metadata bt =
         Hashtbl.replace peers id p;
         loop m
 
+    | _, ConnectFailed addr ->
+        connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+        loop m
+
+    | _, IncomingConnection (fd, sa) ->
+        (* FIXME TODO FIXME *)
+        loop m
+
     | _, PeerEvent (id, Peer.PeerDisconnected _) ->
         connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         loop m
 
-    | _, ConnectFailed addr ->
-        connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
+    | None, PeerEvent (id, Peer.AvailableMetadata len) ->
+        (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
+        (* FIXME *)
+        let m' = IncompleteMetadata.create len in
+        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
+        loop (Some m')
+
+    | Some m', PeerEvent (id, Peer.AvailableMetadata len) ->
+        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
         loop m
 
     | _, PeerEvent (id, Peer.MetaRequested i) ->
@@ -614,17 +625,17 @@ let rec fetch_metadata bt =
     | Some m', PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
         (* debug "got metadata piece %d/%d from %s" i *)
         (*   (IncompleteMetadata.piece_count m) (Peer.to_string p); *)
-        begin match IncompleteMetadata.add m' i s with
-        | `Failed ->
-            (* debug "metadata hash check failed; trying again"; *)
-            loop None
-        | `Verified raw ->
+        if IncompleteMetadata.add m' i s then
+          match IncompleteMetadata.verify m' bt.ih with
+          | Some raw ->
               (* debug "got full metadata"; *)
-            let m' = Metadata.create (Bcode.decode raw) in
-            Lwt.return m'
-        | `More ->
+              let m' = Metadata.create (Bcode.decode raw) in
+              Lwt.return m'
+          | None ->
+              (* debug "metadata hash check failed; trying again"; *)
+              loop None
+        else
             loop m
-        end
 
     | None, PeerEvent (_, Peer.GotMetaPiece _) ->
         loop m
@@ -650,7 +661,9 @@ let rec fetch_metadata bt =
 
     | _, PieceVerified _
     | _, PieceFailed _
-    | _, TorrentComplete
+    | _, TorrentComplete ->
+        assert false
+
     | _, PeerEvent (_, Peer.Unchoked)
     | _, PeerEvent (_, Peer.Choked _)
     | _, PeerEvent (_, Peer.Interested)
