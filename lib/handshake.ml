@@ -19,7 +19,7 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module Log  = Log.Make (struct let section = "Handshake" end)
+module Log  = Log.Make (struct let section = "[Handshake]" end)
 module S    = SHA1
 module Dh   = Nocrypto.Dh
 module Z    = Nocrypto.Numeric.Z

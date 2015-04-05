@@ -19,7 +19,7 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module Log = Log.Make (struct let section = "Tracker" end)
+module Log = Log.Make (struct let section = "[Tracker]" end)
 
 type event =
   [ `Started
@@ -119,36 +119,6 @@ module Udp = struct
         `Ok (trans_id, interval, leechers, seeders, peers)
     | _ ->
         `Error "parse_announce_response"
-
-  (* let send_connect_request fd addr = *)
-  (*   let trans_id = fresh_transaction_id () in *)
-  (*   UDP.send_bitstring fd (make_connect_request trans_id) addr >>= fun () -> *)
-  (*   Lwt.return trans_id *)
-
-  (* let read_connect_response fd trans_id = *)
-  (*   UDP.recv fd >>= fun (s, _) -> *)
-  (*   match parse_connect_response s with *)
-  (*   | `Error msg -> *)
-  (*       Lwt.fail (Error msg) *)
-  (*   | `Ok (trans_id', conn_id) -> *)
-  (*       if trans_id <> trans_id' then *)
-  (*         Lwt.fail (Error "trans_id don't match") *)
-  (*       else *)
-  (*         Lwt.return conn_id *)
-
-  (* let send_announce_request fd addr conn_id ih ?up ?down ?left event ?port id = *)
-  (*   let trans_id = fresh_transaction_id () in *)
-  (*   let create_packet = make_announce_request conn_id trans_id ih ?up ?down ?left event ?port id in *)
-  (*   UDP.send_bitstring fd create_packet addr >>= fun () -> *)
-  (*   Lwt.return trans_id *)
-
-  (* let read_announce_response fd trans_id = *)
-  (*   Lwt.catch begin fun () -> *)
-  (*     UDP.recv fd >>= fun (s, _) -> *)
-  (*     match parse_announce_response trans_id s with *)
-  (*     | `Error msg -> Lwt.fail (Error msg) *)
-  (*     | `Ok resp -> Lwt.return resp *)
-  (*   end Lwt.fail *)
 
   let delay n = 15. *. 2. ** float n
 

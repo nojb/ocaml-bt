@@ -20,7 +20,7 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 module L    = Log
-module Log  = Log.Make (struct let section = "Client" end)
+module Log  = Log.Make (struct let section = "[Client]" end)
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
@@ -477,6 +477,8 @@ let record_block store peers pieces i off s push =
   Lwt.ignore_result (record_block store peers pieces i off s push)
 
 let share_torrent bt meta store pieces have peers =
+  Log.info "TORRENT SHARE have:%d total:%d peers:%d"
+    (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers);
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
   (* update_interest pieces peers; *)
@@ -487,6 +489,7 @@ let share_torrent bt meta store pieces have peers =
     match e with
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
+        Log.info "TORRENT COMPLETE";
         Lwt.return_unit
 
     | PeersReceived addrs ->
@@ -749,7 +752,7 @@ let rec fetch_metadata bt =
 
 module LPD  = struct
 
-  module Log = L.Make (struct let section = "LPD" end)
+  module Log = L.Make (struct let section = "[LPD]" end)
 
   let mcast_addr = "239.192.152.143"
   let mcast_port = 6771
