@@ -410,13 +410,11 @@ let record_block store peers pieces i off s push =
       let c = parts.(j) in
       if c >= 0 then begin
         parts.(j) <- (-1);
-        let rec cancel _ p c =
+        let rec cancel _ p =
           if Peer.requested p i j (Cstruct.len s) then
-            (Peer.cancel p i j (Cstruct.len s); (c - 1))
-          else
-            c
+            Peer.cancel p i j (Cstruct.len s)
         in
-        let (_ : int) = Hashtbl.fold cancel peers (c - 1) in
+        if c > 1 then Hashtbl.iter cancel peers;
         pieces.(i).have <- pieces.(i).have + 1
       end;
       Store.write store (offset i off) s >>= fun () ->
