@@ -477,6 +477,10 @@ let have p i =
   send p @@ Wire.HAVE i
 
 let have_bitfield p bits =
+  Bits.set_length p.have (Bits.length bits);
+  Bits.set_length p.blame (Bits.length bits);
+  Log.info "> BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id)
+    (Bits.count_ones bits) (Bits.length bits);
   send p @@ Wire.BITFIELD bits
 
 let cancel p i o l =
