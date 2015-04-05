@@ -401,6 +401,7 @@ let share_torrent bt meta store pieces have peers =
   let rec loop () =
     Lwt_stream.next bt.chan >>= function
     | TorrentComplete ->
+        Log.info "torrent complete";
         (* FIXME TODO FIXME *)
         Lwt.return_unit
 
@@ -767,10 +768,10 @@ let start_server ?(port = 0) push =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
   Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, 0));
   Lwt_unix.listen fd listen_backlog;
-  (* debug "listening on port %u" port; *)
+  Log.debug "listening on port %u" port;
   let rec loop () =
     Lwt_unix.accept fd >>= fun (fd, sa) ->
-    (* debug "accepted connection from %s" (Util.string_of_sockaddr sa); *)
+    Log.debug "accepted connection from %s" (Util.string_of_sockaddr sa);
     push (IncomingConnection (fd, sa));
     loop ()
   in

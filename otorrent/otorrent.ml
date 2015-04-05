@@ -19,44 +19,39 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-(* open Cmdliner *)
+open Cmdliner
 
-(* let debug_ = *)
-(*   let doc = "Enable debug output (note: this generates a LOT of output)" in *)
-(*   Arg.(value & flag & info ["d"; "debug"] ~doc) *)
+let default =
+  "magnet:?xt=urn:btih:2cfcb66cac39ad302adb06075511ac151636b19e&dn=Last.Knights.2015.HDRip.XViD-ETRG+&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Fexodus.desync.com%3A6969"
 
-(* let magnets = *)
-(*   let doc = "Magnet link of the torrent(s) to download" in *)
-(*   Arg.(value & pos_all string [] & info [] ~docv:"MAGNET" ~doc) *)
-
-(* let (>>=) = Lwt.(>>=) *)
-
-(* let download magnet = *)
-(*   match Bt.Magnet.parse magnet with *)
-(*   | `Ok m -> *)
-(*       let bt = Bt.Client.create m in *)
-(*       Lwt.catch *)
-(*         (fun () -> Bt.Client.start bt) *)
-(*         (fun exn -> (\* debug ~exn "fatal error during download"; *\) Lwt.return_unit) *)
-(*   | `Error -> *)
-(*       Lwt.return_unit *)
-
-(* let download_all debug_ magnets = *)
-  (* Bt.Log.active := debug_; *)
-  (* Lwt_main.run (Lwt_list.iter_p download magnets) *)
-
-(* let download_t = *)
-(*   Term.(pure download_all $ debug_ $ magnets) *)
-
-(* let info = *)
-(*   let doc = "download torrent(s)" in *)
-(*   Term.info "otorrent" ~version:"0.1" ~doc *)
-
-let _ = Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF")
-
-let _ = Log.set_log_level Log.DEBUG; Log.color_on ()
+let magnet =
+  let doc = "Magnet link of the torrent(s) to download" in
+  Arg.(value & pos 0 (some string) (Some default) & info [] ~docv:"MAGNET" ~doc)
 
 let () =
-  let t, u = Lwt.wait () in
-  Bt.Client.LPD.start ~port:1234 ~info_hash:(Bt.SHA1.generate ()) (fun _ -> ());
-  Lwt_main.run t
+  Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF");
+  Log.set_log_level Log.DEBUG; Log.color_on ()
+
+open Lwt.Infix
+
+let download magnet =
+  match Bt.Magnet.parse magnet with
+  | `Ok magnet ->
+      let bt = Bt.Client.create magnet in
+      Lwt.catch
+        (fun () -> Bt.Client.start bt)
+        (fun exn -> Log.error "exn : %S" (Printexc.to_string exn); Lwt.return_unit)
+  | `Error ->
+      Lwt.return_unit
+
+let download = function
+  | Some magnet ->
+      Lwt_main.run (download magnet)
+  | None ->
+      ()
+let () =
+  let doc = "download torrent" in
+  let version = "0.1" in
+  match Term.(eval (pure download $ magnet, info ~version ~doc "otorrent")) with
+  | _ ->
+      ()

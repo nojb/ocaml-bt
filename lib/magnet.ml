@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Log = Log.Make (struct let section = "Magnet" end)
+
 type t =
   { xt : SHA1.t;
     dn : string option;
@@ -35,37 +37,28 @@ let string_split (str : string) (delim : char) : string list =
   in
   loop 0 0
 
-let match_prefix s p =
-  (* Printf.eprintf "match_prefix: %S %S\n%!" str prefix; *)
-  let sl = String.length s in
-  let pl = String.length p in
-  if sl < pl then
-    raise Not_found
-  else if String.sub s 0 pl <> p then
-    raise Not_found
-  else
-    String.sub s pl (sl-pl)
-
 let split_two delim s =
   let i = String.index s delim in
   String.sub s 0 i, String.sub s (i+1) ((String.length s)-i-1)
 
 let parse s =
-  let s = match_prefix s "magnet:?" in
+  let s = Scanf.sscanf s "magnet:?%s" (fun s -> s) in
   let comps = string_split s '&' |> List.map (split_two '=') in
   let rec loop xt dn tr = function
     | [] ->
         begin match xt with
-        | None -> failwith "Magnet._of_string: no 'xt' component"
-        | Some xt -> { xt; dn; tr = List.rev tr }
+        | None ->
+            failwith "Magnet.parse: no 'xt' component"
+        | Some xt ->
+            { xt; dn; tr = List.rev tr }
         end
     | ("xt", xt) :: rest ->
         let xt =
           try
-            match_prefix xt "urn:btih:" |> SHA1.of_hex
+            Scanf.sscanf xt "urn:btih:%s" SHA1.of_hex
           with
-          | Not_found ->
-              match_prefix xt "urn:sha1:" |> SHA1.of_base32
+          | _ ->
+              Scanf.sscanf xt "urn:sah1:%S" SHA1.of_base32
         in
         loop (Some xt) dn tr rest
     | ("dn", dn) :: rest ->
@@ -79,4 +72,13 @@ let parse s =
   loop None None [] comps
 
 let parse s =
-  try `Ok (parse s) with _ -> `Error
+  Log.debug "parsing %S" s;
+  try
+    let m = parse s in
+    Log.debug "  xt = %s" (SHA1.to_hex m.xt);
+    (match m.dn with Some dn -> Log.debug "  dn = %S" dn | None -> ());
+    List.iter (fun tr -> Log.debug "  tr = %s" (Uri.to_string tr)) m.tr;
+    `Ok m
+  with e ->
+    Log.error "parsing failed: %S" (Printexc.to_string e);
+    `Error
