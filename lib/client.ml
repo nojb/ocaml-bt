@@ -758,12 +758,6 @@ module LPD  = struct
 
 end
 
-let start bt =
-  List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
-  fetch_metadata bt >>= fun (m, peers) ->
-  load_torrent bt m >>= fun (store, pieces, have) ->
-  share_torrent bt m store pieces have peers
-
 let start_server ?(port = 0) push =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
   Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, 0));
@@ -780,10 +774,16 @@ let start_server ?(port = 0) push =
 let start_server ?port push =
   Lwt.ignore_result (start_server ?port push)
 
+let start bt =
+  start_server bt.push;
+  List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
+  fetch_metadata bt >>= fun (m, peers) ->
+  load_torrent bt m >>= fun (store, pieces, have) ->
+  share_torrent bt m store pieces have peers
+
 let create mg =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
   let peer_mgr = PeerMgr.create () in
-  start_server push;
   { id = SHA1.generate ~prefix:"OCAML" ();
     ih = mg.Magnet.xt;
     trackers = mg.Magnet.tr;

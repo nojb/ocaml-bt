@@ -352,19 +352,25 @@ open Lwt.Infix
 
 let max_datagram_size = 1024
 
+let debug url fmt =
+  Log.debug ("[%s] " ^^ fmt) (Uri.to_string url)
+
+let error url fmt =
+  Log.error ("[%s] " ^^ fmt) (Uri.to_string url)
+
 let announce ~info_hash url push id =
   let read_buf = Cstruct.create max_datagram_size in
   let rec loop fd = function
     | `Ok (t, (timeout, buf)) ->
-        Lwt_cstruct.write fd buf >>= fun _ ->
+        Lwt_cstruct.write fd buf >>= fun n ->
+        debug url "writing %u bytes (timeout=%.1f)" n timeout;
         Lwt_unix.with_timeout timeout (fun () -> Lwt_cstruct.read fd read_buf) >>= fun n ->
         loop fd (handle t (Cstruct.sub read_buf 0 n))
-
     | `Error s ->
-        Log.error "error : %S" s;
+        error url "error : %S" s;
         Lwt.fail (Failure s)
-
     | `Success (interval, leechers, seeders, peers) ->
+        debug url "received %d peers" (List.length peers);
         push peers;
         Lwt_unix.sleep interval >>= fun () ->
         loop fd (create ~info_hash ~id `Udp)
@@ -380,13 +386,13 @@ let announce ~info_hash url push id =
       Lwt_unix.connect fd sa >>= fun () ->
       loop fd (create ~info_hash ~id `Udp)
   | Some s ->
-      Log.error "tracker scheme %S not support" s;
+      error url "tracker scheme %S not support" s;
       Lwt.fail (Failure "tracker scheme not supported")
   | None ->
-      Log.error "not tracker scheme : %S" (Uri.to_string url);
+      error url "no tracker scheme";
       Lwt.fail (Failure "no tracker scheme")
 
 let announce ~info_hash push id url =
   Lwt.ignore_result @@ Lwt.catch
     (fun () -> announce ~info_hash url push id)
-    (fun exn -> (* debug ~exn "announce failure"; *) Lwt.return_unit)
+    (fun exn -> error url "exn : %s" (Printexc.to_string exn); Lwt.return_unit)
