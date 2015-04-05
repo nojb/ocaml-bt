@@ -52,6 +52,6 @@ let download = function
 let () =
   let doc = "download torrent" in
   let version = "0.1" in
-  match Term.(eval (pure download $ magnet, info ~version ~doc "otorrent")) with
+  match Term.(eval ~catch:true (pure download $ magnet, info ~version ~doc "otorrent")) with
   | _ ->
       ()

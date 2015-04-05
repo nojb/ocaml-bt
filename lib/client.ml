@@ -151,11 +151,11 @@ let parse_handshake cs =
         let ext = Cstruct.sub cs 20 8 in
         let info_hash = Cstruct.sub cs 28 20 in
         let peer_id = Cstruct.sub cs 48 20 in
-        (ext, SHA1.of_raw info_hash, SHA1.of_raw peer_id)
+        `Ok (ext, SHA1.of_raw info_hash, SHA1.of_raw peer_id)
       else
-        failwith "bad proto"
-  | _ ->
-      failwith "bad proto length"
+        `Error (Printf.sprintf "unknown protocol: %S" (Cstruct.to_string proto'))
+  | n ->
+      `Error (Printf.sprintf "bad protocol length %d" n)
 
 let connect_to_peer ~id ~info_hash ip port timeout fd =
   (* let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in *)
@@ -167,18 +167,22 @@ let connect_to_peer ~id ~info_hash ip port timeout fd =
   (* | `Ok (mode, rest) -> *)
   let mode = None in
   let rest = Cs.empty in
-      Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message id info_hash) >>= fun () ->
-      (* Log.debug "[%s:%d] Sent handshake" (Unix.string_of_inet_addr ip) port; *)
-      assert (Cstruct.len rest <= handshake_len);
-      let hs = Cstruct.create handshake_len in
-      Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
-      Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
-      (* Log.debug "[%s:%d] Read handshake" (Unix.string_of_inet_addr ip) port; *)
-      let ext, info_hash', peer_id = parse_handshake hs in
+  Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message id info_hash) >>= fun () ->
+  (* Log.debug "[%s:%d] Sent handshake" (Unix.string_of_inet_addr ip) port; *)
+  assert (Cstruct.len rest <= handshake_len);
+  let hs = Cstruct.create handshake_len in
+  Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
+  Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
+  (* Log.debug "[%s:%d] Read handshake" (Unix.string_of_inet_addr ip) port; *)
+  begin match parse_handshake hs with
+  | `Ok (ext, info_hash', peer_id) ->
       (* Log.debug "[%s:%d] Parsed handshake" (Unix.string_of_inet_addr ip) port; *)
       assert (SHA1.equal info_hash info_hash');
       Log.info "[%s:%d] welcome %s" (Unix.string_of_inet_addr ip) port (SHA1.to_hex_short peer_id);
       Lwt.return (mode, fd, ext, peer_id)
+  | `Error err ->
+      Lwt.fail (Failure err)
+  end
   (* | `Error err -> *)
 (* Lwt.fail (Failure err) *)
 
@@ -276,7 +280,6 @@ let rechoke peers =
 type piece_state =
   | Pending
   | Active of int array
-  | Finished
   | Verified
 
 type piece =
@@ -319,7 +322,6 @@ let request_endgame pieces has =
       None
     else
       match pieces.(i).state with
-      | Finished
       | Verified
       | Pending ->
           loop (i + 1)
@@ -354,8 +356,7 @@ let request_pending pieces has start finish =
               Some (i, j)
           end
       | Active _
-      | Verified
-      | Finished ->
+      | Verified ->
           loop (i + 1)
   in
   loop start
@@ -379,7 +380,6 @@ let request_active pieces has =
       request_pending pieces has
     else
       match pieces.(i).state with
-      | Finished
       | Verified
       | Pending ->
           loop (i + 1)
@@ -407,14 +407,33 @@ let request p pieces =
         ()
 
 let update_requests pieces peers =
-  Hashtbl.iter (fun _ p -> request p pieces) peers
+  Hashtbl.iter (fun _ p -> if not (Peer.peer_choking p) then request p pieces) peers
+
+let update_interest p pieces =
+  let rec loop i =
+    if i < Array.length pieces then
+      if Peer.has p i then
+        match pieces.(i).state with
+        | Active _
+        | Pending ->
+            Peer.interested p
+        | Verified ->
+            loop (i + 1)
+      else
+        loop (i + 1)
+    else
+      Peer.not_interested p
+  in
+  loop 0
+
+let update_interest pieces peers =
+  Hashtbl.iter (fun _ p -> update_interest p pieces) peers
 
 let send_block store pieces p i off len =
   match pieces.(i).state with
   | Verified ->
       let off1 = Int64.(add pieces.(i).offset (of_int off)) in
       Lwt.ignore_result (Store.read store off1 len >>= Lwt.wrap4 Peer.piece p i off)
-  | Finished
   | Pending
   | Active _ ->
       ()
@@ -429,8 +448,7 @@ let verify_piece store peers pieces i push =
 let record_block store peers pieces i off s push =
   match pieces.(i).state with
   | Pending
-  | Verified
-  | Finished ->
+  | Verified ->
       Lwt.return_unit
   | Active parts ->
       let j = off / block_size in
@@ -446,15 +464,13 @@ let record_block store peers pieces i off s push =
       end;
       let off = Int64.(add pieces.(i).offset (of_int off)) in
       Store.write store off s >>= fun () ->
-      if pieces.(i).have = Array.length parts then begin
-        pieces.(i).state <- Finished;
+      if pieces.(i).have = Array.length parts then
         verify_piece store peers pieces i push
-      end else
+      else
         Lwt.return_unit
 
 let request_rejected pieces (i, off, _) =
   match pieces.(i).state with
-  | Finished
   | Verified
   | Pending -> ()
   | Active parts ->
@@ -467,6 +483,7 @@ let record_block store peers pieces i off s push =
 let share_torrent bt meta store pieces have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have) peers;
+  update_interest pieces peers;
   update_requests pieces peers;
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
@@ -512,6 +529,7 @@ let share_torrent bt meta store pieces have peers =
     | PeerEvent (_, Peer.Unchoked)
     | PeerEvent (_, Peer.Have _)
     | PeerEvent (_, Peer.HaveBitfield _) ->
+        update_interest pieces peers;
         update_requests pieces peers;
         loop ()
 
@@ -557,6 +575,8 @@ let share_torrent bt meta store pieces have peers =
         let p = welcome bt.push mode sock exts id in
         Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
+        update_interest pieces peers;
+        update_requests pieces peers;
         loop ()
 
     | PeerEvent (_, Peer.AvailableMetadata _) ->
@@ -578,8 +598,10 @@ let load_torrent bt m =
   let rec loop i =
     if i < Metadata.piece_count m then begin
       Store.digest store pieces.(i).offset pieces.(i).length >>= fun sha ->
-      if SHA1.equal sha pieces.(i).hash then
-        (pieces.(i).state <- Finished; Bits.set have i);
+      if SHA1.equal sha pieces.(i).hash then begin
+        pieces.(i).state <- Verified;
+        Bits.set have i
+      end;
       loop (i + 1)
     end else
       Lwt.return (store, pieces, have)

@@ -707,9 +707,6 @@ let reader_loop p fd key =
   in
   loop key Cs.empty
 
-let reader_loop p fd key =
-  Lwt.catch (fun () -> reader_loop p fd key) (handle_err p fd)
-
 let writer_loop p fd key =
   let write m key =
     Log.debug "sending message to [%s] : %s" (SHA1.to_hex_short p.id) (Wire.string_of_message m);
@@ -732,17 +729,17 @@ let writer_loop p fd key =
   in
   loop key
 
-let writer_loop p fd key =
-  Lwt.catch (fun () -> writer_loop p fd key) (handle_err p fd)
-
 let start p fd mode =
   let my_key, her_key =
     match mode with
     | None -> None, None
     | Some (my_key, her_key) -> Some my_key, Some her_key
   in
-  Lwt.ignore_result (reader_loop p fd her_key);
-  Lwt.ignore_result (writer_loop p fd my_key)
+  Lwt.join [reader_loop p fd her_key; writer_loop p fd my_key]
+
+let start p fd mode =
+  Lwt.ignore_result
+    (Lwt.catch (fun () -> start p fd mode) (handle_err p fd))
 
 let create id push fd mode =
   let p =
