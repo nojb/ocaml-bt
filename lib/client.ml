@@ -417,11 +417,17 @@ let share_torrent bt meta store pieces have peers =
         loop ()
 
     | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
-        peer id (fun p -> send_block store pieces p i off len);
+        if i >= 0 && i < Array.length pieces then
+          peer id (fun p -> send_block store pieces p i off len)
+        else
+          Log.warn "! PEER REQUEST invalid piece:%d" i;
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
-        record_block store peers pieces i off s bt.push;
+        if i >= 0 && i < Array.length pieces then
+          record_block store peers pieces i off s bt.push
+        else
+          Log.warn "! PIECE invalid piece:%d" i;
         loop ()
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
