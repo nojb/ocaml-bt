@@ -255,7 +255,7 @@ type event =
   | NotInterested
   | Have of int
   | HaveBitfield of Bits.t
-  | BlockRequested of int * int * int * Cstruct.t Lwt.u
+  | BlockRequested of int * int * int
   | BlockReceived of int * int * Cstruct.t
   | PeerDisconnected of (int * int * int) list
   | AvailableMetadata of int
@@ -601,10 +601,8 @@ let on_bitfield p b =
 
 let on_request p i off len =
   if not p.am_choking then begin
-    let t, u = Lwt.wait () in
-    ignore (Lwt_sequence.add_r (i, off, len) p.peer_requests);
-    ignore Lwt.(t >>= Lwt.wrap4 piece p i off);
-    p.push @@ BlockRequested (i, off, len, u)
+    let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
+    p.push @@ BlockRequested (i, off, len)
   end
 
 let on_piece p i off s =

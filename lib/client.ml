@@ -390,8 +390,8 @@ let update_requests pieces peers =
 let offset i off =
   Int64.(add (mul (of_int i) (of_int block_size)) (of_int off))
 
-let send_block store i off len u =
-  Lwt.ignore_result (Store.read store (offset i off) len >>= Lwt.wrap2 Lwt.wakeup u)
+let send_block store p i off len =
+  Lwt.ignore_result (Store.read store (offset i off) len >>= Lwt.wrap4 Peer.piece p i off)
 
 let verify_piece store peers pieces i push =
   Store.digest store (offset i 0) pieces.(i).length >>= fun sha ->
@@ -481,8 +481,9 @@ let share_torrent bt meta store pieces peers =
     | PeerEvent (_, Peer.RejectMetaPiece _) ->
         loop ()
 
-    | PeerEvent (_, Peer.BlockRequested (i, off, len, u)) ->
-        if pieces.(i).state = Finished then send_block store i off len u;
+    | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
+        if pieces.(i).state = Finished then
+          peer id (fun p -> send_block store p i off len);
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->

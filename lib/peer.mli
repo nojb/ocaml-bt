@@ -39,7 +39,7 @@ type event =
   | NotInterested
   | Have of int
   | HaveBitfield of Bits.t
-  | BlockRequested of int * int * int * Cstruct.t Lwt.u
+  | BlockRequested of int * int * int
   | BlockReceived of int * int * Cstruct.t
   | PeerDisconnected of (int * int * int) list
   | AvailableMetadata of int
