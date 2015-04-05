@@ -28,13 +28,15 @@ type peer =
     mutable retries : int;
     mutable timeout : float }
 
+module H = Hashtbl.Make (struct type t = addr let equal a1 a2 = compare a1 a2 = 0 let hash = Hashtbl.hash end)
+
 type swarm =
   { size : int;
     push : addr -> Lwt_unix.file_descr -> unit;
     wires : (SHA1.t, addr) Hashtbl.t;
-    connections : (addr, unit) Hashtbl.t;
+    connections : unit H.t;
     queue : addr Queue.t;
-    peers : (addr, peer) Hashtbl.t }
+    peers : peer H.t }
 
 let default_size = 100
 let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
@@ -61,28 +63,28 @@ and connect_to_peer sw addr wait =
   Lwt.ignore_result (connect_to_peer' sw addr wait)
 
 and drain sw =
-  if Hashtbl.length sw.connections < sw.size then
+  if H.length sw.connections < sw.size then
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
     | None ->
         ()
     | Some addr ->
-        let p = Hashtbl.find sw.peers addr in
-        Hashtbl.add sw.connections addr ();
+        let p = H.find sw.peers addr in
+        H.add sw.connections addr ();
         connect_to_peer sw addr p.timeout
 
 and add sw addr =
-  if not (Hashtbl.mem sw.peers addr) then begin
+  if not (H.mem sw.peers addr) then begin
     Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-    Hashtbl.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
+    H.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
     Queue.push addr sw.queue;
     drain sw
   end
 
 and remove sw addr =
-  let p = Hashtbl.find sw.peers addr in
+  let p = H.find sw.peers addr in
   if not p.reconnect || p.retries >= List.length reconnect_wait then begin
     Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-    Hashtbl.remove sw.peers addr
+    H.remove sw.peers addr
   end else begin
     p.retries <- p.retries + 1;
     p.timeout <- List.nth reconnect_wait p.retries;
@@ -93,18 +95,18 @@ and remove sw addr =
 
 and peer_disconnected sw id =
   let addr = Hashtbl.find sw.wires id in
-  Hashtbl.remove sw.connections addr;
+  H.remove sw.connections addr;
   Hashtbl.remove sw.wires id;
   remove sw addr;
   drain sw
 
 and handshake_ok sw addr id =
   Hashtbl.add sw.wires id addr;
-  let p = Hashtbl.find sw.peers addr in
+  let p = H.find sw.peers addr in
   p.reconnect <- true
 
 and handshake_failed sw addr =
-  Hashtbl.remove sw.connections addr;
+  H.remove sw.connections addr;
   remove sw addr;
   drain sw
 
@@ -112,9 +114,9 @@ let create ?(size = default_size) push =
   { size;
     push;
     wires = Hashtbl.create 3;
-    connections = Hashtbl.create 3;
+    connections = H.create 3;
     queue = Queue.create ();
-    peers = Hashtbl.create 3 }
+    peers = H.create 3 }
 
 (* let min_upload_idle_secs = 60.0 *)
 (* let max_upload_idle_secs = 60.0 *. 5.0 *)

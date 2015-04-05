@@ -19,6 +19,12 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let () =
+  Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF");
+  Log.set_log_level Log.DEBUG; Log.color_on ()
+
+module Log = Log.Make (struct let section = "[Driver]" end)
+
 open Cmdliner
 
 let default =
@@ -27,10 +33,6 @@ let default =
 let magnet =
   let doc = "Magnet link of the torrent(s) to download" in
   Arg.(value & pos 0 (some string) (Some default) & info [] ~docv:"MAGNET" ~doc)
-
-let () =
-  Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF");
-  Log.set_log_level Log.DEBUG; Log.color_on ()
 
 open Lwt.Infix
 

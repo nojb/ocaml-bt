@@ -94,10 +94,6 @@ val requested : t -> int -> int -> int -> bool
 
 (** Outgoing *)
 
-val extended_handshake : t -> unit
-(** Send LTEP handshake.  Currently supported extension are [ut_metadata] and
-    [ut_pex]. *)
-
 val request_metadata_piece : t -> int -> unit
 
 val choke : t -> unit

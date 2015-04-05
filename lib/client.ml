@@ -49,74 +49,22 @@ type event =
 
 let log_event = function
   | PeersReceived peers ->
-      Log.debug "[PeersReceived %d]" (List.length peers)
-      (* let rec loop = function *)
-      (*   | (ip0, p0) :: (ip1, p1) :: (ip2, p2) :: (ip3, p3) :: rest -> *)
-      (*       Log.debug "  %s:%d  %s:%d  %s:%d  %s:%d" *)
-      (*         (Unix.string_of_inet_addr ip0) p0 *)
-      (*         (Unix.string_of_inet_addr ip1) p1 *)
-      (*         (Unix.string_of_inet_addr ip2) p2 *)
-      (*         (Unix.string_of_inet_addr ip3) p3; *)
-      (*       loop rest *)
-      (*   | (ip0, p0) :: (ip1, p1) :: (ip2, p2) :: [] -> *)
-      (*       Log.debug "  %s:%d  %s:%d  %s:%d" *)
-      (*         (Unix.string_of_inet_addr ip0) p0 *)
-      (*         (Unix.string_of_inet_addr ip1) p1 *)
-      (*         (Unix.string_of_inet_addr ip2) p2 *)
-      (*   | (ip0, p0) :: (ip1, p1) :: [] -> *)
-      (*       Log.debug "  %s:%d  %s:%d" *)
-      (*         (Unix.string_of_inet_addr ip0) p0 *)
-      (*         (Unix.string_of_inet_addr ip1) p1 *)
-      (*   | (ip0, p0) :: [] -> *)
-      (*       Log.debug "  %s:%d" (Unix.string_of_inet_addr ip0) p0 *)
-      (*   | [] -> *)
-      (*       () *)
-      (* in *)
-      (* loop peers *)
+      Log.debug "+ PEERS RECEIVED %d" (List.length peers)
   | HandshakeOk (_, _, _, _, id) ->
-      Log.info "HANDSHAKE SUCCESS id:%s" (SHA1.to_hex_short id)
+      Log.info "+ HANDSHAKE SUCCESS id:%s" (SHA1.to_hex_short id)
   | PeerConnected ((ip, p), _, incoming) ->
-      Log.info "CONNECT SUCCESS %s addr:%s port:%d" (if incoming then "INCOMING" else "OUTGOING")
+      Log.info "+ CONNECT SUCCESS %s addr:%s port:%d" (if incoming then "INCOMING" else "OUTGOING")
         (Unix.string_of_inet_addr ip) p
   | PieceVerified i ->
-      Log.info "PIECE VERIFIED idx:%d" i
+      Log.info "+ PIECE VERIFIED idx:%d" i
   | PieceFailed i ->
-      Log.info "PIECE FAILED idx:%d" i
+      Log.info "+ PIECE FAILED idx:%d" i
   | HandshakeFailed (ip, p) ->
-      Log.info "HANDSHAKE FAIL addr:%s port:%d" (Unix.string_of_inet_addr ip) p
-  | PeerEvent (id, Peer.Choked reqs) ->
-      Log.info "PEER CHOKED id:%s" (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.Unchoked) ->
-      Log.info "PEER UNCHOKED id:%s" (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.Interested) ->
-      Log.info "PEER INTERESTED id:%s" (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.NotInterested) ->
-      Log.info "PEER NOT INTERESTED id:%s" (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.Have i) ->
-      Log.info "PEER HAS id:%s idx:%d" (SHA1.to_hex_short id) i
-  | PeerEvent (id, Peer.HaveBitfield b) ->
-      Log.info "PEER BITFIELD id:%s has:%d total:%d" (SHA1.to_hex_short id) (Bits.count_ones b) (Bits.length b)
-  | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
-      Log.info "PEER REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short id) i off len
-  | PeerEvent (id, Peer.BlockReceived (i, off, _)) ->
-      Log.info "PEER PIECE FROM id:%s idx:%d off:%d" (SHA1.to_hex_short id) i off
-  | PeerEvent (id, Peer.PeerDisconnected _) ->
-      Log.info "PEER DISCONNECT id:%s" (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.AvailableMetadata len) ->
-      Log.info "METADATA AVAILABLE id:%s pieces:%d"
-        (SHA1.to_hex_short id) ((len + block_size - 1) / block_size)
-  | PeerEvent (id, Peer.MetaRequested i) ->
-      Log.info "METADATA REQUESTED id:%s idx:%d" (SHA1.to_hex_short id) i
-  | PeerEvent (id, Peer.GotMetaPiece (i, _)) ->
-      Log.info "METADATA RECEIVED idx:%d id:%s" i (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.RejectMetaPiece i) ->
-      Log.info "METADATA REJECTED id:%s idx:%d" (SHA1.to_hex_short id) i
-  | PeerEvent (id, Peer.GotPEX _) ->
-      Log.info "PEER PEX id:%s" (SHA1.to_hex_short id)
-  | PeerEvent (id, Peer.DHTPort p) ->
-      Log.info "DHT PORT id:%s port:%d " (SHA1.to_hex_short id) p
+      Log.info "+ HANDSHAKE FAIL addr:%s port:%d" (Unix.string_of_inet_addr ip) p
+  | PeerEvent (id, _) ->
+      ()
   | TorrentComplete ->
-      Log.debug "[TorrentComplete]"
+      Log.debug "+ TORRENT COMPLETE"
 
 type t =
   { id : SHA1.t;
@@ -213,10 +161,8 @@ let peer_interested peers id =
   | Not_found -> false
 
 let welcome push mode fd exts id =
-  let p = Peer.create id (fun e -> push (PeerEvent (id, e))) fd mode in
-  Peer.extended_handshake p;
+  Peer.create id (fun e -> push (PeerEvent (id, e))) fd mode
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
-  p
 
 let rechoke_compare (p1, salt1) (p2, salt2) =
   if Peer.download_speed p1 <> Peer.download_speed p2 then
@@ -270,8 +216,6 @@ let rechoke peers =
     Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt
   in
   loop None rechoke_optimistic_duration
-
-(* Requester END *)
 
 type piece_state =
   | Pending
@@ -481,7 +425,6 @@ let share_torrent bt meta store pieces have peers =
     (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers);
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
-  (* update_interest pieces peers; *)
   update_requests pieces peers;
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
@@ -681,11 +624,14 @@ let rec fetch_metadata bt =
         loop m
 
     | None, PeerEvent (id, Peer.AvailableMetadata len) ->
-        (* debug "%s offered %d bytes of metadata" (Peer.to_string p) len; *)
-        (* FIXME *)
-        let m' = IncompleteMetadata.create len in
-        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
-        loop (Some m')
+        if len <= IncompleteMetadata.metadata_max_size then
+          let m' = IncompleteMetadata.create len in
+          peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
+          loop (Some m')
+        else begin
+          Log.warn "! METADATA length %d is too large, ignoring." len;
+          loop None
+        end
 
     | Some m', PeerEvent (id, Peer.AvailableMetadata len) ->
         peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
@@ -696,8 +642,6 @@ let rec fetch_metadata bt =
         loop m
 
     | Some m', PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
-        (* debug "got metadata piece %d/%d from %s" i *)
-        (*   (IncompleteMetadata.piece_count m) (Peer.to_string p); *)
         if IncompleteMetadata.add m' i s then
           match IncompleteMetadata.verify m' bt.ih with
           | Some raw ->
@@ -705,10 +649,10 @@ let rec fetch_metadata bt =
               let m' = Metadata.create (Bcode.decode raw) in
               Lwt.return (m', peers)
           | None ->
-              (* debug "metadata hash check failed; trying again"; *)
+              Log.error "METADATA HASH CHECK FAILED";
               loop None
         else
-            loop m
+          loop m
 
     | None, PeerEvent (_, Peer.GotMetaPiece _) ->
         loop m
@@ -850,7 +794,8 @@ end
 
 let start_server ?(port = 0) push =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
-  Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, 0));
+  Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, port));
+  let port = match Lwt_unix.getsockname fd with Unix.ADDR_INET (_, p) -> p | Unix.ADDR_UNIX _ -> assert false in
   Lwt_unix.listen fd listen_backlog;
   Log.debug "listening on port %u" port;
   let rec loop () =
