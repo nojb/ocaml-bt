@@ -112,6 +112,8 @@ module Wire : sig
   (* val ltep_bit : int *)
   (* val dht_bit : int *)
 
+  val max_packet_len : int
+
   val handle : Cstruct.t -> Cstruct.t * message list
 
 end = struct
@@ -221,13 +223,13 @@ end = struct
     else
       parse cs
 
-  let max_packet_len = 32 * 1024
+  let max_packet_len = 1 lsl 15 (* 32 * 1024 = 32768 *)
 
   (* let ltep_bit = 43 (\* 20-th bit from the right *\) *)
   (* let dht_bit = 63 (\* last bit of the extension bitfield *\) *)
 
   let rec handle cs =
-    if Cstruct.len cs > 4 then
+    if Cstruct.len cs >= 4 then
       let l = Int32.to_int @@ Cstruct.BE.get_uint32 cs 0 in
       if l + 4 >= Cstruct.len cs then
         let packet, cs = Cstruct.split (Cstruct.shift cs 4) l in
@@ -680,20 +682,18 @@ let decrypt = encrypt
 
 let (>>=) = Lwt.(>>=)
 
-let buf_size = 1024
-
 let handle_err p fd e =
-  Printf.eprintf "unexpected exc: %S\n%!" (Printexc.to_string e);
+  Log.error "peer error: %S" (Printexc.to_string e);
   let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
   p.push (PeerDisconnected reqs);
   Lwt_unix.close fd
 
 let reader_loop p fd key =
-  let buf = Cstruct.create buf_size in
+  let buf = Cstruct.create Wire.max_packet_len in
   let rec loop key data =
     Lwt_unix.with_timeout keepalive_delay (fun () -> Lwt_cstruct.read fd buf) >>= function
     | 0 ->
-        failwith "eof"
+        Lwt.fail End_of_file
     | n ->
         let key, buf = decrypt key (Cstruct.sub buf 0 n) in
         let data, msgs = Wire.handle Cs.(data <+> buf) in
@@ -735,8 +735,8 @@ let start p fd mode =
     | None -> None, None
     | Some (my_key, her_key) -> Some my_key, Some her_key
   in
-  ignore (reader_loop p fd her_key);
-  ignore (writer_loop p fd my_key)
+  Lwt.ignore_result (reader_loop p fd her_key);
+  Lwt.ignore_result (writer_loop p fd my_key)
 
 let create id push fd mode =
   let p =

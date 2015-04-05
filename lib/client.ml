@@ -781,11 +781,16 @@ let start_server ?(port = 0) push =
   in
   loop ()
 
+let start_server ?port push =
+  Lwt.ignore_result (start_server ?port push)
+
 let create mg =
-  let chan, push = Lwt_stream.create () in
-  let push x = push (Some x) in
-  let id = SHA1.generate ~prefix:"OCAML" () in
+  let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
   let peer_mgr = PeerMgr.create () in
-  Lwt.async (fun () -> start_server push);
-  { id; ih = mg.Magnet.xt; trackers = mg.Magnet.tr; chan;
-    push; peer_mgr }
+  start_server push;
+  { id = SHA1.generate ~prefix:"OCAML" ();
+    ih = mg.Magnet.xt;
+    trackers = mg.Magnet.tr;
+    chan = ch;
+    push;
+    peer_mgr }
