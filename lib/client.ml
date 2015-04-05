@@ -39,22 +39,13 @@ type addr = Unix.inet_addr * int
 
 type event =
   | PeersReceived of addr list
-
   | PeerConnected of (ARC4.key * ARC4.key) option * Lwt_unix.file_descr * Bits.t * SHA1.t
-
   | IncomingConnection of Lwt_unix.file_descr * Unix.sockaddr
-
   | PieceVerified of int
-
   | PieceFailed of int
-
   | ConnectFailed of addr
-
   | TorrentComplete
-
   | PeerEvent of SHA1.t * Peer.event
-
-  | NoEvent
 
 type t =
   { id : SHA1.t;
@@ -498,7 +489,9 @@ type piece_state =
 
 type piece =
   { mutable state : piece_state;
-    length : int }
+    length : int;
+    mutable have : int;
+    hash : SHA1.t }
 
 let request_block parts = function
   | false ->
@@ -620,13 +613,50 @@ let request p pieces =
 let update_requests pieces peers =
   Hashtbl.iter (fun _ p -> request p pieces) peers
 
+let offset i off =
+  Int64.(add (mul (of_int i) (of_int block_size)) (of_int off))
+
 let send_block store i off len u =
-  let off = Int64.(add (mul (of_int i) (of_int block_size)) (of_int off)) in
-  Lwt.ignore_result (Store.read store off len >>= Lwt.wrap2 Lwt.wakeup u)
+  Lwt.ignore_result (Store.read store (offset i off) len >>= Lwt.wrap2 Lwt.wakeup u)
+
+let verify_piece store peers pieces i push =
+  Store.digest store (offset i 0) pieces.(i).length >>= fun sha ->
+  if SHA1.equal sha pieces.(i).hash then
+    Lwt.wrap1 push @@ PieceVerified i
+  else
+    Lwt.wrap1 push @@ PieceFailed i
+
+let record_block store peers pieces i off s push =
+  match pieces.(i).state with
+  | Pending
+  | Finished ->
+      Lwt.return_unit
+  | Active parts ->
+      let j = off / block_size in
+      let c = parts.(j) in
+      if c >= 0 then begin
+        parts.(j) <- (-1);
+        let rec cancel _ p c =
+          if Peer.requested p i j (Cstruct.len s) then
+            (Peer.cancel p i j (Cstruct.len s); (c - 1))
+          else
+            c
+        in
+        let (_ : int) = Hashtbl.fold cancel peers (c - 1) in
+        pieces.(i).have <- pieces.(i).have + 1
+      end;
+      Store.write store (offset i off) s >>= fun () ->
+      if pieces.(i).have = Array.length parts then
+        verify_piece store peers pieces i push
+      else
+        Lwt.return_unit
+
+let record_block store peers pieces i off s push =
+  Lwt.ignore_result (record_block store peers pieces i off s push)
 
 let share_torrent bt meta store pieces peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  (* Hashtbl.iter (fun _ p -> Requester.got_bitfield r (Peer.has p)) peers; *)
+  (* update_requests  *)
   let rec loop () =
     Lwt_stream.next bt.chan >>= function
     | PeersReceived addrs ->
@@ -636,22 +666,18 @@ let share_torrent bt meta store pieces peers =
 
     | PieceVerified i ->
         (* debug "piece %d verified and written to disk" i; *)
-        (* PeerMgr.got_piece bt.peer_mgr i; *)
-        (* Requester.got_piece r i; *)
+        Hashtbl.iter (fun _ p -> Peer.have p i) peers;
         loop ()
 
     | PieceFailed i ->
-        (* Announcer.add_bytes *)
         (* debug "piece %d failed hashcheck" i; *)
-        (* Requester.got_bad_piece r i; *)
-        (* PeerMgr.got_bad_piece bt.peer_mgr i; *)
         loop ()
 
     | ConnectFailed addr ->
         connect_to_peer bt.ih bt.push (PeerMgr.handshake_failed bt.peer_mgr addr);
         loop ()
 
-    | PeerEvent (id, Peer.PeerDisconnected) ->
+    | PeerEvent (id, Peer.PeerDisconnected reqs) ->
         connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
@@ -659,7 +685,7 @@ let share_torrent bt meta store pieces peers =
         (* Requester.lost_bitfield r (Peer.have p); FIXME FIXME *)
         loop ()
 
-    | PeerEvent (_, Peer.Choked _) ->
+    | PeerEvent (_, Peer.Choked reqs) ->
         (* Requester.peer_declined_all_requests r p; FIXME FIXME *)
         loop ()
 
@@ -688,13 +714,10 @@ let share_torrent bt meta store pieces peers =
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
-        (* FIXME *)
+        record_block store peers pieces i off s bt.push;
         (* debug "got block %d/%d (piece %d) from %s" b *)
         (*   (Metadata.block_count meta idx) idx (Peer.to_string p); *)
         (* (Util.string_of_file_size (Int64.of_float (Peer.download_rate p))); *)
-        (* Requester.got_block r p idx b; *)
-        (* Torrent.got_block t p idx b s; *)
-        (* FIXME FIXME *)
         loop ()
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
@@ -727,8 +750,7 @@ let share_torrent bt meta store pieces peers =
         Hashtbl.replace peers id p;
         loop ()
 
-    | PeerEvent (_, Peer.AvailableMetadata _)
-    | NoEvent ->
+    | PeerEvent (_, Peer.AvailableMetadata _) ->
         loop ()
   in
   loop ()
@@ -802,7 +824,7 @@ let rec fetch_metadata bt =
         Hashtbl.replace peers id p;
         loop m
 
-    | _, PeerEvent (id, Peer.PeerDisconnected) ->
+    | _, PeerEvent (id, Peer.PeerDisconnected _) ->
         connect_to_peer bt.ih bt.push (PeerMgr.peer_disconnected bt.peer_mgr id);
         Hashtbl.remove peers id;
         loop m
@@ -863,8 +885,7 @@ let rec fetch_metadata bt =
     | _, PeerEvent (_, Peer.HaveBitfield _)
     | _, PeerEvent (_, Peer.RejectMetaPiece _)
     | _, PeerEvent (_, Peer.BlockRequested _)
-    | _, PeerEvent (_, Peer.BlockReceived _)
-    | _, NoEvent ->
+    | _, PeerEvent (_, Peer.BlockReceived _) ->
         loop m
   in
   loop None

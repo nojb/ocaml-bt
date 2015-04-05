@@ -34,33 +34,19 @@ type pex_flags =
 
 type event =
   | Choked of (int * int * int) list
-
   | Unchoked
-
   | Interested
-
   | NotInterested
-
   | Have of int
-
   | HaveBitfield of Bits.t
-
   | BlockRequested of int * int * int * Cstruct.t Lwt.u
-
   | BlockReceived of int * int * Cstruct.t
-
-  | PeerDisconnected
-
+  | PeerDisconnected of (int * int * int) list
   | AvailableMetadata of int
-
   | MetaRequested of int
-
   | GotMetaPiece of int * Cstruct.t
-
   | RejectMetaPiece of int
-
   | GotPEX of (addr * pex_flags) list * addr list
-
   | DHTPort of int
 
 type t
@@ -103,6 +89,8 @@ val download_speed : t -> float
 val upload_speed : t -> float
 
 val requests : t -> int
+
+val requested : t -> int -> int -> int -> bool
 
 (** Outgoing *)
 

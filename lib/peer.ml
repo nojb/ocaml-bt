@@ -248,33 +248,19 @@ let default_block_size = 16 * 1024
 
 type event =
   | Choked of (int * int * int) list
-
   | Unchoked
-
   | Interested
-
   | NotInterested
-
   | Have of int
-
   | HaveBitfield of Bits.t
-
   | BlockRequested of int * int * int * Cstruct.t Lwt.u
-
   | BlockReceived of int * int * Cstruct.t
-
-  | PeerDisconnected
-
+  | PeerDisconnected of (int * int * int) list
   | AvailableMetadata of int
-
   | MetaRequested of int
-
   | GotMetaPiece of int * Cstruct.t
-
   | RejectMetaPiece of int
-
   | GotPEX of (addr * pex_flags) list * addr list
-
   | DHTPort of int
 
 type t =
@@ -353,6 +339,13 @@ let upload_speed p =
 
 let requests p =
   Lwt_sequence.length p.requests
+
+let requested p i off len =
+  match Lwt_sequence.find_node_opt_l (fun (i', off', len') -> i = i' && off = off' && len = len') p.requests with
+  | None ->
+      false
+  | Some _ ->
+      true
 
 let worked_on_piece p i =
   Bits.is_set p.blame i
@@ -691,7 +684,8 @@ let buf_size = 1024
 
 let handle_err p fd e =
   Printf.eprintf "unexpected exc: %S\n%!" (Printexc.to_string e);
-  p.push PeerDisconnected;
+  let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
+  p.push (PeerDisconnected reqs);
   Lwt_unix.close fd
 
 let reader_loop p fd key =

@@ -23,8 +23,6 @@
     disconnecting peers who do not send us piece information for too long
     (currently, 90 seconds). *)
 
-open Event
-
 type addr = Unix.inet_addr * int
 
 type swarm
