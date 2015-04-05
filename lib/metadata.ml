@@ -145,6 +145,7 @@ let create bc =
   let total_length = total_length bc in
   let files = files bc in
   let last_piece_size = Int64.to_int (Int64.rem total_length (Int64.of_int piece_length)) in
+  let last_piece_size = if last_piece_size = 0 then piece_length else last_piece_size in
   { name; info_hash; piece_length; total_length; last_piece_size;
     hashes; files; encoded = Bcode.encode bc }
 
@@ -154,10 +155,9 @@ let total_length m =
 let piece_count m =
   Array.length m.hashes
 
-let piece_length info i =
-  assert (i >= 0 && i < Array.length info.hashes);
-  if i < Array.length info.hashes - 1 then info.piece_length
-  else Int64.(sub info.total_length (mul (of_int i) (of_int info.piece_length))) |> Int64.to_int
+let piece_length m i =
+  if i < 0 || i >= Array.length m.hashes then invalid_arg "Metadata.piece_length";
+  if i = Array.length m.hashes - 1 then m.last_piece_size else m.piece_length
 
 let offset m i off =
   Int64.(add (mul (of_int i) (of_int m.piece_length)) (of_int off))

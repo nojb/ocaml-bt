@@ -136,21 +136,6 @@ let connect_to_peer info_hash push = function
            (fun _ -> Lwt.wrap1 push @@ ConnectFailed addr))
   | None -> ()
 
-  (* | TorrentLoaded dl -> *)
-  (*         (\* debug "torrent loaded (good=%d,total=%d)" *\) *)
-  (*         (\*   (Torrent.numgot dl) (Metadata.piece_count meta - Torrent.numgot dl); *\) *)
-  (*         (\* PeerMgr.torrent_loaded bt.peer_mgr meta dl (get_next_requests bt); FIXME FIXME *\) *)
-  (*         let ch = Choker.create bt.peer_mgr dl in *)
-  (*         if Torrent.is_complete dl then *)
-  (*           bt.stage <- HasMeta (meta, Seeding (dl, ch)) *)
-  (*         else begin *)
-  (*           let r = Requester.create meta dl in *)
-  (*           bt.stage <- HasMeta (meta, Leeching (dl, ch, r)); *)
-  (*           PeerMgr.iter_peers (fun p -> Requester.got_bitfield r (Peer.have p)) bt.peer_mgr *)
-  (*         end; *)
-  (*         Choker.start ch *)
-(*     end *)
-
 let am_choking peers id =
   try
     let p = Hashtbl.find peers id in
@@ -226,36 +211,6 @@ let rechoke peers =
 
 (* Requester END *)
 
-  (* let create meta handle = *)
-  (*   let numpieces = Metadata.piece_count meta in *)
-  (*   Store.create (Metadata.files meta) >>= fun store -> *)
-  (*   let dl = *)
-  (*     { meta; store; *)
-  (*       completed = Array.init numpieces (fun i -> Bits.create @@ Metadata.block_count meta i); *)
-  (*       amount_left = Metadata.total_length meta; *)
-  (*       handle } *)
-  (*   in *)
-  (*   let plen = Metadata.piece_length dl.meta in *)
-  (*   let rec loop good acc i = *)
-  (*     if i >= numpieces then *)
-  (*       Lwt.return (good, acc) *)
-  (*     else *)
-  (*       let off = Metadata.offset dl.meta i 0 in *)
-  (*       Store.digest dl.store off (plen i) >>= fun digest -> *)
-  (*       if SHA1.equal digest (Metadata.hash dl.meta i) then begin *)
-  (*         Bits.set_all dl.completed.(i); *)
-  (*         loop (good + 1) Int64.(sub acc (of_int (plen i))) (i + 1) *)
-  (*       end else *)
-  (*         loop good acc (i+1) *)
-  (*   in *)
-  (*   (\* let start_time = Unix.gettimeofday () in *\) *)
-  (*   loop 0 (Metadata.total_length dl.meta) 0 >>= fun (good, amount_left) -> *)
-  (*   (\* let end_time = Unix.gettimeofday () in *\) *)
-  (*   (\* debug "loaded, %d/%d good pieces, %Ld bytes left, in %.0fs" *\) *)
-  (*   (\* good numpieces amount_left (end_time -. start_time); *\) *)
-  (*   dl.amount_left <- amount_left; *)
-  (*   Lwt.return dl *)
-
 type piece_state =
   | Pending
   | Active of int array
@@ -264,6 +219,7 @@ type piece_state =
 type piece =
   { mutable state : piece_state;
     length : int;
+    offset : int64;
     mutable have : int;
     hash : SHA1.t }
 
@@ -387,14 +343,17 @@ let request p pieces =
 let update_requests pieces peers =
   Hashtbl.iter (fun _ p -> request p pieces) peers
 
-let offset i off =
-  Int64.(add (mul (of_int i) (of_int block_size)) (of_int off))
-
-let send_block store p i off len =
-  Lwt.ignore_result (Store.read store (offset i off) len >>= Lwt.wrap4 Peer.piece p i off)
+let send_block store pieces p i off len =
+  match pieces.(i).state with
+  | Finished ->
+      let off1 = Int64.(add pieces.(i).offset (of_int off)) in
+      Lwt.ignore_result (Store.read store off1 len >>= Lwt.wrap4 Peer.piece p i off)
+  | Pending
+  | Active _ ->
+      ()
 
 let verify_piece store peers pieces i push =
-  Store.digest store (offset i 0) pieces.(i).length >>= fun sha ->
+  Store.digest store pieces.(i).offset pieces.(i).length >>= fun sha ->
   if SHA1.equal sha pieces.(i).hash then
     Lwt.wrap1 push @@ PieceVerified i
   else
@@ -417,7 +376,8 @@ let record_block store peers pieces i off s push =
         if c > 1 then Hashtbl.iter cancel peers;
         pieces.(i).have <- pieces.(i).have + 1
       end;
-      Store.write store (offset i off) s >>= fun () ->
+      let off = Int64.(add pieces.(i).offset (of_int off)) in
+      Store.write store off s >>= fun () ->
       if pieces.(i).have = Array.length parts then
         verify_piece store peers pieces i push
       else
@@ -426,9 +386,10 @@ let record_block store peers pieces i off s push =
 let record_block store peers pieces i off s push =
   Lwt.ignore_result (record_block store peers pieces i off s push)
 
-let share_torrent bt meta store pieces peers =
+let share_torrent bt meta store pieces have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  (* update_requests  *)
+  Hashtbl.iter (fun _ p -> Peer.have_bitfield p have) peers;
+  update_requests pieces peers;
   let rec loop () =
     Lwt_stream.next bt.chan >>= function
     | TorrentComplete ->
@@ -490,8 +451,7 @@ let share_torrent bt meta store pieces peers =
         loop ()
 
     | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
-        if pieces.(i).state = Finished then
-          peer id (fun p -> send_block store p i off len);
+        peer id (fun p -> send_block store pieces p i off len);
         loop ()
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
@@ -536,12 +496,27 @@ let share_torrent bt meta store pieces peers =
   in
   loop ()
 
-let load_torrent bt meta =
-  assert false
-  (* Torrent.create meta bt.push (\* >|= fun dl -> *\) *)
-(* bt.push (TorrentLoaded dl) *)
+let make_piece m i =
+  { state = Pending;
+    length = Metadata.piece_length m i;
+    offset = Metadata.offset m i 0;
+    have = 0;
+    hash = Metadata.hash m i }
 
-(* IncompleteMetadata BEGIN *)
+let load_torrent bt m =
+  Store.create (Metadata.files m) >>= fun store ->
+  let pieces = Array.init (Metadata.piece_count m) (make_piece m) in
+  let have = Bits.create (Metadata.piece_count m) in
+  let rec loop i =
+    if i < Metadata.piece_count m then begin
+      Store.digest store pieces.(i).offset pieces.(i).length >>= fun sha ->
+      if SHA1.equal sha pieces.(i).hash then
+        (pieces.(i).state <- Finished; Bits.set have i);
+      loop (i + 1)
+    end else
+      Lwt.return (store, pieces, have)
+  in
+  loop 0
 
 module IncompleteMetadata = struct
   type t =
@@ -575,8 +550,6 @@ module IncompleteMetadata = struct
         f i
     done
 end
-
-(* IncompleteMetadata END *)
 
 let rec fetch_metadata bt =
   let peers = Hashtbl.create 20 in
@@ -630,7 +603,7 @@ let rec fetch_metadata bt =
           | Some raw ->
               (* debug "got full metadata"; *)
               let m' = Metadata.create (Bcode.decode raw) in
-              Lwt.return m'
+              Lwt.return (m', peers)
           | None ->
               (* debug "metadata hash check failed; trying again"; *)
               loop None
@@ -778,9 +751,9 @@ end
 
 let start bt =
   List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
-  fetch_metadata bt >>= fun meta ->
-  load_torrent bt meta >>= fun tor ->
-  assert false
+  fetch_metadata bt >>= fun (m, peers) ->
+  load_torrent bt m >>= fun (store, pieces, have) ->
+  share_torrent bt m store pieces have peers
 
 let start_server ?(port = 0) push =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
