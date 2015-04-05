@@ -331,11 +331,19 @@ let error url fmt =
 let announce ~info_hash url push id =
   let read_buf = Cstruct.create max_datagram_size in
   let rec loop fd = function
-    | `Ok (t, (timeout, buf)) ->
+    | `Ok (t, (tout, buf)) ->
         Lwt_cstruct.write fd buf >>= fun n ->
-        debug url "writing %u bytes (timeout=%.1f)" n timeout;
-        Lwt_unix.with_timeout timeout (fun () -> Lwt_cstruct.read fd read_buf) >>= fun n ->
-        loop fd (handle t (Cstruct.sub read_buf 0 n))
+        debug url "writing %u bytes (timeout=%.1f)" n tout;
+        Lwt.try_bind
+          (fun () ->
+             Lwt_unix.with_timeout tout (fun () -> Lwt_cstruct.read fd read_buf))
+          (fun n ->
+             loop fd (handle t (Cstruct.sub read_buf 0 n)))
+          (function
+            | Lwt_unix.Timeout ->
+                loop fd (timeout t)
+            | e ->
+                Lwt.fail e)
     | `Error s ->
         error url "error : %S" s;
         Lwt.fail (Failure s)
