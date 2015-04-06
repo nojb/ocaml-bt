@@ -474,7 +474,7 @@ type result =
   | Ok of (ARC4.key * ARC4.key) option * Bits.t * S.t
   | Failed
 
-let outgoing ~id ~info_hash (ip, port) fd push =
+let outgoing ~id ~info_hash (ip, port) fd =
   (* Handshake.(outgoing ~info_hash fd Both) >>= function *)
   (* | `Ok (mode, rest) -> *)
   let mode = None in
@@ -490,9 +490,7 @@ let outgoing ~id ~info_hash (ip, port) fd push =
   | `Ok (ext, info_hash', peer_id) ->
       (* Log.debug "[%s:%d] Parsed handshake" (Unix.string_of_inet_addr ip) port; *)
       if S.equal info_hash info_hash' then begin
-        Log.info "+ WELCOME id:%s addr:%s port:%d"
-          (S.to_hex_short peer_id) (Unix.string_of_inet_addr ip) port;
-        Lwt.wrap1 push (Ok (mode, ext, peer_id))
+        Lwt.return (mode, ext, peer_id)
       end else
         Lwt.fail (Failure "bad info-hash")
   | `Error err ->
@@ -502,9 +500,11 @@ let outgoing ~id ~info_hash (ip, port) fd push =
 (* Lwt.fail (Failure err) *)
 
 let outgoing ~id ~info_hash addr fd push =
-  Lwt.ignore_result
-    (Lwt.catch
-       (fun () -> outgoing ~id ~info_hash addr fd push)
-       (fun e ->
-          Log.error "exn %s" (Printexc.to_string e);
-          Lwt.wrap1 push @@ Failed))
+  Lwt.try_bind
+    (fun () ->
+       outgoing ~id ~info_hash addr fd)
+    (fun (mode, ext, peer_id) ->
+       Lwt.wrap1 push @@ Ok (mode, ext, peer_id))
+    (fun e ->
+       Log.error "exn %s" (Printexc.to_string e);
+       Lwt.wrap1 push @@ Failed) |> Lwt.ignore_result
