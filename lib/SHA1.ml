@@ -71,7 +71,7 @@ let to_hex cs =
   Buffer.contents buf
 
 let to_hex_short cs =
-  String.sub (to_hex cs) 0 7
+  String.sub (to_hex cs) (19-7) 7
 
 let unbase32_char c =
   match c with
