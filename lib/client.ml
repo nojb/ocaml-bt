@@ -37,9 +37,13 @@ let max_requests = 5
 
 type addr = Unix.inet_addr * int
 
+type direction =
+  | Incoming
+  | Outgoing
+
 type event =
   | PeersReceived of addr list
-  | PeerConnected of addr * Lwt_unix.file_descr * bool (* bool = incoming *)
+  | PeerConnected of addr * Lwt_unix.file_descr * direction
   | PieceVerified of int
   | PieceFailed of int
   | HandshakeFailed of addr
@@ -52,8 +56,9 @@ let log_event = function
       Log.debug "+ PEERS RECEIVED %d" (List.length peers)
   | HandshakeOk (_, _, _, _, id) ->
       Log.info "+ HANDSHAKE SUCCESS id:%s" (SHA1.to_hex_short id)
-  | PeerConnected ((ip, p), _, incoming) ->
-      Log.info "+ CONNECT SUCCESS %s addr:%s port:%d" (if incoming then "INCOMING" else "OUTGOING")
+  | PeerConnected ((ip, p), _, dir) ->
+      Log.info "+ CONNECT SUCCESS %s addr:%s port:%d"
+        (match dir with Incoming -> "INCOMING" | Outgoing -> "OUTGOING")
         (Unix.string_of_inet_addr ip) p
   | PieceVerified i ->
       Log.info "+ PIECE VERIFIED idx:%d" i
@@ -297,9 +302,6 @@ let update_interest pieces p =
   in
   loop 0
 
-(* let update_interest pieces peers = *)
-(*   Hashtbl.iter (fun _ p -> update_interest pieces p) peers *)
-
 let send_block store pieces p i off len =
   match pieces.(i).state with
   | Verified ->
@@ -448,11 +450,11 @@ let share_torrent bt meta store pieces have peers =
         (* FIXME *)
         loop ()
 
-    | PeerConnected (addr, fd, false) ->
+    | PeerConnected (addr, fd, Outgoing) ->
         connect_to_peer ~id:bt.id ~info_hash:bt.ih addr fd bt.push;
         loop ()
 
-    | PeerConnected (_, _, true) ->
+    | PeerConnected (_, _, Incoming) ->
         (* FIXME FIXME *)
         loop ()
 
@@ -548,11 +550,11 @@ let rec fetch_metadata bt =
         PeerMgr.handshake_failed bt.peer_mgr addr;
         loop m
 
-    | _, PeerConnected (addr, fd, false) ->
+    | _, PeerConnected (addr, fd, Outgoing) ->
         connect_to_peer ~id:bt.id ~info_hash:bt.ih addr fd bt.push;
         loop m
 
-    | _, PeerConnected (_, _, true) ->
+    | _, PeerConnected (_, _, Incoming) ->
         (* FIXME TODO FIXME *)
         loop m
 
@@ -740,7 +742,7 @@ let start_server ?(port = 0) push =
     Lwt_unix.accept fd >>= fun (fd, sa) ->
     Log.debug "accepted connection from %s" (Util.string_of_sockaddr sa);
     let addr = match sa with Unix.ADDR_INET (ip, p) -> ip, p | Unix.ADDR_UNIX _ -> assert false in
-    push (PeerConnected (addr, fd, true));
+    push (PeerConnected (addr, fd, Incoming));
     loop ()
   in
   loop ()
@@ -758,7 +760,7 @@ let start bt =
 
 let create mg =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
-  let peer_mgr = PeerMgr.create (fun addr fd -> push (PeerConnected (addr, fd, false))) in
+  let peer_mgr = PeerMgr.create (fun addr fd -> push (PeerConnected (addr, fd, Outgoing))) in
   { id = SHA1.generate ~prefix:"OCAML" ();
     ih = mg.Magnet.xt;
     trackers = mg.Magnet.tr;
