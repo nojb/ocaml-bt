@@ -71,9 +71,6 @@ val am_interested : t -> bool
 val has : t -> int -> bool
 (** Whether this peer has a particular piece. *)
 
-val bitfield : t -> Bits.t
-(** The bitfield of pieces this peer has. *)
-
 val worked_on_piece : t -> int -> bool
 (** Whether this peer has sent us blocks of a particular piece. *)
 

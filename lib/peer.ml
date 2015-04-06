@@ -319,10 +319,7 @@ let peer_interested p =
 
 let has p i =
   if i < 0 then invalid_arg "Peer.has";
-  Bits.is_set p.have i
-
-let bitfield p =
-  p.have
+  i < Bits.length p.have && Bits.is_set p.have i
 
 let am_choking p =
   p.am_choking
@@ -351,7 +348,8 @@ let requested p i off len =
       true
 
 let worked_on_piece p i =
-  Bits.is_set p.blame i
+  if i < 0 then invalid_arg "Peer.worked_on_piece";
+  i < Bits.length p.blame && Bits.is_set p.blame i
 
 let strike p =
   p.strikes <- p.strikes + 1;
@@ -477,6 +475,7 @@ let have p i =
   send p @@ Wire.HAVE i
 
 let have_bitfield p bits =
+  (* check for redefined length FIXME *)
   Bits.set_length p.have (Bits.length bits);
   Bits.set_length p.blame (Bits.length bits);
   Log.info "> BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id)
@@ -590,6 +589,7 @@ let on_not_interested p =
   end
 
 let on_have p i =
+  (* check for got_bitfield_already FIXME *)
   Bits.resize p.have (i + 1);
   if not (Bits.is_set p.have i) then begin
     Log.info "< HAVE id:%s idx:%d" (SHA1.to_hex_short p.id) i;
@@ -598,6 +598,7 @@ let on_have p i =
   end
 
 let on_bitfield p b =
+  (* check for redefinition *)
   Bits.set_length p.have (Bits.length b);
   Bits.blit b 0 p.have 0 (Bits.length b);
   Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b);
