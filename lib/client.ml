@@ -113,7 +113,7 @@ let rechoke_compare (p1, salt1) (p2, salt2) =
 
 let rechoke peers =
   let rec loop opt nopt =
-    Log.info "RECHOKING";
+    (* Log.info "RECHOKING"; *)
     let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
     let wires =
       let add _ p wires =
@@ -129,6 +129,7 @@ let rechoke peers =
       Hashtbl.fold add peers []
     in
     let wires = List.sort rechoke_compare wires in
+    (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
     let rec select n acc = function
       | (p, _) as w :: wires when n < rechoke_slots ->
           let n = if Peer.peer_interested p then n + 1 else n in
@@ -147,6 +148,8 @@ let rechoke peers =
           end
     in
     let unchoke, choke, opt, nopt = select 0 [] wires in
+    (* Log.debug "RECHOKE total=%d unchoke=%d choke=%d" (Hashtbl.length peers) (List.length unchoke) *)
+    (*   (List.length choke); *)
     List.iter (fun (p, _) -> Peer.unchoke p) unchoke;
     List.iter (fun (p, _) -> Peer.choke p) choke;
     Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt

@@ -110,12 +110,9 @@ module Wire : sig
   val string_of_message : message -> string
   val writer : message -> Util.W.t
 
-  (* val ltep_bit : int *)
-  (* val dht_bit : int *)
-
   val max_packet_len : int
 
-  val handle : Cstruct.t -> Cstruct.t * message list
+  val handle : Cstruct.t -> message list * Cstruct.t
 
 end = struct
   type message =
@@ -226,21 +223,23 @@ end = struct
 
   let max_packet_len = 1 lsl 15 (* 32 * 1024 = 32768 *)
 
-  (* let ltep_bit = 43 (\* 20-th bit from the right *\) *)
-  (* let dht_bit = 63 (\* last bit of the extension bitfield *\) *)
-
-  let rec handle cs =
-    if Cstruct.len cs >= 4 then
-      let l = Int32.to_int @@ Cstruct.BE.get_uint32 cs 0 in
-      if l + 4 <= Cstruct.len cs then
-        let packet, cs = Cstruct.split (Cstruct.shift cs 4) l in
-        let cs, packets = handle cs in
-        let packet = parse packet in
-        cs, packet :: packets
-      else
-        cs, []
-    else
-      cs, []
+  let handle buf =
+    let len = Cstruct.len buf in
+    (* Log.debug "Wire.handle: len:%d" len; *)
+    let rec loop off =
+      if off + 4 <= len then begin
+        let l = Int32.to_int @@ Cstruct.BE.get_uint32 buf off in
+        (* Log.debug "Wire.handle: msglen:%d" l; *)
+        if off + 4 + l <= len then
+          let msg = parse @@ Cstruct.sub buf (off + 4) l in
+          let msgs, rest = loop (off + 4 + l) in
+          msg :: msgs, rest
+        else
+          [], Cstruct.shift buf off
+      end else
+        [], Cstruct.shift buf off
+    in
+    loop 0
 
 end
 
@@ -267,34 +266,26 @@ type event =
   | DHTPort of int
 
 type t =
-  { id : SHA1.t;
-
-    mutable am_choking : bool;
-    mutable am_interested : bool;
-    mutable peer_choking : bool;
+  { id                      : SHA1.t;
+    blame                   : Bits.t;
+    have                    : Bits.t;
+    extbits                 : Bits.t;
+    extensions              : (string, int) Hashtbl.t;
+    mutable last_pex        : addr list;
+    mutable am_choking      : bool;
+    mutable am_interested   : bool;
+    mutable peer_choking    : bool;
     mutable peer_interested : bool;
-
-    blame : Bits.t;
-    have : Bits.t;
-    extbits : Bits.t;
-    extensions : (string, int) Hashtbl.t;
-
-    mutable strikes : int;
-
-    mutable uploaded : int64;
-    mutable downloaded : int64;
-    upload : Speedometer.t;
-    download : Speedometer.t;
-
-    mutable last_pex : addr list;
-
-    requests : (int * int * int) Lwt_sequence.t;
-    peer_requests : (int * int * int) Lwt_sequence.t;
-
-    send : unit Lwt_condition.t;
-    queue : Wire.message Lwt_sequence.t;
-
-    push : event -> unit }
+    mutable strikes         : int;
+    mutable uploaded        : int64;
+    mutable downloaded      : int64;
+    upload                  : Speedometer.t;
+    download                : Speedometer.t;
+    requests                : (int * int * int) Lwt_sequence.t;
+    peer_requests           : (int * int * int) Lwt_sequence.t;
+    send                    : unit Lwt_condition.t;
+    queue                   : Wire.message Lwt_sequence.t;
+    push                    : event -> unit }
 
 let string_of_node (id, (ip, port)) =
   Printf.sprintf "%s (%s:%d)" (SHA1.to_hex_short id) (Unix.string_of_inet_addr ip) port
@@ -697,7 +688,7 @@ let decrypt = encrypt
 open Lwt.Infix
 
 let handle_err p fd e =
-  Log.error "[%s] exn %s" (SHA1.to_hex_short p.id) (Printexc.to_string e);
+  Log.error "ERROR id:%s exn:%S" (SHA1.to_hex_short p.id) (Printexc.to_string e);
   let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
   p.push (PeerDisconnected reqs);
   Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
@@ -709,9 +700,10 @@ let reader_loop p fd key =
     | 0 ->
         Lwt.fail End_of_file
     | n ->
-        (* Log.debug "[%s] read %d bytes" (SHA1.to_hex_short p.id) n; *)
+        (* Log.debug "[%s] read %d (out of possible %d) bytes, already have %d" *)
+        (*   (SHA1.to_hex_short p.id) n (Cstruct.len buf) (Cstruct.len data); *)
         let key, buf = decrypt key (Cstruct.sub buf 0 n) in
-        let data, msgs = Wire.handle Cs.(data <+> buf) in
+        let msgs, data = Wire.handle Cs.(data <+> buf) in
         (* List.iter (fun m -> Log.debug "read message from [%s] : %s" (SHA1.to_hex_short p.id) *)
         (*     (Wire.string_of_message m)) msgs; *)
         List.iter (on_message p) msgs;
@@ -757,8 +749,10 @@ let start p fd mode =
 let create id push fd mode =
   let p =
     { id;
-      am_choking = true; am_interested = false;
-      peer_choking = true; peer_interested = false;
+      am_choking = true;
+      am_interested = false;
+      peer_choking = true;
+      peer_interested = false;
       extbits = Bits.create (8 * 8);
       extensions = Hashtbl.create 3;
       uploaded = 0L;

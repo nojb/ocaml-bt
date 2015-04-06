@@ -7,3 +7,4 @@ true: package(cohttp)
 true: bin_annot
 <otorrent/otorrent.*>: package(cmdliner)
 <lib/*.cmx>: for-pack(Bt)
+true: debug

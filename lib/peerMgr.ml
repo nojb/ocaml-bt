@@ -38,7 +38,7 @@ type swarm =
     queue : addr Queue.t;
     peers : peer H.t }
 
-let default_size = 100
+let default_size = 50
 let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
 open Lwt.Infix
@@ -60,6 +60,7 @@ let rec connect_to_peer sw addr wait =
        Lwt.wrap2 handshake_failed sw addr)
 
 and drain sw =
+  (* Log.debug "[PeerMgr.drain] length:%d connected:%d" (H.length sw.connections) (Hashtbl.length sw.wires); *)
   if H.length sw.connections < sw.size then
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
     | None ->
@@ -71,7 +72,7 @@ and drain sw =
 
 and add sw addr =
   if not (H.mem sw.peers addr) then begin
-    Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+    (* Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
     H.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
     Queue.push addr sw.queue;
     drain sw

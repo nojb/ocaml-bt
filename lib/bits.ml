@@ -107,7 +107,7 @@ let to_cstruct b =
       if j >= 8 then
         Cstruct.set_uint8 cs i acc
       else
-      if _get b.data (i * 8 + j) then
+      if i * 8 + j < b.length && _get b.data (i * 8 + j) then
         loop (acc lor (1 lsl (7 - j))) (j + 1)
       else
         loop acc (j + 1)
