@@ -381,10 +381,10 @@ let got_ut_pex p data =
       let ip =
         Unix.inet_addr_of_string
           (Printf.sprintf "%d.%d.%d.%d"
-            (Cstruct.get_uint8 addr 0) (Cstruct.get_uint8 cs 1)
-            (Cstruct.get_uint8 addr 2) (Cstruct.get_uint8 cs 3))
+            (Cstruct.get_uint8 addr 0) (Cstruct.get_uint8 addr 1)
+            (Cstruct.get_uint8 addr 2) (Cstruct.get_uint8 addr 3))
       in
-      let port = Cstruct.BE.get_uint16 cs 4 in
+      let port = Cstruct.BE.get_uint16 addr 4 in
       (ip, port) :: loop cs
     else
       []
