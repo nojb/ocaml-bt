@@ -21,7 +21,8 @@
 
 let () =
   Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF");
-  Log.set_log_level Log.DEBUG; Log.color_on ()
+  Log.set_log_level Log.DEBUG;
+  Log.color_on ()
 
 module Log = Log.Make (struct let section = "[Driver]" end)
 
@@ -41,8 +42,11 @@ let download magnet =
   | `Ok magnet ->
       let bt = Bt.Client.create magnet in
       Lwt.catch
-        (fun () -> Bt.Client.start bt)
-        (fun exn -> Log.error "exn : %S" (Printexc.to_string exn); Lwt.return_unit)
+        (fun () ->
+           Bt.Client.start bt)
+        (fun exn ->
+           Log.error "exn:%S" (Printexc.to_string exn);
+           Lwt.return_unit)
   | `Error ->
       Lwt.return_unit
 
@@ -51,9 +55,8 @@ let download = function
       Lwt_main.run (download magnet)
   | None ->
       ()
+
 let () =
   let doc = "download torrent" in
   let version = "0.1" in
-  match Term.(eval ~catch:true (pure download $ magnet, info ~version ~doc "otorrent")) with
-  | _ ->
-      ()
+  ignore Term.(eval ~catch:true (pure download $ magnet, info ~version ~doc "otorrent"))

@@ -60,7 +60,7 @@ val of_z : Nocrypto.Numeric.Z.t -> t
 val distance : t -> t -> Nocrypto.Numeric.Z.t
 (** The XOR-distance between two hashes.  Used in {!Kademlia}. *)
 
-val generate : ?g:Nocrypto.Fortuna.g -> ?prefix:string -> unit -> t
+val generate : ?prefix:string -> unit -> t
 (** A random hash with prefix [prefix]. *)
 
 val of_hex : string -> t

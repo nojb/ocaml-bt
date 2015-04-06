@@ -21,8 +21,9 @@
 
 module SHA1 = Nocrypto.Hash.SHA1
 module Z    = Nocrypto.Numeric.Z
-module Rng  = Nocrypto.Rng
 module Cs   = Nocrypto.Uncommon.Cs
+
+let () = Random.self_init ()
 
 let (<+>) = Cs.(<+>)
 
@@ -54,10 +55,12 @@ let of_z z = Z.to_cstruct_be z
 
 let distance cs1 cs2 = Z.of_cstruct_be @@ Cs.xor cs1 cs2
 
-let generate ?g ?(prefix = "") () =
+let generate ?(prefix = "") () =
   let prefix = if String.length prefix >= 20 then String.sub prefix 0 20 else prefix in
   let n = 20 - String.length prefix in
-  Cstruct.of_string prefix <+> Rng.generate ?g n
+  let rest = Cstruct.create n in
+  for i = 0 to n - 1 do Cstruct.set_uint8 rest i (Random.int 256) done;
+  Cstruct.of_string prefix <+> rest
 
 let of_hex s =
   if String.length s <> 40 then invalid_arg "SHA1.of_hex";

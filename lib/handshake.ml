@@ -26,9 +26,8 @@ module Z    = Nocrypto.Numeric.Z
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module SHA1 = Nocrypto.Hash.SHA1
 module Cs   = Nocrypto.Uncommon.Cs
-module Rng  = Nocrypto.Rng
 
-let _ = Nocrypto.Rng.reseed (Cstruct.of_string "fadsfadsfadsfdasF")
+let () = Random.self_init ()
 
 (* let crypto_plain = 0x01l *)
 (* let crypto_rc4 = 0x02l *)
@@ -135,6 +134,13 @@ let cs_int32 n =
   Cstruct.BE.set_uint32 cs 0 n;
   cs
 
+let generate n =
+  let cs = Cstruct.create n in
+  for i = 0 to n - 1 do
+    Cstruct.set_uint8 cs i (Random.int 256)
+  done;
+  cs
+
 let handle_client t state =
   let rec loop buf st =
     let len = Cstruct.len buf in
@@ -144,8 +150,8 @@ let handle_client t state =
         let shared_secret = Dh.shared g priv yb in
         let my_key = arc4 keyA shared_secret t.info_hash in
         let her_key = arc4 keyB shared_secret t.info_hash in
-        let padC_len = Rng.Int.gen (max_pad_len + 1) in
-        let padC = Rng.generate padC_len in
+        let padC_len = Random.int (max_pad_len + 1) in
+        let padC = generate padC_len in
         let { ARC4.key = my_key; message } =
           ARC4.encrypt ~key:my_key
             (Cs.concat [ vc; cs_int32 (provide t.mode); cs_int16 padC_len; padC; cs_int16 0 ])
@@ -399,8 +405,8 @@ type ret =
 let outgoing ~info_hash mode =
   let info_hash = S.to_raw info_hash in
   let t = { info_hash; mode; state = Client ClientWaitDh; buf = Cs.empty } in
-  let padA_len = Rng.Int.gen (max_pad_len + 1) in
-  let padA = Rng.generate padA_len in
+  let padA_len = Random.int (max_pad_len + 1) in
+  let padA = generate padA_len in
   `Ok (t, Some (pub <+> padA))
 
 let incoming ~info_hash mode =
