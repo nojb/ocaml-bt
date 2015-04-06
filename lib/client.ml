@@ -108,6 +108,7 @@ let rechoke_compare (p1, salt1) (p2, salt2) =
 
 let rechoke peers =
   let rec loop opt nopt =
+    Log.info "RECHOKING";
     let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
     let wires =
       let add _ p wires =
@@ -118,7 +119,7 @@ let rechoke peers =
         | false, Some opt when SHA1.equal (Peer.id p) opt ->
             wires
         | false, _ ->
-            (p, Random.int max_int) :: wires
+            (p, Random.int (1 lsl 29)) :: wires
       in
       Hashtbl.fold add peers []
     in
@@ -356,6 +357,7 @@ let share_torrent bt meta store pieces have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
   update_requests pieces peers;
+  Lwt.ignore_result (rechoke peers);
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
     log_event e;

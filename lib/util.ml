@@ -54,6 +54,7 @@ module W : sig
   val concat : t list -> t
   val immediate : Cstruct.t -> t
   val to_cstruct : t -> Cstruct.t
+  val into_cstruct : t -> Cstruct.t -> Cstruct.t
 end = struct
   type t = int * (Cstruct.t -> int -> unit)
 
@@ -74,4 +75,8 @@ end = struct
     let cs = Cstruct.create l in
     f cs 0;
     cs
+  let into_cstruct (l, f) cs =
+    if Cstruct.len cs < l then invalid_arg "W.into_cstruct";
+    f cs 0;
+    Cstruct.sub cs 0 l
 end

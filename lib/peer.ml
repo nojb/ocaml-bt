@@ -719,11 +719,12 @@ let reader_loop p fd key =
   loop key Cs.empty
 
 let writer_loop p fd key =
+  let buf = Cstruct.create Wire.max_packet_len in
   let write m key =
     (* Log.debug "sending message to [%s] : %s" (SHA1.to_hex_short p.id) (Wire.string_of_message m); *)
-    let cs = Util.W.to_cstruct (Wire.writer m) in
-    let key, cs = encrypt key cs in
-    Lwt_cstruct.(complete (write fd) @@ Util.W.to_cstruct (Wire.writer m)) >>= fun () ->
+    let buf = Util.W.into_cstruct (Wire.writer m) buf in
+    let key, buf = encrypt key buf in
+    Lwt_cstruct.(complete (write fd) @@ buf) >>= fun () ->
     Lwt.return key
   in
   let rec loop key =
@@ -746,7 +747,7 @@ let start p fd mode =
     | None -> None, None
     | Some (my_key, her_key) -> Some my_key, Some her_key
   in
-  Lwt.join [reader_loop p fd her_key; writer_loop p fd my_key]
+  Lwt.pick [reader_loop p fd her_key; writer_loop p fd my_key]
 
 let start p fd mode =
   Lwt.ignore_result
