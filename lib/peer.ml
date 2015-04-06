@@ -107,7 +107,8 @@ module Wire : sig
     | ALLOWED of int list
     | EXTENDED of int * Cstruct.t
 
-  val string_of_message : message -> string
+  val print : out_channel -> message -> unit
+
   val writer : message -> Util.W.t
 
   val max_packet_len : int
@@ -137,26 +138,26 @@ end = struct
   let strl f l =
     "[" ^ String.concat " " (List.map f l) ^ "]"
 
-  let string_of_message x =
+  let print oc x =
     let open Printf in
     match x with
-    | KEEP_ALIVE -> "keep alive"
-    | CHOKE -> "choke"
-    | UNCHOKE -> "unchoke"
-    | INTERESTED -> "interested"
-    | NOT_INTERESTED -> "not interested"
-    | HAVE i -> sprintf "have %d" i
-    | BITFIELD b -> sprintf "bitfield with %d/%d pieces" (Bits.count_ones b) (Bits.length b)
-    | REQUEST (i, off, len) -> sprintf "request %d off:%d len:%d" i off len
-    | PIECE (i, off, _) -> sprintf "piece %d off:%d" i off
-    | CANCEL (i, off, len) -> sprintf "cancel %d off:%d len:%d" i off len
-    | PORT port -> sprintf "port %d" port
-    | HAVE_ALL -> "have all"
-    | HAVE_NONE -> "have none"
-    | SUGGEST i -> sprintf "suggest %d" i
-    | REJECT (i, off, len) -> sprintf "reject %d off:%d len:%d" i off len
-    | ALLOWED pieces -> sprintf "allowed %s" (strl string_of_int pieces)
-    | EXTENDED (id, _) -> sprintf "extended %d" id
+    | KEEP_ALIVE -> fprintf oc "keep alive"
+    | CHOKE -> fprintf oc "choke"
+    | UNCHOKE -> fprintf oc "unchoke"
+    | INTERESTED -> fprintf oc "interested"
+    | NOT_INTERESTED -> fprintf oc "not interested"
+    | HAVE i -> fprintf oc "have %d" i
+    | BITFIELD b -> fprintf oc "bitfield with %d/%d pieces" (Bits.count_ones b) (Bits.length b)
+    | REQUEST (i, off, len) -> fprintf oc "request %d off:%d len:%d" i off len
+    | PIECE (i, off, buf) -> fprintf oc "piece %d off:%d len:%d" i off (Cstruct.len buf)
+    | CANCEL (i, off, len) -> fprintf oc "cancel %d off:%d len:%d" i off len
+    | PORT port -> fprintf oc "port %d" port
+    | HAVE_ALL -> fprintf oc "have all"
+    | HAVE_NONE -> fprintf oc "have none"
+    | SUGGEST i -> fprintf oc "suggest %d" i
+    | REJECT (i, off, len) -> fprintf oc "reject %d off:%d len:%d" i off len
+    | ALLOWED pieces -> fprintf oc "allowed %s" (strl string_of_int pieces)
+    | EXTENDED (id, _) -> fprintf oc "extended %d" id
 
   let writer x =
     let open Util.W in
@@ -287,9 +288,6 @@ type t =
     queue                   : Wire.message Lwt_sequence.t;
     push                    : event -> unit }
 
-let string_of_node (id, (ip, port)) =
-  Printf.sprintf "%s (%s:%d)" (SHA1.to_hex_short id) (Unix.string_of_inet_addr ip) port
-
 let strl f l =
   "[" ^ String.concat " " (List.map f l) ^ "]"
 
@@ -317,10 +315,6 @@ let am_choking p =
 
 let am_interested p =
   p.am_interested
-
-let to_string p =
-  SHA1.to_hex_short p.id
-  (* string_of_node p.node *)
 
 let download_speed p =
   Speedometer.speed p.download
@@ -412,13 +406,11 @@ let send p m =
 let piece p i o buf =
   p.uploaded <- Int64.add p.uploaded (Int64.of_int @@ Cstruct.len buf);
   Speedometer.add p.upload (Cstruct.len buf);
-  Log.info "> PIECE id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o (Cstruct.len buf);
   (* TODO emit Uploaded event *)
   send p @@ Wire.PIECE (i, o, buf)
 
 let request p i ofs len =
   if p.peer_choking then invalid_arg "Peer.request";
-  Log.info "> REQUESTING id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i ofs len;
   ignore (Lwt_sequence.add_r (i, ofs, len) p.requests);
   send p @@ Wire.REQUEST (i, ofs, len)
 
@@ -428,7 +420,7 @@ let extended_handshake p =
       name, Bcode.Int (Int64.of_int id)) supported_extensions
   in
   let m = Bcode.Dict ["m", Bcode.Dict m] in
-  Log.info "> EXTENDED HANDSHAKE id:%s (%s)" (SHA1.to_hex_short p.id)
+  Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.id
     (String.concat " " (List.map (fun (n, (name, _)) -> Printf.sprintf "%s %d" name n) supported_extensions));
   send p @@ Wire.EXTENDED (0, Bcode.encode m)
 
@@ -436,55 +428,49 @@ let choke p =
   if not p.am_choking then begin
     p.am_choking <- true;
     Lwt_sequence.iter_node_l Lwt_sequence.remove p.peer_requests;
-    Log.info "> CHOKING id:%s" (SHA1.to_hex_short p.id);
     send p Wire.CHOKE
   end
 
 let unchoke p =
   if p.am_choking then begin
       p.am_choking <- false;
-      Log.info "> UNCHOKING id:%s" (SHA1.to_hex_short p.id);
       send p Wire.UNCHOKE
   end
 
 let interested p =
   if not p.am_interested then begin
       p.am_interested <- true;
-      Log.info "> INTERESTED id:%s" (SHA1.to_hex_short p.id);
       send p Wire.INTERESTED
   end
 
 let not_interested p =
   if p.am_interested then begin
       p.am_interested <- false;
-      Log.info "> NOT INTERESTED id:%s" (SHA1.to_hex_short p.id);
       send p Wire.NOT_INTERESTED
   end
 
 let have p i =
-  Log.info "> HAVE id:%s idx:%d" (SHA1.to_hex_short p.id) i;
   send p @@ Wire.HAVE i
 
 let have_bitfield p bits =
   (* check for redefined length FIXME *)
   Bits.set_length p.have (Bits.length bits);
   Bits.set_length p.blame (Bits.length bits);
-  Log.info "> BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id)
+  Log.info "> BITFIELD id:%a have:%d total:%d" SHA1.print_hex_short p.id
     (Bits.count_ones bits) (Bits.length bits);
   send p @@ Wire.BITFIELD bits
 
 let cancel p i o l =
-  Log.info "> CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o l;
+  (* Log.info "> CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o l; *)
   send p @@ Wire.CANCEL (i, o, l);
   try
     let n = Lwt_sequence.find_node_l (fun (i', o', l') -> i = i' && o' = o && l = l') p.requests in
     Lwt_sequence.remove n
   with
   | Not_found ->
-      Log.warn "! REQUEST NOT FOUND id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o l
+      Log.warn "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.print_hex_short p.id i o l
 
 let send_port p i =
-  Log.info "PORT id:%s port:%d" (SHA1.to_hex_short p.id) i;
   send p @@ Wire.PORT i
 
 let request_metadata_piece p i =
@@ -516,7 +502,7 @@ let send_ut_pex p added dropped =
       "added.f", Bcode.String (Cs.create_with (List.length added) 0);
       "dropped", Bcode.String (c dropped) ]
   in
-  Log.info "> PEX id:%s added:%d dropped:%d" (SHA1.to_hex_short p.id)
+  Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short p.id
     (List.length added) (List.length dropped);
   send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
@@ -560,21 +546,18 @@ let on_choke p =
 
 let on_unchoke p =
   if p.peer_choking then begin
-    Log.info "< UNCHOKE id:%s" (SHA1.to_hex_short p.id);
     p.peer_choking <- false;
     p.push @@ Unchoked
   end
 
 let on_interested p =
   if not p.peer_interested then begin
-    Log.info "< INTERESTED id:%s" (SHA1.to_hex_short p.id);
     p.peer_interested <- true;
     p.push @@ Interested
   end
 
 let on_not_interested p =
   if p.peer_interested then begin
-    Log.info "< NOT INTERESTED id:%s" (SHA1.to_hex_short p.id);
     p.peer_interested <- false;
     p.push @@ NotInterested
   end
@@ -583,7 +566,6 @@ let on_have p i =
   (* check for got_bitfield_already FIXME *)
   Bits.resize p.have (i + 1);
   if not (Bits.is_set p.have i) then begin
-    Log.info "< HAVE id:%s idx:%d" (SHA1.to_hex_short p.id) i;
     Bits.set p.have i;
     p.push @@ Have i
   end
@@ -592,13 +574,13 @@ let on_bitfield p b =
   (* check for redefinition *)
   Bits.set_length p.have (Bits.length b);
   Bits.blit b 0 p.have 0 (Bits.length b);
-  Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b);
+  (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
   p.push @@ HaveBitfield p.have
 
 let on_request p i off len =
   if not p.am_choking then begin
     let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
-    Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len;
+    (* Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
     p.push @@ BlockRequested (i, off, len)
   end
 
@@ -616,11 +598,10 @@ let on_piece p i off s =
   Bits.resize p.blame (i + 1);
   Bits.set p.blame i;
   (* TODO emit Downloaded event *)
-  Log.info "< PIECE id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off (Cstruct.len s);
   p.push @@ BlockReceived (i, off, s)
 
 let on_cancel p i off len =
-  Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len;
+  (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
   let n =
     Lwt_sequence.find_node_opt_l
       (fun (i', off', len') -> i = i && off = off' && len = len')
@@ -631,8 +612,8 @@ let on_cancel p i off len =
       (* FIXME broadcast event *)
       Lwt_sequence.remove n
   | None ->
-      Log.warn "! PEER REQUEST NOT FOUND id:%s idx:%d off:%d len:%d"
-        (SHA1.to_hex_short p.id) i off len
+      Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
+        SHA1.print_hex_short p.id i off len
 
 let on_extended_handshake p s =
   let bc = Bcode.decode s in
@@ -643,18 +624,17 @@ let on_extended_handshake p s =
   List.iter (fun (name, id) ->
     if id = 0 then Hashtbl.remove p.extensions name
     else Hashtbl.replace p.extensions name id) m;
-  Log.info "< EXTENDED HANDSHAKE id:%s (%s)" (SHA1.to_hex_short p.id)
+  Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.id
     (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
   if Hashtbl.mem p.extensions ut_metadata then
     p.push @@ AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)
 
 let on_extended p id data =
-  Log.info "< EXTENDED id:%s mid:%d" (SHA1.to_hex_short p.id) id;
+  Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.id id;
   let (_, f) = List.assoc id supported_extensions in
   f p data
 
 let on_port p i =
-  Log.info "< PORT id:%s port:%d" (SHA1.to_hex_short p.id) i;
   p.push @@ DHTPort i
 
 let on_message p m =
@@ -688,7 +668,7 @@ let decrypt = encrypt
 open Lwt.Infix
 
 let handle_err p fd e =
-  Log.error "ERROR id:%s exn:%S" (SHA1.to_hex_short p.id) (Printexc.to_string e);
+  Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short p.id (Printexc.to_string e);
   let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
   p.push (PeerDisconnected reqs);
   Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
@@ -700,12 +680,11 @@ let reader_loop p fd key =
     | 0 ->
         Lwt.fail End_of_file
     | n ->
-        (* Log.debug "[%s] read %d (out of possible %d) bytes, already have %d" *)
-        (*   (SHA1.to_hex_short p.id) n (Cstruct.len buf) (Cstruct.len data); *)
         let key, buf = decrypt key (Cstruct.sub buf 0 n) in
         let msgs, data = Wire.handle Cs.(data <+> buf) in
-        (* List.iter (fun m -> Log.debug "read message from [%s] : %s" (SHA1.to_hex_short p.id) *)
-        (*     (Wire.string_of_message m)) msgs; *)
+        List.iter
+          (fun m ->
+             Log.debug "[%a] --> %a" SHA1.print_hex_short p.id Wire.print m) msgs;
         List.iter (on_message p) msgs;
         loop key data
   in
@@ -714,7 +693,7 @@ let reader_loop p fd key =
 let writer_loop p fd key =
   let buf = Cstruct.create Wire.max_packet_len in
   let write m key =
-    (* Log.debug "sending message to [%s] : %s" (SHA1.to_hex_short p.id) (Wire.string_of_message m); *)
+    Log.debug "[%a] <-- %a" SHA1.print_hex_short p.id Wire.print m;
     let buf = Util.W.into_cstruct (Wire.writer m) buf in
     let key, buf = encrypt key buf in
     Lwt_cstruct.(complete (write fd) @@ buf) >>= fun () ->

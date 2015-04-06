@@ -63,15 +63,37 @@ let of_hex s =
   if String.length s <> 40 then invalid_arg "SHA1.of_hex";
   Cs.of_hex s
 
-let to_hex cs =
-  let buf = Buffer.create 40 in
+let bprint_hex b cs =
   for i = 0 to 19 do
-    Printf.bprintf buf "%02x" (Cstruct.get_uint8 cs i)
-  done;
-  Buffer.contents buf
+    Printf.bprintf b "%02x" (Cstruct.get_uint8 cs i)
+  done
 
-let to_hex_short cs =
-  String.sub (to_hex cs) (19-7) 7
+let sprint_hex =
+  let buf = Buffer.create 40 in
+  fun () cs ->
+    bprint_hex buf cs;
+    Buffer.contents buf
+
+let bprint_hex_short b cs =
+  for i = 19-6 to 19 do
+    Printf.bprintf b "%02x" (Cstruct.get_uint8 cs i)
+  done
+
+let sprint_hex_short =
+  let buf = Buffer.create 14 in
+  fun () cs ->
+    bprint_hex_short buf cs;
+    Buffer.contents buf
+
+let print_hex oc cs =
+  for i = 0 to 19 do
+    Printf.fprintf oc "%02x" (Cstruct.get_uint8 cs i)
+  done
+
+let print_hex_short oc cs =
+  for i = 19-6 to 19 do
+    Printf.fprintf oc "%02x" (Cstruct.get_uint8 cs i)
+  done
 
 let unbase32_char c =
   match c with

@@ -48,7 +48,7 @@ val offset : t -> int -> int -> int64
 val block_count : t -> int -> int
 (** How many blocks does the given piece have. *)
 
-val pp : Format.formatter -> t -> unit
+val print : out_channel -> t -> unit
 (** Pretty prints the metainfo. *)
 
 val hash : t -> int -> SHA1.t

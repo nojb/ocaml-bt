@@ -75,7 +75,7 @@ let parse s =
   Log.debug "parsing %S" s;
   try
     let m = parse s in
-    Log.debug "  xt = %s" (SHA1.to_hex m.xt);
+    Log.debug "  xt = %a" SHA1.print_hex m.xt;
     (match m.dn with Some dn -> Log.debug "  dn = %S" dn | None -> ());
     List.iter (fun tr -> Log.debug "  tr = %s" (Uri.to_string tr)) m.tr;
     `Ok m

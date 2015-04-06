@@ -55,7 +55,7 @@ let log_event = function
   | PeersReceived peers ->
       Log.debug "+ PEERS RECEIVED %d" (List.length peers)
   | HandshakeOk (_, _, _, _, id) ->
-      Log.info "+ HANDSHAKE SUCCESS id:%s" (SHA1.to_hex_short id)
+      Log.info "+ HANDSHAKE SUCCESS id:%a" SHA1.print_hex_short id
   | PeerConnected ((ip, p), _, dir) ->
       Log.info "+ CONNECT SUCCESS %s addr:%s port:%d"
         (match dir with Incoming -> "INCOMING" | Outgoing -> "OUTGOING")
@@ -279,8 +279,7 @@ let request p pieces =
     match request_active pieces (Peer.has p) with
     | Some (i, j) ->
         let off = j * block_size in
-        let len = pieces.(i).length mod block_size in
-        let len = if len = 0 then block_size else len in
+        let len = min block_size (pieces.(i).length - off) in
         Peer.request p i off len
     | None ->
         ()
@@ -322,12 +321,15 @@ let verify_piece store peers pieces i push =
     Lwt.wrap1 push @@ PieceFailed i
 
 let record_block store peers pieces i off s push =
+  let j = off / block_size in
   match pieces.(i).state with
-  | Pending
+  | Pending ->
+      Log.warn "Received block #%d for piece #%d, not requested ???" j i;
+      Lwt.return_unit
   | Verified ->
+      Log.warn "Received block #%d for piece #%d, already completed" j i;
       Lwt.return_unit
   | Active parts ->
-      let j = off / block_size in
       let c = parts.(j) in
       if c >= 0 then begin
         parts.(j) <- (-1);
@@ -336,7 +338,9 @@ let record_block store peers pieces i off s push =
             Peer.cancel p i j (Cstruct.len s)
         in
         if c > 1 then Hashtbl.iter cancel peers;
-        pieces.(i).have <- pieces.(i).have + 1
+        pieces.(i).have <- pieces.(i).have + 1;
+        Log.info "Received block #%d for piece #%d, have %d, missing %d"
+          j i pieces.(i).have (Array.length parts - pieces.(i).have)
       end;
       let off = Int64.(add pieces.(i).offset (of_int off)) in
       Store.write store off s >>= fun () ->
@@ -345,6 +349,9 @@ let record_block store peers pieces i off s push =
       else
         Lwt.return_unit
 
+let record_block store peers pieces i off s push =
+  Lwt.ignore_result (record_block store peers pieces i off s push)
+
 let request_rejected pieces (i, off, _) =
   match pieces.(i).state with
   | Verified
@@ -352,9 +359,6 @@ let request_rejected pieces (i, off, _) =
   | Active parts ->
       let j = off / block_size in
       if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
-
-let record_block store peers pieces i off s push =
-  Lwt.ignore_result (record_block store peers pieces i off s push)
 
 let share_torrent bt meta store pieces have peers =
   Log.info "TORRENT SHARE have:%d total:%d peers:%d"
@@ -653,7 +657,7 @@ module LPD  = struct
       "BT-SEARCH * HTTP/1.1\r\n\
        Host: %s:%u\r\n\
        Port: %u\r\n\
-       Infohash: %s\r\n\
+       Infohash: %a\r\n\
        \r\n\r\n" mcast_addr mcast_port
 
   let get h name =
@@ -702,7 +706,7 @@ module LPD  = struct
   let announce_delay = 5. *. 60.
 
   let announce fd port info_hash =
-    let msg = template port @@ SHA1.to_hex info_hash in
+    let msg = template port SHA1.sprint_hex info_hash in
     let sa = Lwt_unix.ADDR_INET (Unix.inet_addr_of_string mcast_addr, mcast_port) in
     let rec loop () =
       Lwt_unix.sendto fd msg 0 (String.length msg) [] sa >>= fun _ ->

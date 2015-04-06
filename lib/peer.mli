@@ -78,9 +78,6 @@ val strike : t -> int
 (** Mark this peer as having participated in a piece that failed its SHA1 hash
     check.  Returns the updated number of strikes. *)
 
-val to_string : t -> string
-(** Print out the peer's id (in shortened form) and address. *)
-
 val download_speed : t -> float
 
 val upload_speed : t -> float

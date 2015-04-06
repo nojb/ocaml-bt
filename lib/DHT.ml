@@ -366,7 +366,7 @@ end = struct
     let now = Unix.time () in
     if n.status = Good && now -. n.last > node_period then mark n Unknown;
     if n.status = Bad || (n.status = Pinged && now -. n.last > node_period) then begin
-      Log.debug "replace [%s] with %s" (string_of_node b.nodes.(i)) (SHA1.to_hex_short id);
+      Log.debug "replace [%s] with %a" (string_of_node b.nodes.(i)) SHA1.print_hex_short id;
       b.nodes.(i) <- make_node id addr status; (* replace *)
       touch b;
       raise Exit
@@ -374,7 +374,7 @@ end = struct
 
   let split_bucket b =
     let mid = split b.lo b.hi in
-    Log.debug "split [lo %s] [hi %s] [mid %s]" (SHA1.to_hex b.lo) (SHA1.to_hex b.hi) (SHA1.to_hex mid);
+    Log.debug "split [lo %a] [hi %a] [mid %a]" SHA1.print_hex b.lo SHA1.print_hex b.hi SHA1.print_hex mid;
     let nodes1, nodes2 = List.partition (fun n -> SHA1.compare n.id mid < 0) (Array.to_list b.nodes) in
     (* FIXME *)
     let n1 = { lo = b.lo; hi = mid; last_change = b.last_change; nodes = Array.of_list nodes1 } in
@@ -399,7 +399,7 @@ end = struct
               if inside b table.self && Z.gt (SHA1.distance b.lo b.hi) (Z.of_int 256) then
                 split_bucket b
               else begin
-                Log.debug "bucket full (%s)" (SHA1.to_hex_short id);
+                Log.debug "bucket full (%a)" SHA1.print_hex_short id;
                 raise Exit
               end
           | _ ->
@@ -409,7 +409,7 @@ end = struct
                 decr count;
                 mark n (match res with Some _ -> Good | None -> Bad);
                 if !count = 0 then begin (* retry *)
-                  Log.debug "all %d pinged, retry %s" (List.length unk) (SHA1.to_hex_short id);
+                  Log.debug "all %d pinged, retry %a" (List.length unk) SHA1.print_hex_short id;
                   touch b;
                   update table ping status id addr
                 end
@@ -529,13 +529,13 @@ type query =
 
 let string_of_query = function
   | Ping ->
-    "ping"
+      "ping"
   | FindNode id ->
-    Printf.sprintf "find_node %s" (SHA1.to_hex_short id)
+      Printf.sprintf "find_node %a" SHA1.sprint_hex_short id
   | GetPeers ih ->
-    Printf.sprintf "get_peers %s" (SHA1.to_hex_short ih)
+      Printf.sprintf "get_peers %a" SHA1.sprint_hex_short ih
   | Announce (ih, port, token) ->
-      Printf.sprintf "announce %s %d %S" (SHA1.to_hex_short ih) port token
+      Printf.sprintf "announce %a %d %S" SHA1.sprint_hex_short ih port token
 
 type addr = Unix.inet_addr * int
 
@@ -547,7 +547,7 @@ type response =
   | Peers of string * addr list * node_info list
 
 let string_of_node (id, (ip, port)) =
-  Printf.sprintf "%s (%s:%d)" (SHA1.to_hex_short id) (Unix.string_of_inet_addr ip) port
+  Printf.sprintf "%a (%s:%d)" SHA1.sprint_hex_short id (Unix.string_of_inet_addr ip) port
 
 let strl f l = "[" ^ String.concat " " (List.map f l) ^ "]"
 
@@ -886,7 +886,7 @@ let rec refresh dht =
     let id, addr = n in
     update dht Good id addr; (* replied *)
     if SHA1.compare id prev_id <> 0 then begin
-      Log.debug "refresh: node %s changed id (was %s)" (string_of_node n) (SHA1.to_hex_short prev_id);
+      Log.debug "refresh: node %s changed id (was %a)" (string_of_node n) SHA1.print_hex_short prev_id;
       update dht Bad prev_id addr
     end;
     Log.debug "refresh: got %d nodes from %s" (List.length l) (string_of_node n);
@@ -926,7 +926,7 @@ let rec expire_old_peers h =
   Lwt_unix.sleep expire_timer >>= fun () -> expire_old_peers h
 
 let start dht =
-  Log.debug "DHT size : %d self : %s" (Kademlia.size dht.rt) (SHA1.to_hex_short dht.id);
+  Log.debug "DHT size : %d self : %a" (Kademlia.size dht.rt) SHA1.print_hex_short dht.id;
   KRPC.start dht.krpc;
   Lwt.async (fun () -> refresh dht);
   Lwt.async (fun () -> expire_old_peers dht.torrents)
@@ -975,7 +975,7 @@ module BoundedSet = struct
 end
 
 let lookup_node dht ?nodes target =
-  Log.debug "lookup_node: %s" (SHA1.to_hex_short target);
+  Log.debug "lookup_node: %a" SHA1.print_hex_short target;
   let start = Unix.time () in
   let queried = Hashtbl.create 13 in
   let module BS = BoundedSet.Make
@@ -1017,7 +1017,7 @@ let lookup_node dht ?nodes target =
          let inserted, t = loop nodes in
          let s =
            if BS.is_empty found then ""
-           else Printf.sprintf ", best %s" (SHA1.to_hex_short (fst (BS.min_elt found)))
+           else Printf.sprintf ", best %a" SHA1.sprint_hex_short (fst (BS.min_elt found))
          in
          Log.debug "lookup_node: got %d nodes from %s, useful %d%s" (List.length nodes) (string_of_node n) inserted s;
          t)
@@ -1033,13 +1033,13 @@ let lookup_node dht ?nodes target =
     Lwt_list.iter_p (query false) nodes
   end >>= fun () ->
   let result = BS.elements found in
-  Log.debug "lookup_node %s done, queried %d, found %d, elapsed %ds"
-    (SHA1.to_hex_short target) (Hashtbl.length queried) (List.length result)
+  Log.debug "lookup_node %a done, queried %d, found %d, elapsed %ds"
+    SHA1.print_hex_short target (Hashtbl.length queried) (List.length result)
     (truncate (Unix.time () -. start));
   Lwt.return result
 
 let query_peers dht id k =
-  Log.debug "query_peers: start %s" (SHA1.to_hex_short id);
+  Log.debug "query_peers: start %a" SHA1.print_hex_short id;
   lookup_node dht id >>= fun nodes ->
   Log.debug "query_peers: found nodes %s" (strl string_of_node nodes);
   Lwt_list.iter_p begin fun n ->

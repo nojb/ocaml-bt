@@ -66,11 +66,14 @@ val generate : ?g:Nocrypto.Fortuna.g -> ?prefix:string -> unit -> t
 val of_hex : string -> t
 (** The hash with the given hexadecimal characters. *)
 
-val to_hex : t -> string
+val print_hex : out_channel -> t -> unit
 (** Convert the hash to 40 hexadecimal characters. *)
 
-val to_hex_short : t -> string
-(** The first 7 hexadecimal characters of the hash. *)
+val sprint_hex : unit -> t -> string
+
+val sprint_hex_short : unit -> t -> string
+
+val print_hex_short : out_channel -> t -> unit
 
 val of_base32 : string -> t
 (** The hash with the given base32 characters. *)

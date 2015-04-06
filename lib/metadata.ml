@@ -70,7 +70,7 @@ let either f g x =
 (*     let announce = Bcode.find "announce" bc |> Bcode.to_string in *)
 (*     [[Uri.of_string announce]] *)
 (*   in *)
-                      (** announce_list takes precedence over announce - see BEP 12 *)
+(** announce_list takes precedence over announce - see BEP 12 *)
 (*   either announce_list announce () *)
 
 let split_at n cs =
@@ -95,9 +95,9 @@ let files bc =
   let many_files () =
     Bcode.find "files" bc |> Bcode.to_list |>
     List.map (fun d ->
-        let file_size = Bcode.find "length" d |> Bcode.to_int64 in
-        let path = Bcode.find "path" d |> Bcode.to_list |> List.map Bcode.to_string in
-        {file_size; file_path = name :: path})
+      let file_size = Bcode.find "length" d |> Bcode.to_int64 in
+      let path = Bcode.find "path" d |> Bcode.to_list |> List.map Bcode.to_string in
+      {file_size; file_path = name :: path})
   in
   let single_file () =
     let n = Bcode.find "length" bc |> Bcode.to_int64 in
@@ -129,14 +129,6 @@ and pp_tier fmt = function
   | [x] -> fprintf fmt "%s" (Uri.to_string x)
   | x :: xs -> fprintf fmt "%s;@ %a" (Uri.to_string x) pp_tier xs
 
-let pp_files fmt files =
-  let rec loop i fmt = function
-  | [] -> ()
-  | fi :: files ->
-      fprintf fmt "%d. %s (%s)@,%a" i (String.concat "/" fi.file_path)
-        (Util.string_of_file_size fi.file_size) (loop (i+1)) files
-  in loop 1 fmt files
-
 let create bc =
   let name = name bc in
   let hashes = hashes bc in
@@ -162,16 +154,22 @@ let piece_length m i =
 let offset m i off =
   Int64.(add (mul (of_int i) (of_int m.piece_length)) (of_int off))
 
-let pp fmt info =
-  Format.fprintf fmt "@[<v>";
-  Format.fprintf fmt "             name: %s@," info.name;
-  Format.fprintf fmt "        info hash: %s@," (SHA1.to_hex info.info_hash);
+let print oc info =
+  Printf.fprintf oc "             name: %s\n" info.name;
+  Printf.fprintf oc "        info hash: %a\n" SHA1.print_hex info.info_hash;
   (* Format.fprintf fmt "    announce-list: @[<v>%a@]@," pp_announce_list announce_list; *)
-  Format.fprintf fmt "     total length: %s@," (Util.string_of_file_size info.total_length);
-  Format.fprintf fmt "     piece length: %s@," (Util.string_of_file_size (Int64.of_int info.piece_length));
-  Format.fprintf fmt " number of pieces: %d@," (Array.length info.hashes);
-  Format.fprintf fmt "            files: @[<v>%a@]" pp_files info.files;
-  Format.fprintf fmt "@]@."
+  Printf.fprintf oc "     total length: %s\n" (Util.string_of_file_size info.total_length);
+  Printf.fprintf oc "     piece length: %s\n" (Util.string_of_file_size (Int64.of_int info.piece_length));
+  Printf.fprintf oc " number of pieces: %d\n" (Array.length info.hashes);
+  let rec loop i = function
+    | [] -> ()
+    | fi :: files ->
+  Printf.fprintf oc "          file %d: %s (%s)\n" i (String.concat "/" fi.file_path)
+    (Util.string_of_file_size fi.file_size);
+  loop (i+1) files
+  in
+  loop 0 info.files;
+  flush oc
 
 let block_count meta i =
   let len = piece_length meta i in
