@@ -208,6 +208,7 @@ let request_endgame pieces has =
           if has i then
             match request_block parts true with
             | Some j ->
+                Log.debug "Requesting ENDGAME block #%d of #%d" j i;
                 Some (i, j)
             | None ->
                 None
@@ -232,6 +233,7 @@ let request_pending pieces has start finish =
           | None ->
               assert false
           | Some j ->
+              Log.debug "Requesting PENDING block #%d of #%d" j i;
               Some (i, j)
           end
       | Active _
@@ -268,6 +270,7 @@ let request_active pieces has =
             | None ->
                 loop (i + 1)
             | Some j ->
+                Log.debug "Requesting ACTIVE block #%d of #%d" j i;
                 Some (i, j)
           else
             loop (i + 1)
