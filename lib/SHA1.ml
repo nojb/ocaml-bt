@@ -78,12 +78,12 @@ let sprint_hex =
     Buffer.contents buf
 
 let bprint_hex_short b cs =
-  for i = 19-6 to 19 do
+  for i = 19-3 to 19 do
     Printf.bprintf b "%02x" (Cstruct.get_uint8 cs i)
   done
 
 let sprint_hex_short =
-  let buf = Buffer.create 14 in
+  let buf = Buffer.create 8 in
   fun () cs ->
     bprint_hex_short buf cs;
     Buffer.contents buf
@@ -94,7 +94,7 @@ let print_hex oc cs =
   done
 
 let print_hex_short oc cs =
-  for i = 19-6 to 19 do
+  for i = 19-3 to 19 do
     Printf.fprintf oc "%02x" (Cstruct.get_uint8 cs i)
   done
 
