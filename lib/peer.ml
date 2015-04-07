@@ -21,7 +21,6 @@
 
 module Log  = Log.Make (struct let section = "[Peer]" end)
 module Cs   = Nocrypto.Uncommon.Cs
-module ARC4 = Nocrypto.Cipher_stream.ARC4
 
 type addr = Unix.inet_addr * int
 
@@ -656,82 +655,65 @@ let on_message p m =
 
 (* Event loop *)
 
-let encrypt key cs =
-  match key with
-  | None -> None, cs
-  | Some key ->
-      let { ARC4.key; message = cs } = ARC4.encrypt ~key cs in
-      Some key, cs
-
-let decrypt = encrypt
-
 open Lwt.Infix
 
-let handle_err p fd e =
+let handle_err p sock e =
   Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short p.id (Printexc.to_string e);
   let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
   p.push (PeerDisconnected reqs);
-  Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
+  Lwt.catch (fun () -> Util.Socket.close sock) (fun _ -> Lwt.return_unit)
 
-let reader_loop p fd key =
+let reader_loop p sock =
   let buf = Cstruct.create Wire.max_packet_len in
-  let rec loop key data =
-    Lwt_unix.with_timeout keepalive_delay (fun () -> Lwt_cstruct.read fd buf) >>= function
+  let rec loop data =
+    Lwt_unix.with_timeout keepalive_delay (fun () -> Util.Socket.read sock buf) >>= function
     | 0 ->
         Lwt.fail End_of_file
     | n ->
-        let key, buf = decrypt key (Cstruct.sub buf 0 n) in
-        let msgs, data = Wire.handle Cs.(data <+> buf) in
+        let msgs, data = Wire.handle Cs.(data <+> Cstruct.sub buf 0 n) in
         List.iter
           (fun m ->
              Log.debug "[%a] --> %a" SHA1.print_hex_short p.id Wire.print m) msgs;
         List.iter (on_message p) msgs;
-        loop key data
+        loop data
   in
-  loop key Cs.empty
+  loop Cs.empty
 
-let writer_loop p fd key =
+let writer_loop p sock =
   let buf = Cstruct.create Wire.max_packet_len in
-  let write m key =
+  let write m =
     Log.debug "[%a] <-- %a" SHA1.print_hex_short p.id Wire.print m;
     let buf = Util.W.into_cstruct (Wire.writer m) buf in
-    let key, buf = encrypt key buf in
-    Lwt_cstruct.(complete (write fd) @@ buf) >>= fun () ->
-    Lwt.return key
+    Lwt_cstruct.complete (Util.Socket.write sock) buf
   in
-  let rec loop key =
+  let rec loop () =
     Lwt.pick
       [ (Lwt_condition.wait p.send >>= fun () -> Lwt.return `Ok);
         (Lwt_unix.sleep keepalive_delay >>= fun () -> Lwt.return `Timeout) ]
     >>= function
     | `Ok ->
-        let rec loop' key =
+        let rec loop' () =
           match Lwt_sequence.take_opt_l p.queue with
           | Some m ->
-              write m key >>= loop'
+              write m >>= loop'
           | None ->
-              Lwt.return key
+              Lwt.return_unit
         in
-        loop' key >>= loop
+        loop' () >>= loop
     | `Timeout ->
-        write Wire.KEEP_ALIVE key >>=
+        write Wire.KEEP_ALIVE >>=
         loop
   in
-  loop key
+  loop ()
 
-let start p fd mode =
-  let my_key, her_key =
-    match mode with
-    | None -> None, None
-    | Some (my_key, her_key) -> Some my_key, Some her_key
-  in
-  Lwt.pick [reader_loop p fd her_key; writer_loop p fd my_key]
+let start p sock =
+  Lwt.ignore_result begin
+    Lwt.catch
+      (fun () -> Lwt.pick [reader_loop p sock; writer_loop p sock])
+      (handle_err p sock)
+  end
 
-let start p fd mode =
-  Lwt.ignore_result
-    (Lwt.catch (fun () -> start p fd mode) (handle_err p fd))
-
-let create id push fd mode =
+let create id push sock =
   let p =
     { id;
       am_choking = true;
@@ -754,6 +736,6 @@ let create id push fd mode =
       queue = Lwt_sequence.create ();
       push }
   in
-  start p fd mode;
+  start p sock;
   extended_handshake p;
   p

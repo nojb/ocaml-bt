@@ -80,3 +80,67 @@ end = struct
     f cs 0;
     Cstruct.sub cs 0 l
 end
+
+module ARC4 = Nocrypto.Cipher_stream.ARC4
+
+module Socket : sig
+  type t
+  val tcp : Lwt_unix.file_descr -> t
+  val encrypted : t -> ARC4.key -> ARC4.key -> t
+  val close : t -> unit Lwt.t
+  val read : t -> Cstruct.t -> int Lwt.t
+  val write : t -> Cstruct.t -> int Lwt.t
+  (* WARNING : this can modify the given buffer !! *)
+end = struct
+
+  module type S = sig
+    type t
+    val close : t -> unit Lwt.t
+    val read : t -> Cstruct.t -> int Lwt.t
+    val write : t -> Cstruct.t -> int Lwt.t
+  end
+
+  type t = Sock : 'a * (module S with type t = 'a) -> t
+
+  let close (Sock (sock, (module S))) = S.close sock
+  let read (Sock (sock, (module S))) buf = S.read sock buf
+  let write (Sock (sock, (module S))) buf = S.write sock buf
+
+  module Encrypt (S : S) = struct
+
+    type t =
+      { sock : S.t;
+        mutable enc : ARC4.key;
+        mutable dec : ARC4.key }
+
+    open Lwt.Infix
+
+    let create sock enc dec =
+      { sock; enc; dec }
+    let close t = S.close t.sock
+    let read t buf =
+      S.read t.sock buf >>= fun n ->
+      let { ARC4.key; message } = ARC4.decrypt ~key:t.dec (Cstruct.sub buf 0 n) in
+      t.dec <- key;
+      Cstruct.blit message 0 buf 0 n;
+      Lwt.return n
+    let write t buf =
+      let { ARC4.key; message } = ARC4.encrypt ~key:t.enc buf in
+      t.enc <- key;
+      Lwt_cstruct.complete (S.write t.sock) message >>= fun () ->
+      Lwt.return (Cstruct.len buf)
+  end
+
+  module TCP = struct
+    type t = Lwt_unix.file_descr
+    let close = Lwt_unix.close
+    let read = Lwt_cstruct.read
+    let write = Lwt_cstruct.write
+  end
+
+  let encrypted (Sock (sock, (module S))) enc dec =
+    let module E = Encrypt (S) in
+    let sock = E.create sock enc dec in
+    Sock (sock, (module E))
+  let tcp fd = Sock (fd, (module TCP))
+end

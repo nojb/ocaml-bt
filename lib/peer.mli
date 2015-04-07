@@ -21,8 +21,6 @@
 
 (** Peer *)
 
-module ARC4 = Nocrypto.Cipher_stream.ARC4
-
 type addr = Unix.inet_addr * int
 
 type pex_flags =
@@ -51,7 +49,7 @@ type event =
 
 type t
 
-val create : SHA1.t -> (event -> unit) -> Lwt_unix.file_descr -> (ARC4.key * ARC4.key) option -> t
+val create : SHA1.t -> (event -> unit) -> Util.Socket.t -> t
 
 val id : t -> SHA1.t
 (** The peer ID. *)

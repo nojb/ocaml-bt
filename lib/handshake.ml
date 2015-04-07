@@ -27,7 +27,8 @@ module ARC4 = Nocrypto.Cipher_stream.ARC4
 module SHA1 = Nocrypto.Hash.SHA1
 module Cs   = Nocrypto.Uncommon.Cs
 
-let () = Random.self_init ();
+let () =
+  Random.self_init ();
   Nocrypto.Rng.reseed (Cstruct.of_string (string_of_int (Random.bits ())))
 
 (* let crypto_plain = 0x01l *)
@@ -223,181 +224,6 @@ let handle t buf =
   | Server state ->
       handle_server t state
 
-  (* (\* match hs.mode with *\) *)
-  (* (\* | Plain -> *\) *)
-  (* (\*   send_handshake hs >>= fun () -> *\) *)
-  (* (\*   read_handshake hs >|= fun (id, exts) -> *\) *)
-  (* (\*   hs.callback (Success (id, exts)) *\) *)
-  (* (\* | Crypto mode -> *\) *)
-  (*   let require = match mode with Require -> true | Prefer -> false in *)
-  (*   Lwt.catch begin fun () -> *)
-  (*     send_dh_key hs >>= fun () -> *)
-  (*     read_dh_key hs >>= fun yb -> *)
-  (*     let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key yb in *)
-  (*     send_payload hs shared_secret >>= fun () -> *)
-  (*     sync_and_read_vc hs shared_secret >>= fun dec -> *)
-  (*     IO.enable_decryption hs.sock dec; *)
-  (*     IO.read_int32 hs.sock >>= fun crypto_select -> *)
-  (*     skip_pad hs >>= fun () -> *)
-  (*     match crypto_select with *)
-  (*     | 0x01l (\* PLAIN *\) -> *)
-  (*       if require then Lwt.fail (Failure "crypto required") *)
-  (*       else begin *)
-  (*         IO.disable_encryption hs.sock; *)
-  (*         IO.disable_decryption hs.sock; *)
-  (*         read_handshake hs >|= fun (id, exts) -> *)
-  (*         hs.callback (Success (id, exts)) *)
-  (*       end *)
-  (*     | 0x02l (\* RC4 *\) -> *)
-  (*       read_handshake hs >|= fun (id, exts) -> *)
-  (*       hs.callback (Success (id, exts)) *)
-  (*     | _ -> *)
-  (*       Lwt.fail (Failure (Printf.sprintf "unknown crypto_select(%lX)" crypto_select)) *)
-  (*   end begin fun e -> *)
-  (*     if require then *)
-  (*       Lwt.fail e *)
-  (*     else *)
-  (*       IO.reconnect hs.sock >>= fun () -> *)
-  (*       send_handshake hs >>= fun () -> *)
-  (*       read_handshake hs >|= fun (id, exts) -> *)
-  (*       hs.callback (Success (id, exts)) *)
-  (*   end *)
-        (* | PreferCrypto -> *)
-  (*   Lwt.catch begin fun () -> *)
-  (*     send_dh_key hs >>= fun () -> *)
-  (*     read_dh_key hs >>= fun yb -> *)
-  (*     let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key yb in *)
-  (*     send_payload hs shared_secret >>= fun () -> *)
-  (*     read_vc hs shared_secret >>= fun _ -> *)
-  (*     read_handshake hs >|= fun (id, exts) -> *)
-  (*     hs.callback (Success (id, exts)) *)
-  (*   end begin fun e -> *)
-  (*     Log.debug ~exn:e "error while trying crypto connection; retrying with plain..."; *)
-  (*     IO.reconnect hs.sock >>= fun () -> *)
-  (*     let m = handshake_message hs.id hs.skey in *)
-  (*     IO.write_string hs.sock m >>= fun () -> *)
-  (*     read_handshake hs >|= fun (id, exts) -> *)
-  (*     hs.callback (Success (id, exts)) *)
-  (*   end *)
-
-(* let sync_and_read_req1 hs shared_secret = *)
-(*   let buf = String.create 20 in *)
-(*   let rec loop i = *)
-(*     if i >= max_pad_len then Lwt.fail (Failure "HASH('req1', S) not found") else *)
-(*     if buf = SHA1.to_bin (SHA1.strings ["req1"; shared_secret]) then Lwt.return () *)
-(*     else begin *)
-(*       String.blit buf 1 buf 0 19; *)
-(*       IO.really_read hs.sock buf 19 1 >>= fun () -> *)
-(*       loop (i+1) *)
-(*     end *)
-(*   in *)
-(*   loop 0 *)
-
-(* let read_req2_xor_req3 hs shared_secret = *)
-(*   IO.read_string hs.sock 20 >>= fun s -> *)
-(*   if s = req2_xor_req3 hs shared_secret then Lwt.return () *)
-(*   else Lwt.fail (Failure "expected HASH('req2', SKEY) xor HASH('req3', S)") *)
-
-(* let read_vc hs = *)
-(*   IO.read_string hs.sock (String.length vc) >>= fun s -> *)
-(*   if s = vc then Lwt.return () else Lwt.fail (Failure "missing ENCRYPT(VC)") *)
-
-(* let read_crypto_provide hs shared_secret = *)
-(*   sync_and_read_req1 hs shared_secret >>= fun () -> *)
-(*   read_req2_xor_req3 hs shared_secret >>= fun () -> *)
-(*   let key = arcfour_key keyA shared_secret hs.skey in *)
-(*   let c = arcfour key in *)
-(*   IO.enable_decryption hs.sock c; *)
-(*   read_vc hs >>= fun () -> *)
-(*   IO.read_int32 hs.sock *)
-
-(* let read_ia_into hs m ofs = *)
-(*   IO.read_int16 hs.sock >>= fun ia_len -> *)
-(*   IO.really_read hs.sock m ofs ia_len >>= fun () -> *)
-(*   Lwt.return ia_len *)
-
-(* let assert_crypto crypto_provide mode = *)
-(*   match mode, crypto_provide with *)
-(*   | Require, 0x2l *)
-(*   | Require, 0x3l -> *)
-(*     Lwt.return () *)
-(*   | Require, 0x1l -> *)
-(*     Lwt.fail *)
-(*       (Failure (Printf.sprintf "crypto_provide(%lX) is not RC4(%lX)" crypto_provide crypto_rc4)) *)
-(*   | Prefer, 0x1l *)
-(*   | Prefer, 0x2l *)
-(*   | Prefer, 0x3l -> *)
-(*     Lwt.return () *)
-(*   | _ -> *)
-(*     Lwt.fail (Failure (Printf.sprintf "unknown crypto_provide(%lX)" crypto_provide)) *)
-
-(* let run_incoming hs = *)
-(*   match hs.mode with *)
-(*   | Plain -> *)
-(*     read_handshake hs >>= fun (id, exts) -> *)
-(*     send_handshake hs >|= fun () -> *)
-(*     hs.callback (Success (id, exts)) *)
-(*   | Crypto mode -> *)
-(*     let require = match mode with Require -> true | Prefer -> false in *)
-(*     Lwt.catch begin fun () -> *)
-(*       read_dh_key hs >>= fun ya -> *)
-(*       send_dh_key hs >>= fun () -> *)
-(*       let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key ya in *)
-(*       read_crypto_provide hs shared_secret >>= fun crypto_provide -> *)
-(*       assert_crypto crypto_provide mode >>= fun () -> *)
-(*       skip_pad hs >>= fun () -> *)
-(*       let m = String.create handshake_len in *)
-(*       read_ia_into hs m 0 >>= fun ia_len -> *)
-(*       crypto_select hs.mode crypto_provide >>= fun crypto_select -> *)
-(*       let key = arcfour_key keyB shared_secret hs.skey in *)
-(*       let c = arcfour key in *)
-(*       IO.enable_encryption hs.sock c; *)
-(*       IO.write_string hs.sock vc >>= fun () -> *)
-(*       IO.write_int32 hs.sock crypto_select >>= fun () -> *)
-(*       send_random_padding hs >>= fun () -> *)
-(*       if crypto_select = crypto_plain then begin *)
-(*         IO.disable_encryption hs.sock; *)
-(*         IO.disable_decryption hs.sock *)
-(*       end; *)
-(*       let d = handshake_len - ia_len in *)
-(*       IO.really_read hs.sock m ia_len d >>= fun () -> *)
-(*       parse_handshake hs m >|= fun (id, exts) -> *)
-(*       hs.callback (Success (id, exts)) *)
-(*     end begin fun e -> *)
-(*       if require then *)
-(*         Lwt.fail e *)
-(*       else (\* FIXME *\) *)
-(*         IO.reconnect hs.sock >>= fun () -> *)
-(*         send_handshake hs >>= fun () -> *)
-(*         read_handshake hs >|= fun (id, exts) -> *)
-(*         hs.callback (Success (id, exts)) *)
-(*     end *)
-(*   (\* | Crypto mode -> *\) *)
-(*   (\*   Lwt.catch begin fun () -> *\) *)
-(*   (\*     read_dh_key hs >>= fun ya -> *\) *)
-(*   (\*     let shared_secret = Cryptokit.DH.shared_secret dh_params hs.private_key ya in *\) *)
-(*   (\*     send_dh_key hs >>= fun () -> *\) *)
-(*   (\*     read_crypto_provide hs shared_secret >>= fun crypto_provide -> *\) *)
-(*   (\*     skip_pad_c hs >>= fun () -> *\) *)
-(*   (\*     let m = String.create handshake_len in *\) *)
-(*   (\*     IO.read_int16 hs.sock >>= fun ia_len -> *\) *)
-(*   (\*     IO.really_read hs.sock m 0 ia_len >>= fun () -> *\) *)
-(*   (\*     assert_crypto crypto_provide crypto_rc4 >>= fun () -> *\) *)
-(*   (\*     send_vc_crypto_select_pad_d hs >>= fun () -> *\) *)
-(*   (\*     let ia_len = String.length ia in *\) *)
-(*   (\*     let d = handshake_len - ia_len in *\) *)
-(*   (\*     IO.really_read hs.sock m ia_len d >>= fun () -> *\) *)
-(*   (\*     parse_handshake m >>= fun (id, exts) -> *\) *)
-(*   (\*     hs.callback (Success (id, exts)) *\) *)
-(*   (\*   end begin fun e -> *\) *)
-(*   (\*     (\\* Log.debug ~exn:e "error while trying crypto connection; retrying with plain..."; *\\) *\) *)
-(*   (\*     (\\* IO.reconnect hs.sock >>= fun () -> *\\) *\) *)
-(*   (\*     (\\* let m = handshake_message hs.id hs.skey in *\\) *\) *)
-(*   (\*     (\\* IO.write_string hs.sock m >>= fun () -> *\\) *\) *)
-(*   (\*     (\\* read_handshake hs >|= fun (id, exts) -> *\\) *\) *)
-(*   (\*     (\\* hs.callback (Success (id, exts)) *\\) *\) *)
-(*   (\*   end *\) *)
-
 type ret =
   [ `Ok of t * Cstruct.t option
   | `Success of (ARC4.key * ARC4.key) option * Cstruct.t
@@ -435,15 +261,19 @@ let negotiate fd t =
             loop (handle t (Cstruct.sub read_buf 0 n))
         end
     | `Error err ->
-        Log.error "exn : %S" err;
         Lwt.fail (Failure err)
     | `Success (mode, rest) ->
-        Lwt.return (`Ok (mode, rest))
+        Lwt.return (mode, rest)
   in
   loop t
 
-(* let outgoing ~info_hash fd mode = *)
-(*   negotiate fd (outgoing ~info_hash mode) *)
+let negotiate fd t =
+  Lwt.try_bind
+    (fun () -> negotiate fd t)
+    (fun (mode, rest) -> Lwt.return (`Ok (mode, rest)))
+    (fun e ->
+       Log.error "%s" (Printexc.to_string e);
+       Lwt.return `Failed)
 
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
@@ -478,26 +308,26 @@ let parse_handshake cs =
       `Error (Printf.sprintf "bad protocol length %d" n)
 
 type result =
-  | Ok of (ARC4.key * ARC4.key) option * Bits.t * S.t
+  | Ok of Util.Socket.t * Bits.t * S.t
   | Failed
 
-let outgoing ~id ~info_hash (ip, port) fd =
+let outgoing ~id ~info_hash sock =
   (* Handshake.(outgoing ~info_hash fd Both) >>= function *)
   (* | `Ok (mode, rest) -> *)
-  let mode = None in
+  (* let mode = None in *)
   let rest = Cs.empty in
-  Lwt_cstruct.complete (Lwt_cstruct.write fd) (handshake_message id info_hash) >>= fun () ->
+  Lwt_cstruct.complete (Util.Socket.write sock) (handshake_message id info_hash) >>= fun () ->
   (* Log.debug "[%s:%d] Sent handshake" (Unix.string_of_inet_addr ip) port; *)
   assert (Cstruct.len rest <= handshake_len);
   let hs = Cstruct.create handshake_len in
   Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
-  Lwt_cstruct.complete (Lwt_cstruct.read fd) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
+  Lwt_cstruct.complete (Util.Socket.read sock) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
   (* Log.debug "[%s:%d] Read handshake" (Unix.string_of_inet_addr ip) port; *)
   begin match parse_handshake hs with
   | `Ok (ext, info_hash', peer_id) ->
       (* Log.debug "[%s:%d] Parsed handshake" (Unix.string_of_inet_addr ip) port; *)
       if S.equal info_hash info_hash' then begin
-        Lwt.return (mode, ext, peer_id)
+        Lwt.return (sock, ext, peer_id)
       end else
         Lwt.fail (Failure "bad info-hash")
   | `Error err ->
@@ -506,12 +336,12 @@ let outgoing ~id ~info_hash (ip, port) fd =
   (* | `Error err -> *)
 (* Lwt.fail (Failure err) *)
 
-let outgoing ~id ~info_hash addr fd push =
+let outgoing ~id ~info_hash sock push =
   Lwt.try_bind
     (fun () ->
-       outgoing ~id ~info_hash addr fd)
-    (fun (mode, ext, peer_id) ->
-       Lwt.wrap1 push @@ Ok (mode, ext, peer_id))
+       outgoing ~id ~info_hash sock)
+    (fun (sock, ext, peer_id) ->
+       Lwt.wrap1 push @@ Ok (sock, ext, peer_id))
     (fun e ->
        Log.error "exn %s" (Printexc.to_string e);
        Lwt.wrap1 push @@ Failed) |> Lwt.ignore_result

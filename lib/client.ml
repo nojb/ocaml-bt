@@ -47,14 +47,14 @@ type event =
   | PieceVerified of int
   | PieceFailed of int
   | HandshakeFailed of addr
-  | HandshakeOk of addr * (ARC4.key * ARC4.key) option * Lwt_unix.file_descr * Bits.t * SHA1.t
+  | HandshakeOk of addr * Util.Socket.t * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
 
 let log_event = function
   | PeersReceived peers ->
       Log.debug "+ PEERS RECEIVED %d" (List.length peers)
-  | HandshakeOk (_, _, _, _, id) ->
+  | HandshakeOk (_, _, _, id) ->
       Log.info "+ HANDSHAKE SUCCESS id:%a" SHA1.print_hex_short id
   | PeerConnected ((ip, p), _, dir) ->
       Log.info "+ CONNECT SUCCESS %s addr:%s port:%d"
@@ -88,15 +88,15 @@ type t =
 
 let connect_to_peer ~id ~info_hash addr fd push =
   let push = function
-    | Handshake.Ok (mode, ext, peer_id) ->
-        push (HandshakeOk (addr, mode, fd, ext, peer_id))
+    | Handshake.Ok (sock, ext, peer_id) ->
+        push (HandshakeOk (addr, sock, ext, peer_id))
     | Handshake.Failed ->
         push (HandshakeFailed addr)
   in
-  Handshake.outgoing ~id ~info_hash addr fd push
+  Handshake.outgoing ~id ~info_hash (Util.Socket.tcp fd) push
 
-let welcome push mode fd exts id =
-  Peer.create id (fun e -> push (PeerEvent (id, e))) fd mode
+let welcome push sock exts id =
+  Peer.create id (fun e -> push (PeerEvent (id, e))) sock
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
 
 let rechoke_compare (p1, salt1) (p2, salt2) =
@@ -468,9 +468,9 @@ let share_torrent bt meta store pieces have peers =
         (* FIXME FIXME *)
         loop ()
 
-    | HandshakeOk (addr, mode, sock, exts, id) ->
+    | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = welcome bt.push mode sock exts id in
+        let p = welcome bt.push sock exts id in
         Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
         update_interest pieces p;
@@ -550,9 +550,9 @@ let rec fetch_metadata bt =
         List.iter (PeerMgr.add bt.peer_mgr) addrs;
         loop m
 
-    | _, HandshakeOk (addr, mode, fd, exts, id) ->
+    | _, HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = welcome bt.push mode fd exts id in
+        let p = welcome bt.push sock exts id in
         Hashtbl.replace peers id p;
         loop m
 

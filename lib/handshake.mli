@@ -19,8 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module ARC4 = Nocrypto.Cipher_stream.ARC4
-
 type addr = Unix.inet_addr * int
 
 (* type encryption_mode = *)
@@ -29,7 +27,7 @@ type addr = Unix.inet_addr * int
 (*   | Plain *)
 
 type result =
-  | Ok of (ARC4.key * ARC4.key) option * Bits.t * SHA1.t
+  | Ok of Util.Socket.t * Bits.t * SHA1.t
   | Failed
 
-val outgoing : id:SHA1.t -> info_hash:SHA1.t -> addr -> Lwt_unix.file_descr -> (result -> unit) -> unit
+val outgoing : id:SHA1.t -> info_hash:SHA1.t -> Util.Socket.t -> (result -> unit) -> unit
