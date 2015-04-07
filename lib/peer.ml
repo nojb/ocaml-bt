@@ -245,9 +245,6 @@ end = struct
 end
 
 let keepalive_delay = 20. (* FIXME *)
-let request_pipeline_max = 5
-let info_piece_size = 16 * 1024
-let default_block_size = 16 * 1024
 
 type event =
   | Choked of (int * int * int) list
@@ -590,8 +587,11 @@ let on_piece p i off s =
       (fun (i', off', len') -> i = i && off = off' && len' = Cstruct.len s)
       p.requests
   with
-  | None -> ()
-  | Some n -> Lwt_sequence.remove n
+  | None ->
+      Log.warn "! Received peer block #%d of #%d which we were not expecting"
+        (off / (16 * 1024)) i
+  | Some n ->
+      Lwt_sequence.remove n
   end;
   p.downloaded <- Int64.add p.downloaded (Int64.of_int @@ Cstruct.len s);
   Speedometer.add p.download (Cstruct.len s);
@@ -705,8 +705,14 @@ let writer_loop p fd key =
         (Lwt_unix.sleep keepalive_delay >>= fun () -> Lwt.return `Timeout) ]
     >>= function
     | `Ok ->
-        Lwt_sequence.fold_l (fun m t -> t >>= write m) p.queue (Lwt.return key) >>=
-        loop
+        let rec loop' key =
+          match Lwt_sequence.take_opt_l p.queue with
+          | Some m ->
+              write m key >>= loop'
+          | None ->
+              Lwt.return key
+        in
+        loop' key >>= loop
     | `Timeout ->
         write Wire.KEEP_ALIVE key >>=
         loop
