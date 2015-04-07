@@ -51,12 +51,11 @@ let rec connect_to_peer sw addr =
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
   Lwt.catch
     (fun () ->
-       Log.info "[%s:%d] Connecting..." (Unix.string_of_inet_addr ip) port;
+       Log.info "Connecting to %s:%d..." (Unix.string_of_inet_addr ip) port;
        Lwt_unix.connect fd sa >>= fun () ->
-       Log.info "[%s:%d] Connected." (Unix.string_of_inet_addr ip) port;
        Lwt.wrap2 sw.push addr fd)
     (fun e ->
-       Log.error "[%s:%d] exn %s" (Unix.string_of_inet_addr ip) port (Printexc.to_string e);
+       Log.error "Connection to %s:%d failed: %s" (Unix.string_of_inet_addr ip) port (Printexc.to_string e);
        Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
        Lwt.wrap2 handshake_failed sw addr)
 
@@ -83,13 +82,13 @@ and add sw addr =
 and remove sw addr =
   let p = H.find sw.peers addr in
   if not p.reconnect || p.retries >= List.length reconnect_wait then begin
-    Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+    (* Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
     H.remove sw.peers addr
   end else begin
     p.retries <- p.retries + 1;
     p.timeout <- List.nth reconnect_wait p.retries;
-    Log.debug "SWARM RETRY addr:%s port:%d retries:%d wait:%.0f"
-      (Unix.string_of_inet_addr (fst addr)) (snd addr) p.retries p.timeout;
+    Log.debug "Will retry to connect to %s:%d afer %.0fs"
+      (Unix.string_of_inet_addr (fst addr)) (snd addr) p.timeout;
     Queue.push addr sw.queue
   end
 
