@@ -27,7 +27,7 @@ type addr = Unix.inet_addr * int
 
 type swarm
 
-val create : ?size:int -> (addr -> Lwt_unix.file_descr -> unit) -> swarm
+val create : ?size:int -> (addr -> float -> unit) -> swarm
 
 val add : swarm -> addr -> unit
 

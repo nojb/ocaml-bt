@@ -19,10 +19,13 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module L    = Log
 module Log  = Log.Make (struct let section = "[Handshake]" end)
 module Cs   = Nocrypto.Uncommon.Cs
 
 module Encryption = struct
+
+  module Log  = L.Make (struct let section = "[Encryption]" end)
   module Dh   = Nocrypto.Dh
   module Z    = Nocrypto.Numeric.Z
   module ARC4 = Nocrypto.Cipher_stream.ARC4
@@ -240,45 +243,43 @@ module Encryption = struct
     `Error "not implemented"
 
   type result =
-    | Ok of (ARC4.key * ARC4.key) option * Cstruct.t
+    | Ok of Util.Socket.t * Cstruct.t
     | Failed
+
+  open Lwt.Infix
+
+  let buf_size = 1024
+
+  let negotiate sock t =
+    let read_buf = Cstruct.create buf_size in
+    let rec loop = function
+      | `Ok (t, Some cs) ->
+          Lwt_cstruct.complete (Util.Socket.write sock) cs >>= fun () ->
+          loop (handle t Cs.empty)
+      | `Ok (t, None) ->
+          Util.Socket.read sock read_buf >>= begin function
+          | 0 ->
+              Lwt.fail End_of_file
+          | n ->
+              loop (handle t (Cstruct.sub read_buf 0 n))
+          end
+      | `Error err ->
+          Lwt.fail (Failure err)
+      | `Success (None, rest) ->
+          Lwt.return (sock, rest)
+      | `Success (Some (enc, dec), rest) ->
+          Lwt.return (Util.Socket.encrypt sock enc dec, rest)
+    in
+    loop t
+
+  let outgoing ~info_hash sock mode =
+    negotiate sock (outgoing ~info_hash mode)
+
 end
 
 (* IO *)
 
 open Lwt.Infix
-
-type addr = Unix.inet_addr * int
-
-let buf_size = 1024
-
-let negotiate fd t =
-  let read_buf = Cstruct.create buf_size in
-  let rec loop = function
-    | `Ok (t, Some cs) ->
-        Lwt_cstruct.complete (Lwt_cstruct.write fd) cs >>= fun () ->
-        loop (Encryption.handle t Cs.empty)
-    | `Ok (t, None) ->
-        Lwt_cstruct.read fd read_buf >>= begin function
-        | 0 ->
-            Lwt.fail End_of_file
-        | n ->
-            loop (Encryption.handle t (Cstruct.sub read_buf 0 n))
-        end
-    | `Error err ->
-        Lwt.fail (Failure err)
-    | `Success (mode, rest) ->
-        Lwt.return (mode, rest)
-  in
-  loop t
-
-let negotiate fd t =
-  Lwt.try_bind
-    (fun () -> negotiate fd t)
-    (fun (mode, rest) -> Lwt.return (Encryption.Ok (mode, rest)))
-    (fun e ->
-       Log.error "%s" (Printexc.to_string e);
-       Lwt.return Encryption.Failed)
 
 let proto = Cstruct.of_string "\019BitTorrent protocol"
 
@@ -312,41 +313,70 @@ let parse_handshake cs =
   | n ->
       `Error (Printf.sprintf "bad protocol length %d" n)
 
-type result =
-  | Ok of Util.Socket.t * Bits.t * SHA1.t
-  | Failed
-
-let outgoing ~id ~info_hash sock =
-  (* Handshake.(outgoing ~info_hash fd Both) >>= function *)
-  (* | `Ok (mode, rest) -> *)
-  (* let mode = None in *)
-  let rest = Cs.empty in
+let outgoing_handshake ~id ~info_hash sock rest =
   Lwt_cstruct.complete (Util.Socket.write sock) (handshake_message id info_hash) >>= fun () ->
-  (* Log.debug "[%s:%d] Sent handshake" (Unix.string_of_inet_addr ip) port; *)
   assert (Cstruct.len rest <= handshake_len);
   let hs = Cstruct.create handshake_len in
   Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
   Lwt_cstruct.complete (Util.Socket.read sock) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
-  (* Log.debug "[%s:%d] Read handshake" (Unix.string_of_inet_addr ip) port; *)
-  begin match parse_handshake hs with
+  match parse_handshake hs with
   | `Ok (ext, info_hash', peer_id) ->
-      (* Log.debug "[%s:%d] Parsed handshake" (Unix.string_of_inet_addr ip) port; *)
       if SHA1.equal info_hash info_hash' then begin
         Lwt.return (sock, ext, peer_id)
       end else
         Lwt.fail (Failure "bad info-hash")
   | `Error err ->
       Lwt.fail (Failure err)
-  end
-  (* | `Error err -> *)
-(* Lwt.fail (Failure err) *)
 
-let outgoing ~id ~info_hash sock push =
+type kind =
+  | Plain
+  | Encrypted
+
+type addr = Unix.inet_addr * int
+
+type result =
+  | Ok of Util.Socket.t * Bits.t * SHA1.t
+  | Failed
+
+let with_socket f =
+  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt.catch (fun () -> f fd)
+    (fun e ->
+       Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () -> Lwt.fail e)
+
+let outgoing kind ~id ~info_hash addr =
+  let ip, port = addr in
+  let f ~info_hash sock = match kind with
+    | Encrypted ->
+        Encryption.outgoing ~info_hash:(SHA1.to_raw info_hash) sock Encryption.Both
+    | Plain ->
+        Lwt.return (sock, Cs.empty)
+  in
+  let connect fd =
+    Log.info "Connecting [%s] to %s:%d..." (match kind with Encrypted -> "ENCRYPTED" | Plain -> "PLAIN")
+      (Unix.string_of_inet_addr ip) port;
+    let sa = Lwt_unix.ADDR_INET (ip, port) in
+    Lwt_unix.connect fd sa >>= fun () ->
+    f ~info_hash (Util.Socket.tcp fd) >>= fun (sock, rest) ->
+    outgoing_handshake ~id ~info_hash sock rest
+  in
+  with_socket connect
+
+let outgoing ~id ~info_hash addr push =
   Lwt.try_bind
     (fun () ->
-       outgoing ~id ~info_hash sock)
+       outgoing Plain ~id ~info_hash addr)
     (fun (sock, ext, peer_id) ->
        Lwt.wrap1 push @@ Ok (sock, ext, peer_id))
-    (fun e ->
-       Log.error "exn %s" (Printexc.to_string e);
-       Lwt.wrap1 push @@ Failed) |> Lwt.ignore_result
+    (function
+      | e ->
+          Log.error "%s" (Printexc.to_string e);
+          Lwt.wrap1 push Failed) |> Lwt.ignore_result
+      (* | Unix.Unix_error (_, "connect", _) -> *)
+      (*     Lwt.wrap1 push Failed *)
+      (* | _ -> *)
+      (*     Log.error "Encrypted connection to %s:%d failed, retrying with plain..." *)
+      (*       (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
+      (*     Lwt.try_bind (fun () -> outgoing Plain ~id ~info_hash addr) *)
+      (*       (fun (sock, ext, peer_id) -> Lwt.wrap1 push @@ Ok (sock, ext, peer_id)) *)
+      (*       (fun _ -> Lwt.wrap1 push Failed)) |> Lwt.ignore_result *)

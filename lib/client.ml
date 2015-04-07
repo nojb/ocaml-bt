@@ -37,39 +37,16 @@ let max_requests = 5
 
 type addr = Unix.inet_addr * int
 
-type direction =
-  | Incoming
-  | Outgoing
-
 type event =
   | PeersReceived of addr list
-  | PeerConnected of addr * Lwt_unix.file_descr * direction
+  | ConnectToPeer of addr * float
+  | IncomingPeer of addr * Util.Socket.t
   | PieceVerified of int
   | PieceFailed of int
   | HandshakeFailed of addr
   | HandshakeOk of addr * Util.Socket.t * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
-
-let log_event = function
-  | PeersReceived peers ->
-      Log.debug "+ PEERS RECEIVED %d" (List.length peers)
-  | HandshakeOk (_, _, _, id) ->
-      Log.info "+ HANDSHAKE SUCCESS id:%a" SHA1.print_hex_short id
-  | PeerConnected ((ip, p), _, dir) ->
-      Log.info "+ CONNECT SUCCESS %s addr:%s port:%d"
-        (match dir with Incoming -> "INCOMING" | Outgoing -> "OUTGOING")
-        (Unix.string_of_inet_addr ip) p
-  | PieceVerified i ->
-      Log.info "+ PIECE VERIFIED idx:%d" i
-  | PieceFailed i ->
-      Log.info "+ PIECE FAILED idx:%d" i
-  | HandshakeFailed (ip, p) ->
-      Log.info "+ HANDSHAKE FAIL addr:%s port:%d" (Unix.string_of_inet_addr ip) p
-  | PeerEvent (id, _) ->
-      ()
-  | TorrentComplete ->
-      Log.debug "+ TORRENT COMPLETE"
 
 type t =
   { id : SHA1.t;
@@ -86,14 +63,18 @@ type t =
 (*   iter_peers (fun p -> Peer.send_pex p pex) pm; *)
 (*   Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm *)
 
-let connect_to_peer ~id ~info_hash addr fd push =
+let connect_to_peer ~id ~info_hash addr timeout push =
   let push = function
     | Handshake.Ok (sock, ext, peer_id) ->
-        push (HandshakeOk (addr, sock, ext, peer_id))
+       Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
+         SHA1.print_hex_short peer_id;
+       push @@ HandshakeOk (addr, sock, ext, peer_id)
     | Handshake.Failed ->
-        push (HandshakeFailed addr)
+       Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+       push @@ HandshakeFailed addr
   in
-  Handshake.outgoing ~id ~info_hash (Util.Socket.tcp fd) push
+  (Lwt_unix.sleep timeout >>= fun () -> Handshake.outgoing ~id ~info_hash addr push; Lwt.return_unit) |>
+  Lwt.ignore_result
 
 let welcome push sock exts id =
   Peer.create id (fun e -> push (PeerEvent (id, e))) sock
@@ -372,7 +353,7 @@ let share_torrent bt meta store pieces have peers =
   Lwt.ignore_result (rechoke peers);
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
-    log_event e;
+    (* log_event e; *)
     match e with
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
@@ -460,11 +441,11 @@ let share_torrent bt meta store pieces have peers =
         (* FIXME *)
         loop ()
 
-    | PeerConnected (addr, fd, Outgoing) ->
-        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr fd bt.push;
+    | ConnectToPeer (addr, timeout) ->
+        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
         loop ()
 
-    | PeerConnected (_, _, Incoming) ->
+    | IncomingPeer _ ->
         (* FIXME FIXME *)
         loop ()
 
@@ -544,7 +525,7 @@ let rec fetch_metadata bt =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   let rec loop m =
     Lwt_stream.next bt.chan >>= fun e ->
-    log_event e;
+    (* log_event e; *)
     match m, e with
     | _, PeersReceived addrs ->
         List.iter (PeerMgr.add bt.peer_mgr) addrs;
@@ -560,11 +541,11 @@ let rec fetch_metadata bt =
         PeerMgr.handshake_failed bt.peer_mgr addr;
         loop m
 
-    | _, PeerConnected (addr, fd, Outgoing) ->
-        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr fd bt.push;
+    | _, ConnectToPeer (addr, timeout) ->
+        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
         loop m
 
-    | _, PeerConnected (_, _, Incoming) ->
+    | _, IncomingPeer _ ->
         (* FIXME TODO FIXME *)
         loop m
 
@@ -752,7 +733,7 @@ let start_server ?(port = 0) push =
     Lwt_unix.accept fd >>= fun (fd, sa) ->
     Log.debug "accepted connection from %s" (Util.string_of_sockaddr sa);
     let addr = match sa with Unix.ADDR_INET (ip, p) -> ip, p | Unix.ADDR_UNIX _ -> assert false in
-    push (PeerConnected (addr, fd, Incoming));
+    push (IncomingPeer (addr, Util.Socket.tcp fd));
     loop ()
   in
   loop ()
@@ -770,7 +751,7 @@ let start bt =
 
 let create mg =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
-  let peer_mgr = PeerMgr.create (fun addr fd -> push (PeerConnected (addr, fd, Outgoing))) in
+  let peer_mgr = PeerMgr.create (fun addr timeout -> push @@ ConnectToPeer (addr, timeout)) in
   { id = SHA1.generate ~prefix:"OCAML" ();
     ih = mg.Magnet.xt;
     trackers = mg.Magnet.tr;

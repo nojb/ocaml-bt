@@ -34,7 +34,7 @@ module H = Hashtbl.Make (A)
 
 type swarm =
   { size : int;
-    push : addr -> Lwt_unix.file_descr -> unit;
+    push : addr -> float -> unit;
     wires : (SHA1.t, addr) Hashtbl.t;
     connections : unit H.t;
     queue : addr Queue.t;
@@ -43,23 +43,7 @@ type swarm =
 let default_size = 50
 let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
-open Lwt.Infix
-
-let rec connect_to_peer sw addr =
-  let ip, port = addr in
-  let sa = Lwt_unix.ADDR_INET (ip, port) in
-  let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
-  Lwt.catch
-    (fun () ->
-       Log.info "Connecting to %s:%d..." (Unix.string_of_inet_addr ip) port;
-       Lwt_unix.connect fd sa >>= fun () ->
-       Lwt.wrap2 sw.push addr fd)
-    (fun e ->
-       Log.error "Connection to %s:%d failed: %s" (Unix.string_of_inet_addr ip) port (Printexc.to_string e);
-       Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
-       Lwt.wrap2 handshake_failed sw addr)
-
-and drain sw =
+let drain sw =
   (* Log.debug "[PeerMgr.drain] length:%d connected:%d" (H.length sw.connections) (Hashtbl.length sw.wires); *)
   if H.length sw.connections < sw.size then
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
@@ -68,10 +52,9 @@ and drain sw =
     | Some addr ->
         let p = H.find sw.peers addr in
         H.add sw.connections addr ();
-        Lwt.ignore_result
-          (Lwt_unix.sleep p.timeout >>= fun () -> connect_to_peer sw addr)
+        sw.push addr p.timeout
 
-and add sw addr =
+let add sw addr =
   if not (H.mem sw.peers addr) then begin
     (* Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
     H.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
@@ -79,7 +62,7 @@ and add sw addr =
     drain sw
   end
 
-and remove sw addr =
+let remove sw addr =
   let p = H.find sw.peers addr in
   if not p.reconnect || p.retries >= List.length reconnect_wait then begin
     (* Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
@@ -92,19 +75,19 @@ and remove sw addr =
     Queue.push addr sw.queue
   end
 
-and peer_disconnected sw id =
+let peer_disconnected sw id =
   let addr = Hashtbl.find sw.wires id in
   H.remove sw.connections addr;
   Hashtbl.remove sw.wires id;
   remove sw addr;
   drain sw
 
-and handshake_ok sw addr id =
+let handshake_ok sw addr id =
   Hashtbl.add sw.wires id addr;
   let p = H.find sw.peers addr in
   p.reconnect <- true
 
-and handshake_failed sw addr =
+let handshake_failed sw addr =
   H.remove sw.connections addr;
   remove sw addr;
   drain sw

@@ -90,7 +90,7 @@ module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Socket : sig
   type t
   val tcp : Lwt_unix.file_descr -> t
-  val encrypted : t -> ARC4.key -> ARC4.key -> t
+  val encrypt : t -> ARC4.key -> ARC4.key -> t
   val close : t -> unit Lwt.t
   val read : t -> Cstruct.t -> int Lwt.t
   val write : t -> Cstruct.t -> int Lwt.t
@@ -142,7 +142,7 @@ end = struct
     let write = Lwt_cstruct.write
   end
 
-  let encrypted (Sock (sock, (module S))) enc dec =
+  let encrypt (Sock (sock, (module S))) enc dec =
     let module E = Encrypt (S) in
     let sock = E.create sock enc dec in
     Sock (sock, (module E))

@@ -19,15 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-type addr = Unix.inet_addr * int
-
-(* type encryption_mode = *)
-(*   | Encrypted *)
-(*   | Both *)
-(*   | Plain *)
-
 type result =
   | Ok of Util.Socket.t * Bits.t * SHA1.t
   | Failed
 
-val outgoing : id:SHA1.t -> info_hash:SHA1.t -> Util.Socket.t -> (result -> unit) -> unit
+type addr = Unix.inet_addr * int
+
+val outgoing : id:SHA1.t -> info_hash:SHA1.t -> addr -> (result -> unit) -> unit
