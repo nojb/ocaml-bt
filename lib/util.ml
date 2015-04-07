@@ -37,6 +37,10 @@ let string_of_sockaddr = function
   | Unix.ADDR_INET (a, p) -> Printf.sprintf "%s:%u" (Unix.string_of_inet_addr a) p
   | Unix.ADDR_UNIX s -> s
 
+let cs_clone buf =
+  let buf' = Cstruct.create (Cstruct.len buf) in
+  Cstruct.blit buf 0 buf' 0 (Cstruct.len buf);
+  buf'
 
 module W : sig
   type t

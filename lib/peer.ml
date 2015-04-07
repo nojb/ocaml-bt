@@ -112,7 +112,7 @@ module Wire : sig
 
   val max_packet_len : int
 
-  val handle : Cstruct.t -> message list * Cstruct.t
+  val handle : Cstruct.t -> message list * int
 
 end = struct
   type message =
@@ -204,7 +204,7 @@ end = struct
     | 04 -> HAVE (int cs 1)
     | 05 -> BITFIELD (Bits.of_cstruct @@ Cstruct.shift cs 1)
     | 06 -> REQUEST (int cs 1, int cs 5, int cs 9)
-    | 07 -> PIECE (int cs 1, int cs 5, Cstruct.shift cs 9)
+    | 07 -> PIECE (int cs 1, int cs 5, Util.cs_clone (Cstruct.shift cs 9))
     | 08 -> CANCEL (int cs 1, int cs 5, int cs 9)
     | 09 -> PORT (Cstruct.BE.get_uint16 cs 1)
     | 13 -> SUGGEST (int cs 1)
@@ -212,7 +212,7 @@ end = struct
     | 15 -> HAVE_NONE
     | 16 -> REJECT (int cs 1, int cs 5, int cs 9)
     | 17 -> ALLOWED (parse_allowed @@ Cstruct.shift cs 1)
-    | 20 -> EXTENDED (Cstruct.get_uint8 cs 1, Cstruct.shift cs 2)
+    | 20 -> EXTENDED (Cstruct.get_uint8 cs 1, Util.cs_clone (Cstruct.shift cs 2))
     | _  -> failwith "can't parse msg"
 
   let parse cs =
@@ -225,19 +225,18 @@ end = struct
 
   let handle buf =
     let len = Cstruct.len buf in
-    (* Log.debug "Wire.handle: len:%d" len; *)
     let rec loop off =
       if off + 4 <= len then begin
         let l = Int32.to_int @@ Cstruct.BE.get_uint32 buf off in
-        (* Log.debug "Wire.handle: msglen:%d" l; *)
+        if l < 0 || l > max_packet_len then Printf.kprintf failwith "Wire: invalid packet len (%d)" l;
         if off + 4 + l <= len then
           let msg = parse @@ Cstruct.sub buf (off + 4) l in
           let msgs, rest = loop (off + 4 + l) in
           msg :: msgs, rest
         else
-          [], Cstruct.shift buf off
+          [], off
       end else
-        [], Cstruct.shift buf off
+        [], off
     in
     loop 0
 
@@ -665,19 +664,21 @@ let handle_err p sock e =
 
 let reader_loop p sock =
   let buf = Cstruct.create Wire.max_packet_len in
-  let rec loop data =
-    Lwt_unix.with_timeout keepalive_delay (fun () -> Util.Socket.read sock buf) >>= function
+  let rec loop off =
+    Lwt_unix.with_timeout keepalive_delay (fun () -> Util.Socket.read sock @@ Cstruct.shift buf off) >>= function
     | 0 ->
         Lwt.fail End_of_file
     | n ->
-        let msgs, data = Wire.handle Cs.(data <+> Cstruct.sub buf 0 n) in
+        let n = n + off in
+        let msgs, off = Wire.handle (Cstruct.sub buf 0 n) in
+        Cstruct.blit buf off buf 0 (n - off);
         List.iter
           (fun m ->
              Log.debug "[%a] --> %a" SHA1.print_hex_short p.id Wire.print m) msgs;
         List.iter (on_message p) msgs;
-        loop data
+        loop (n - off)
   in
-  loop Cs.empty
+  loop 0
 
 let writer_loop p sock =
   let buf = Cstruct.create Wire.max_packet_len in
