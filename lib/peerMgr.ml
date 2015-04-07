@@ -28,7 +28,9 @@ type peer =
     mutable retries : int;
     mutable timeout : float }
 
-module H = Hashtbl.Make (struct type t = addr let equal a1 a2 = compare a1 a2 = 0 let hash = Hashtbl.hash end)
+module A = struct type t = addr let equal a1 a2 = compare a1 a2 = 0 let hash = Hashtbl.hash end
+
+module H = Hashtbl.Make (A)
 
 type swarm =
   { size : int;
@@ -43,11 +45,10 @@ let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
 open Lwt.Infix
 
-let rec connect_to_peer sw addr wait =
+let rec connect_to_peer sw addr =
   let ip, port = addr in
   let sa = Lwt_unix.ADDR_INET (ip, port) in
   let fd = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
-  Lwt_unix.sleep wait >>= fun () ->
   Lwt.catch
     (fun () ->
        Log.info "[%s:%d] Connecting..." (Unix.string_of_inet_addr ip) port;
@@ -68,7 +69,8 @@ and drain sw =
     | Some addr ->
         let p = H.find sw.peers addr in
         H.add sw.connections addr ();
-        Lwt.ignore_result (connect_to_peer sw addr p.timeout)
+        Lwt.ignore_result
+          (Lwt_unix.sleep p.timeout >>= fun () -> connect_to_peer sw addr)
 
 and add sw addr =
   if not (H.mem sw.peers addr) then begin
