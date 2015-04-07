@@ -27,7 +27,8 @@ module ARC4 = Nocrypto.Cipher_stream.ARC4
 module SHA1 = Nocrypto.Hash.SHA1
 module Cs   = Nocrypto.Uncommon.Cs
 
-let () = Random.self_init ()
+let () = Random.self_init ();
+  Nocrypto.Rng.reseed (Cstruct.of_string (string_of_int (Random.bits ())))
 
 (* let crypto_plain = 0x01l *)
 (* let crypto_rc4 = 0x02l *)
