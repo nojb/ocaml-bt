@@ -44,18 +44,31 @@ let rec get_chunks files offset size =
   in
   loop offset size files
 
+let buf = Cstruct.create 1024
+
+let digest' fd len sha =
+  if len < 0 then invalid_arg "Store.digest'";
+  let buf_len = Cstruct.len buf in
+  let rec loop len =
+    if len > 0 then
+      let buf = Cstruct.sub buf 0 (min len buf_len) in
+      Lwt_cstruct.complete (Lwt_cstruct.read fd) buf >>= fun () ->
+      Lwt.wrap2 Nocrypto.Hash.SHA1.feed sha buf >>= fun () ->
+      loop (len - Cstruct.len buf)
+    else
+      Lwt.return_unit
+  in
+  loop len
+
 let digest files off len =
+  if len < 0 then invalid_arg "Store.digest";
   let chunks = get_chunks files off len in
-  let max_len = List.fold_left (fun n (_, _, len, _) -> max n len) 0 chunks in
-  let buf = Cstruct.create max_len in
   let sha = Nocrypto.Hash.SHA1.init () in
   Lwt_list.iter_s (fun (fd, off, len, m) ->
     Lwt_mutex.with_lock m
       (fun () ->
-         let buf = Cstruct.sub buf 0 len in
          Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
-         Lwt_cstruct.complete (Lwt_cstruct.read fd) buf >>= fun () ->
-         Lwt.wrap2 Nocrypto.Hash.SHA1.feed sha buf)) chunks >>= fun () ->
+         digest' fd len sha)) chunks >>= fun () ->
   Lwt.wrap1 SHA1.of_raw (Nocrypto.Hash.SHA1.get sha)
 
 let read files off len =
