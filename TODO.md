@@ -1,0 +1,11 @@
+- timeout peer transfers
+- timeout peers that do not transfer
+- utp
+- dht
+- upnp nat
+- pmp-nat
+- proxy
+- fast resume
+- multiple torrents
+- global blacklist
+- encryption
