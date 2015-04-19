@@ -1,5 +1,3 @@
 strict_with=auto
-syntax=bitstring
-syntax=lwt
 align_ops=false
 match_clause=4
