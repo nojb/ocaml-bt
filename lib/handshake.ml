@@ -73,7 +73,7 @@ module Encryption = struct
       gg = Z.of_int 2;
       q = None }
 
-  let priv, pub = Dh.gen_secret g
+  let priv, pub = Dh.gen_key g
 
   type encryption_mode =
     | Encrypted
@@ -151,8 +151,8 @@ module Encryption = struct
     let rec loop buf st =
       let len = Cstruct.len buf in
       match st with
-      | ClientWaitDh when len >= Dh.apparent_bit_size g ->
-          let yb, buf = Cstruct.split buf (Dh.apparent_bit_size g) in
+      | ClientWaitDh when len >= Dh.modulus_size g ->
+          let yb, buf = Cstruct.split buf (Dh.modulus_size g) in
           let shared_secret = Dh.shared g priv yb in
           let my_key = arc4 keyA shared_secret t.info_hash in
           let her_key = arc4 keyB shared_secret t.info_hash in
