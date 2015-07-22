@@ -280,6 +280,7 @@ type t =
     peer_requests           : (int * int * int) Lwt_sequence.t;
     send                    : unit Lwt_condition.t;
     queue                   : Wire.message Lwt_sequence.t;
+    mutable last_read : float;
     push                    : event -> unit }
 
 let strl f l =
@@ -664,10 +665,11 @@ let handle_err p sock e =
 let reader_loop p sock =
   let buf = Cstruct.create Wire.max_packet_len in
   let rec loop off =
-    Lwt_unix.with_timeout keepalive_delay (fun () -> Util.Socket.read sock @@ Cstruct.shift buf off) >>= function
+    Util.Socket.read sock (Cstruct.shift buf off) >>= function
     | 0 ->
         Lwt.fail End_of_file
     | n ->
+        p.last_read <- Unix.time ();
         let n = n + off in
         let msgs, off = Wire.handle (Cstruct.sub buf 0 n) in
         Cstruct.blit buf off buf 0 (n - off);
@@ -734,6 +736,7 @@ let create id push sock =
       peer_requests = Lwt_sequence.create ();
       send = Lwt_condition.create ();
       queue = Lwt_sequence.create ();
+      last_read = Unix.time ();
       push }
   in
   start p sock;

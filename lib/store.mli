@@ -27,19 +27,19 @@
 
 type t
 
-val create : (string list * int64) list -> t Lwt.t
+val create : (string list * int64) list -> ([`Ok of t | `Error of string] -> unit) -> unit
 (** Creates a store to access the files specified in
     the given metainfo dictionary. *)
 
 val close : t -> unit Lwt.t
 (** Close all the files in the store. *)
 
-val digest : t -> int64 -> int -> SHA1.t Lwt.t
+val digest : t -> int64 -> int -> ([`Ok of SHA1.t | `Error of string] -> unit) -> unit
 
 val read : t -> int64 -> int -> Cstruct.t Lwt.t
 (** [read st ofs len] reads [len] bytes starting at offset [ofs] from the store
     [st].  The offset and the length can span multiple files in the store. *)
 
-val write : t -> int64 -> Cstruct.t -> unit Lwt.t
+val write : t -> int64 -> Cstruct.t -> ([`Ok | `Error of string] -> unit) -> unit
 (** [write st ofs s] writes [s] starting at offset [ofs] in the store [st].  The
     string may end up being written in more than one file in the store. *)

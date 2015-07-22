@@ -41,9 +41,8 @@ type swarm =
 let default_size = 50
 let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.]
 
-let drain sw =
-  (* Log.debug "[PeerMgr.drain] length:%d connected:%d" (H.length sw.connections) (Hashtbl.length sw.wires); *)
-  if H.length sw.connections < sw.size then
+let upkeep sw =
+  while H.length sw.connections < sw.size do
     match try Some (Queue.pop sw.queue) with Queue.Empty -> None with
     | None ->
         ()
@@ -51,19 +50,17 @@ let drain sw =
         let p = H.find sw.peers addr in
         H.add sw.connections addr ();
         sw.push addr p.timeout
+  done
 
 let add sw addr =
   if not (H.mem sw.peers addr) then begin
-    (* Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
     H.add sw.peers addr { reconnect = false; retries = 0; timeout = List.hd reconnect_wait };
     Queue.push addr sw.queue;
-    drain sw
   end
 
 let remove sw addr =
   let p = H.find sw.peers addr in
   if not p.reconnect || p.retries >= List.length reconnect_wait then begin
-    (* Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
     H.remove sw.peers addr
   end else begin
     p.retries <- p.retries + 1;
@@ -77,8 +74,7 @@ let peer_disconnected sw id =
   let addr = Hashtbl.find sw.wires id in
   H.remove sw.connections addr;
   Hashtbl.remove sw.wires id;
-  remove sw addr;
-  drain sw
+  remove sw addr
 
 let handshake_ok sw addr id =
   Hashtbl.add sw.wires id addr;
@@ -87,8 +83,7 @@ let handshake_ok sw addr id =
 
 let handshake_failed sw addr =
   H.remove sw.connections addr;
-  remove sw addr;
-  drain sw
+  remove sw addr
 
 let create ?(size = default_size) push =
   { size;

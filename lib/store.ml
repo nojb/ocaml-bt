@@ -60,16 +60,20 @@ let digest' fd len sha =
   in
   loop len
 
-let digest files off len =
+let digest files off len k =
   if len < 0 then invalid_arg "Store.digest";
   let chunks = get_chunks files off len in
   let sha = Nocrypto.Hash.SHA1.init () in
-  Lwt_list.iter_s (fun (fd, off, len, m) ->
-    Lwt_mutex.with_lock m
-      (fun () ->
-         Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
-         digest' fd len sha)) chunks >>= fun () ->
-  Lwt.wrap1 SHA1.of_raw (Nocrypto.Hash.SHA1.get sha)
+  ignore
+    (Lwt.try_bind
+       (fun () ->
+          Lwt_list.iter_s (fun (fd, off, len, m) ->
+            Lwt_mutex.with_lock m
+              (fun () ->
+                 Lwt_unix.LargeFile.lseek fd off Unix.SEEK_SET >>= fun _ ->
+                 digest' fd len sha)) chunks)
+       (fun () -> Lwt.wrap1 k (`Ok (SHA1.of_raw (Nocrypto.Hash.SHA1.get sha))))
+       (fun e -> Lwt.wrap1 k (`Error (Printexc.to_string e))))
 
 let read files off len =
   let read_chunk buf (fd, off, len, m) =
@@ -83,7 +87,7 @@ let read files off len =
   Lwt_list.fold_left_s read_chunk buf (get_chunks files off len) >>= fun _ ->
   Lwt.return buf
 
-let write files off buf =
+let write files off buf k =
   let write_chunk buf (fd, off, len, m) =
     Lwt_mutex.with_lock m
       (fun () ->
@@ -91,8 +95,12 @@ let write files off buf =
          Lwt_cstruct.complete (Lwt_cstruct.write fd) (Cstruct.sub buf 0 len) >>= fun () ->
          Lwt.return (Cstruct.shift buf len))
   in
-  Lwt_list.fold_left_s write_chunk buf (get_chunks files off (Cstruct.len buf)) >>= fun _ ->
-  Lwt.return_unit
+  ignore
+    (Lwt.try_bind
+       (fun () ->
+          Lwt_list.fold_left_s write_chunk buf (get_chunks files off (Cstruct.len buf)))
+       (fun _ -> Lwt.wrap1 k (`Ok))
+       (fun e -> Lwt.wrap1 k (`Error (Printexc.to_string e))))
 
 let cd path f =
   let old_cwd = Sys.getcwd () in
@@ -125,6 +133,12 @@ let open_file path size =
 let close files =
   Lwt_list.iter_p (fun (fd, _, m) -> Lwt_mutex.with_lock m (fun () -> Lwt_unix.close fd)) files
 
-let create files =
-  let open_file (path, size) = open_file path size >>= fun fd -> Lwt.return (fd, size, Lwt_mutex.create ()) in
-  Lwt_list.map_s open_file files
+let create files k =
+  let open_file (path, size) =
+    open_file path size >>= fun fd -> Lwt.return (fd, size, Lwt_mutex.create ())
+  in
+  ignore
+    (Lwt.try_bind
+       (fun () -> Lwt_list.map_s open_file files)
+       (fun store -> Lwt.wrap1 k (`Ok store))
+       (fun e -> Lwt.wrap1 k (`Error (Printexc.to_string e))))

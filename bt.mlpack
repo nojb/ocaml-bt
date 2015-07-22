@@ -9,5 +9,6 @@ lib/Tracker
 lib/Util
 lib/PeerMgr
 lib/Client
+lib/Pieces
 lib/Handshake
 lib/DHT
