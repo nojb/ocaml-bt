@@ -112,7 +112,6 @@ type t =
     peer_mgr : PeerMgr.swarm;
     chan : event Lwt_stream.t;
     peers : (SHA1.t, Peer.t) Hashtbl.t;
-    mutable state : state;
     push : event -> unit }
 
 (* let pex_delay = 60.0 *)
@@ -222,149 +221,194 @@ let load_torrent metadata k =
   );
   (pieces, have)
 
-let share_torrent client =
+let process_peer_event client p e state =
+  match state, e with
+  | Sharing {pieces; _}, Peer.PeerDisconnected reqs ->
+      List.iter (Pieces.request_rejected pieces) reqs;
+      PeerMgr.peer_disconnected client.peer_mgr (Peer.id p);
+      Hashtbl.remove client.peers (Peer.id p);
+      state
+
+  | (Sharing _ | Seeding _ | Loading _), Peer.AvailableMetadata _ ->
+      state
+
+  | (Waiting _ | Loading _ | Seeding _), Peer.PeerDisconnected reqs ->
+      PeerMgr.peer_disconnected client.peer_mgr (Peer.id p);
+      Hashtbl.remove client.peers (Peer.id p);
+      (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
+      state
+
+  | Sharing {pieces; _}, Peer.Choked reqs ->
+      List.iter (Pieces.request_rejected pieces) reqs;
+      state
+
+  | Waiting _, (Peer.Choked _ | Peer.Unchoked | Peer.Have _)
+  | Waiting _, (Peer.HaveBitfield _ | Peer.BlockRequested _ | Peer.BlockReceived _) ->
+      state
+
+  | Sharing {pieces; _}, (Peer.Unchoked | Peer.Have _ | Peer.HaveBitfield _) ->
+      Pieces.update_interest pieces p;
+      Pieces.update_requests pieces client.peers;
+      state
+
+  | _, (Peer.Interested | Peer.NotInterested) ->
+      (* rechoke *)
+      state
+
+  | (Sharing {metadata; _} | Seeding {metadata; _} | Loading {metadata; _}), Peer.MetaRequested i ->
+      Peer.metadata_piece (Metadata.length metadata) i (Metadata.get_piece metadata i) p;
+      state
+
+  | Waiting _, Peer.MetaRequested i ->
+      Peer.reject_metadata_request p i;
+      state
+
+  | _, Peer.RejectMetaPiece _ -> (* CHECK *)
+      state
+
+  | (Waiting None | Sharing _ | Seeding _), Peer.GotMetaPiece _ ->
+      state
+
+  | Waiting (Some m), Peer.GotMetaPiece (i, s) ->
+      if IncompleteMetadata.add m i s then
+        match IncompleteMetadata.verify m client.ih with
+        | Some raw ->
+            (* debug "got full metadata"; *)
+            let metadata = Metadata.create (Bcode.decode raw) in
+            let pieces, have = load_torrent metadata (function
+                | `Ok store ->
+                    client.push (Torrent_loaded store)
+                | `Error s ->
+                    client.push (Store_error s)
+              )
+            in
+            Loading {metadata; pieces; have}
+        | None ->
+            Log.error "METADATA HASH CHECK FAILED";
+            Waiting None
+      else
+        state
+
+  | Sharing {pieces; store; _}, Peer.BlockRequested (i, off, len) ->
+      if i >= 0 && i < Array.length pieces then begin
+        Pieces.send_block store pieces p i off len;
+        state
+      end else begin
+        Log.warn "! PEER REQUEST invalid piece:%d" i;
+        state
+      end
+
+  | Sharing {store; pieces; _}, Peer.BlockReceived (i, off, s) ->
+      if i >= 0 && i < Array.length pieces then begin
+        Pieces.record_block store client.peers pieces i off s (function
+          | `Ok -> () (* client.push TODO *)
+          | `Piece_complete -> () (* TODO TODO *)
+          | `Error s -> client.push (Store_error s)
+        );
+        state
+      end else begin
+        Log.warn "! PIECE invalid piece:%d" i;
+        state
+      end
+
+  | _, Peer.GotPEX (added, dropped) ->
+      List.iter (fun (addr, _) -> PeerMgr.add client.peer_mgr addr) added;
+      state
+
+  | _, Peer.DHTPort _ ->
+      (* let addr, _ = Peer.addr p in *)
+      (* Lwt.async begin fun () -> *)
+      (*   DHT.ping bt.dht (addr, i) >|= function *)
+      (*   | Some (id, addr) -> *)
+      (*       DHT.update bt.dht Kademlia.Good id addr *)
+      (*   | None -> *)
+      (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
+      (* end; *)
+      (* FIXME *)
+      state
+
+  | Waiting (Some m), Peer.AvailableMetadata len ->
+      IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m;
+      state
+
+  | Waiting None, Peer.AvailableMetadata len ->
+      if len <= IncompleteMetadata.metadata_max_size then begin
+        let m = IncompleteMetadata.create len in
+        IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m;
+        Waiting (Some m)
+      end else begin
+        Log.warn "! METADATA length %d is too large, ignoring." len;
+        state
+      end
+
+let process_event client e state =
   (* Log.info "TORRENT SHARE have:%d total:%d peers:%d" *)
   (*   (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers); *)
   (* Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; Pieces.update_interest pieces p) peers; *)
   (* Pieces.update_requests pieces peers; *)
   (* Lwt.ignore_result (rechoke peers); *)
-  let process_peer p e =
-    match client.state, e with
-    | Sharing {pieces; _}, Peer.PeerDisconnected reqs ->
-        List.iter (Pieces.request_rejected pieces) reqs;
-        PeerMgr.peer_disconnected client.peer_mgr (Peer.id p);
-        Hashtbl.remove client.peers (Peer.id p)
+  (* log_event e; *)
+  match state, e with
+  | _, PeersReceived addrs ->
+      List.iter (PeerMgr.add client.peer_mgr) addrs;
+      state
 
-    | (Waiting _ | Loading _ | Seeding _), Peer.PeerDisconnected reqs ->
-        PeerMgr.peer_disconnected client.peer_mgr (Peer.id p);
-        Hashtbl.remove client.peers (Peer.id p)
-    (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
+  | Loading {pieces; have; metadata}, Torrent_loaded store ->
+      Sharing {pieces; have; metadata; store} (* CHECK *)
 
-    | Sharing {pieces; _}, Peer.Choked reqs ->
-        List.iter (Pieces.request_rejected pieces) reqs
+  | Sharing {pieces; have; _}, PieceVerified i ->
+      pieces.(i).Pieces.state <- Pieces.Verified;
+      Bits.set have i;
+      Hashtbl.iter (fun _ p -> Peer.have p i) client.peers;
+      state
 
-    | Sharing {pieces; _}, (Peer.Unchoked | Peer.Have _ | Peer.HaveBitfield _) ->
-        Pieces.update_interest pieces p;
-        Pieces.update_requests pieces client.peers
+  | Waiting _, (TorrentComplete | Torrent_loaded _ | Store_error _) ->
+      assert false
 
-    | _, (Peer.Interested | Peer.NotInterested) ->
-        (* rechoke *)
-        ()
+  | (Waiting _ | Loading _ | Seeding _), PieceVerified _ ->
+      assert false
+  (* maybe update interest ? *)
+  (* check if done ! *)
 
-    | (Sharing {metadata; _} | Seeding {metadata; _} | Loading {metadata; _}), Peer.MetaRequested i ->
-        Peer.metadata_piece (Metadata.length metadata) i (Metadata.get_piece metadata i) p;
+  | _, PieceFailed i ->
+      (* FIXME FIXME *)
+      state
 
-    | Waiting _, Peer.MetaRequested i ->
-        Peer.reject_metadata_request p i
+  | _, HandshakeFailed addr ->
+      PeerMgr.handshake_failed client.peer_mgr addr;
+      state
 
-    | _, Peer.RejectMetaPiece _ -> (* CHECK *)
-        ()
+  | _, PeerEvent (id, e) ->
+      if Hashtbl.mem client.peers id then
+        let p = Hashtbl.find client.peers id in
+        process_peer_event client p e state
+      else begin
+        Log.warn "! Errant message from peer %a" SHA1.print_hex_short id;
+        state
+      end
 
-    | (Waiting None | Sharing _ | Seeding _), Peer.GotMetaPiece _ ->
-        ()
+  | _, ConnectToPeer (addr, timeout) ->
+      connect_to_peer ~id:client.id ~info_hash:client.ih addr timeout client.push;
+      state
 
-    | Waiting (Some m), Peer.GotMetaPiece (i, s) ->
-        if IncompleteMetadata.add m i s then
-          match IncompleteMetadata.verify m client.ih with
-          | Some raw ->
-              (* debug "got full metadata"; *)
-              let metadata = Metadata.create (Bcode.decode raw) in
-              let pieces, have = load_torrent metadata (function
-                  | `Ok store ->
-                      client.push (Torrent_loaded store)
-                  | `Error s ->
-                      client.push (Store_error s)
-                )
-              in
-              client.state <- Loading {metadata; pieces; have}
-          | None ->
-              Log.error "METADATA HASH CHECK FAILED";
-              client.state <- Waiting None
-        else
-          ()
+  | _, IncomingPeer _ ->
+      (* FIXME FIXME *)
+      state
 
-    | Sharing {pieces; store; _}, Peer.BlockRequested (i, off, len) ->
-        if i >= 0 && i < Array.length pieces then
-          Pieces.send_block store pieces p i off len
-        else
-          Log.warn "! PEER REQUEST invalid piece:%d" i
+  | Sharing {pieces; have; _}, HandshakeOk (addr, sock, exts, id) ->
+      PeerMgr.handshake_ok client.peer_mgr addr id;
+      let p = welcome client.push sock exts id in
+      Peer.have_bitfield p have;
+      Hashtbl.replace client.peers id p;
+      Pieces.update_interest pieces p;
+      Pieces.update_requests pieces client.peers;
+      state
 
-    | Sharing {store; pieces; _}, Peer.BlockReceived (i, off, s) ->
-        if i >= 0 && i < Array.length pieces then
-          Pieces.record_block store client.peers pieces i off s (function
-            | `Ok -> () (* client.push TODO *)
-            | `Piece_complete -> () (* TODO TODO *)
-            | `Error s -> client.push (Store_error s)
-          )
-        else
-          Log.warn "! PIECE invalid piece:%d" i
-
-    | _, Peer.GotPEX (added, dropped) ->
-        List.iter (fun (addr, _) -> PeerMgr.add client.peer_mgr addr) added
-
-    | _, Peer.DHTPort _ ->
-        (* let addr, _ = Peer.addr p in *)
-        (* Lwt.async begin fun () -> *)
-        (*   DHT.ping bt.dht (addr, i) >|= function *)
-        (*   | Some (id, addr) -> *)
-        (*       DHT.update bt.dht Kademlia.Good id addr *)
-        (*   | None -> *)
-        (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
-        (* end; *)
-        (* FIXME *)
-        ()
-
-    | Waiting (Some m), Peer.AvailableMetadata len ->
-        IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m
-
-    | Waiting None, Peer.AvailableMetadata len ->
-        if len <= IncompleteMetadata.metadata_max_size then begin
-          let m = IncompleteMetadata.create len in
-          IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m;
-          client.state <- Waiting (Some m)
-        end else
-          Log.warn "! METADATA length %d is too large, ignoring." len
-  in
-  let process_event e =
-    (* log_event e; *)
-    match client.state, e with
-    | _, PeersReceived addrs ->
-        List.iter (PeerMgr.add client.peer_mgr) addrs
-    | Sharing {pieces; have; _}, PieceVerified i ->
-        pieces.(i).Pieces.state <- Pieces.Verified;
-        Bits.set have i;
-        Hashtbl.iter (fun _ p -> Peer.have p i) client.peers
-    (* maybe update interest ? *)
-    (* check if done ! *)
-    | _, PieceFailed i ->
-        (* FIXME FIXME *)
-        ()
-    | _, HandshakeFailed addr ->
-        PeerMgr.handshake_failed client.peer_mgr addr
-    | _, PeerEvent (id, e) ->
-        if Hashtbl.mem client.peers id then
-          let p = Hashtbl.find client.peers id in
-          process_peer p e
-        else
-          Log.warn "! Errant message from peer %a" SHA1.print_hex_short id
-    | _, ConnectToPeer (addr, timeout) ->
-        connect_to_peer ~id:client.id ~info_hash:client.ih addr timeout client.push
-    | _, IncomingPeer _ ->
-        (* FIXME FIXME *)
-        ()
-    | Sharing {pieces; have; _}, HandshakeOk (addr, sock, exts, id) ->
-        PeerMgr.handshake_ok client.peer_mgr addr id;
-        let p = welcome client.push sock exts id in
-        Peer.have_bitfield p have;
-        Hashtbl.replace client.peers id p;
-        Pieces.update_interest pieces p;
-        Pieces.update_requests pieces client.peers
-    | Waiting _, HandshakeOk (addr, sock, exts, id) ->
-        PeerMgr.handshake_ok client.peer_mgr addr id;
-        let p = welcome client.push sock exts id in
-        Hashtbl.replace client.peers id p
-  in
-  Lwt_stream.iter process_event client.chan
+  | (Waiting _ | Loading _ | Seeding _), HandshakeOk (addr, sock, exts, id) ->
+      PeerMgr.handshake_ok client.peer_mgr addr id;
+      let p = welcome client.push sock exts id in
+      Hashtbl.replace client.peers id p;
+      state
 
 let upkeep client =
   PeerMgr.upkeep client.peer_mgr
@@ -392,10 +436,8 @@ let start client =
   List.iter (Tracker.announce ~info_hash:client.ih (fun peers ->
       client.push (PeersReceived peers)) client.id
   ) client.trackers;
-  (* fetch_metadata bt >>= fun (m, peers) ->
-     load_torrent bt m >>= fun (store, pieces, have) -> *)
-  (* Log.info "Torrent loaded have %d/%d pieces" (Bits.count_ones have) (Bits.length have); *)
-  share_torrent client (* m store pieces have peers *)
+  Lwt_stream.fold (process_event client) client.chan (Waiting None) >>= fun _ ->
+  Lwt.return_unit
 
 let create mg =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
@@ -406,5 +448,4 @@ let create mg =
     chan = ch;
     push;
     peer_mgr;
-    peers = Hashtbl.create 20;
-    state = Waiting None }
+    peers = Hashtbl.create 20 }
