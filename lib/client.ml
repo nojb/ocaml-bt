@@ -19,8 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module L    = Log
-module Log  = Log.Make (struct let section = "[Client]" end)
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
@@ -597,8 +595,6 @@ let rec fetch_metadata bt =
   loop None
 
 module LPD  = struct
-
-  module Log = L.Make (struct let section = "[LPD]" end)
 
   let mcast_addr = "239.192.152.143"
   let mcast_port = 6771
