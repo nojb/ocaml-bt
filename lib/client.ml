@@ -344,16 +344,18 @@ let process_peer_event client p e state =
 let process_event client e state =
   (* Log.info "TORRENT SHARE have:%d total:%d peers:%d" *)
   (*   (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers); *)
-  (* Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; Pieces.update_interest pieces p) peers; *)
-  (* Pieces.update_requests pieces peers; *)
-  (* Lwt.ignore_result (rechoke peers); *)
-  (* log_event e; *)
   match state, e with
   | _, PeersReceived addrs ->
       List.iter (PeerMgr.add client.peer_mgr) addrs;
       state
 
   | Loading {pieces; have; metadata}, Torrent_loaded store ->
+      Hashtbl.iter (fun _ p ->
+        Peer.have_bitfield p have;
+        Pieces.update_interest pieces p
+      ) client.peers;
+      Pieces.update_requests pieces client.peers;
+      Lwt.ignore_result (rechoke client.peers);
       Sharing {pieces; have; metadata; store} (* CHECK *)
 
   | Sharing {pieces; have; _}, PieceVerified i ->
