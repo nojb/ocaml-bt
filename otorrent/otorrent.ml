@@ -37,16 +37,26 @@ let magnet =
 
 open Lwt.Infix
 
+let handle_message e =
+  let open Bt.Client in
+  match e with
+  | PeerJoined (addr, hash) ->
+      Printf.eprintf "Peer joined the swarm (addr=%s, hash=%a)\n%!"
+        (Unix.string_of_inet_addr (fst addr)) Bt.SHA1.print_hex_short hash
+  | PeerLeft hash ->
+      Printf.eprintf "Peer left the swarm (hash=%a)\n%!" Bt.SHA1.print_hex_short hash
+  | PieceCompleted (i, have, total) ->
+      Printf.eprintf "Piece #%d completed, have %d out of %d\n%!" i have total
+  | TorrentComplete ->
+      Printf.eprintf "Torrent complete!\n%!"
+  | PeerSpeeds _ ->
+      ()
+
 let download magnet =
-  match Bt.Magnet.parse magnet with
+  let open Bt in
+  match Magnet.parse magnet with
   | `Ok magnet ->
-      let bt = Bt.Client.create magnet in
-      Lwt.catch
-        (fun () ->
-           Bt.Client.start bt)
-        (fun exn ->
-           Log.error "exn:%S" (Printexc.to_string exn);
-           Lwt.return_unit)
+      Client.start (Client.create magnet handle_message)
   | `Error ->
       Lwt.return_unit
 

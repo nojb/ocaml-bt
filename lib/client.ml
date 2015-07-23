@@ -35,6 +35,13 @@ let max_requests = 5
 
 type addr = Unix.inet_addr * int
 
+type info_message =
+  | PeerJoined of addr * SHA1.t
+  | PeerLeft of SHA1.t
+  | PieceCompleted of int * int * int
+  | TorrentComplete
+  | PeerSpeeds of (SHA1.t * float * float) list
+
 type event =
   | PeersReceived of addr list
   | ConnectToPeer of addr * float
@@ -112,7 +119,8 @@ type t =
     peer_mgr : PeerMgr.swarm;
     chan : event Lwt_stream.t;
     peers : (SHA1.t, Peer.t) Hashtbl.t;
-    push : event -> unit }
+    push : event -> unit;
+    to_user : info_message -> unit }
 
 (* let pex_delay = 60.0 *)
 
@@ -441,7 +449,7 @@ let start client =
   Lwt_stream.fold (process_event client) client.chan (Waiting None) >>= fun _ ->
   Lwt.return_unit
 
-let create mg =
+let create mg to_user =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
   let peer_mgr = PeerMgr.create (fun addr timeout -> push @@ ConnectToPeer (addr, timeout)) in
   { id = SHA1.generate ~prefix:"OCAML" ();
@@ -450,4 +458,5 @@ let create mg =
     chan = ch;
     push;
     peer_mgr;
-    peers = Hashtbl.create 20 }
+    peers = Hashtbl.create 20;
+    to_user }
