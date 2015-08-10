@@ -714,10 +714,10 @@ module LPD  = struct
     let fd2 = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
     Lwt_unix.setsockopt fd Lwt_unix.SO_REUSEADDR true;
     Lwt_unix.setsockopt fd2 Lwt_unix.SO_REUSEADDR true;
-    Lwt_unix.mcast_set_loop fd2 false;
+    (* Lwt_unix.mcast_set_loop fd2 false; *)
     Lwt_unix.bind fd (Lwt_unix.ADDR_INET (Unix.inet_addr_any, mcast_port));
     Log.debug "Joining multicast group %s:%d" mcast_addr mcast_port;
-    Lwt_unix.mcast_add_membership fd (Unix.inet_addr_of_string mcast_addr);
+    (* Lwt_unix.mcast_add_membership fd (Unix.inet_addr_of_string mcast_addr); *)
     Lwt.ignore_result (start fd info_hash push);
     Lwt.ignore_result (announce fd2 port info_hash)
 
