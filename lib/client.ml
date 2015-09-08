@@ -288,36 +288,34 @@ let update_interest pieces p =
   in
   loop 0
 
+let upon t f g =
+  Lwt.async (fun () -> Lwt.try_bind t (Lwt.wrap1 f) (Lwt.wrap1 g))
+
 let send_block store pieces p i off len push =
   match pieces.(i).state with
   | Verified ->
       let off1 = Int64.(add pieces.(i).offset (of_int off)) in
-      let _ =
-        Lwt.try_bind (fun () -> Store.read store off1 len)
-          (fun buf -> push (BlockReadyToSend (p, i, off, buf)); Lwt.return_unit)
-          (fun e -> push (Error e); Lwt.return_unit)
-      in
-      ()
+      upon (fun () -> Store.read store off1 len)
+        (fun buf -> push (BlockReadyToSend (p, i, off, buf)))
+        (fun e -> push (Error e))
   | Pending
   | Active _ ->
       ()
 
 let verify_piece store peers pieces i push =
-  Store.digest store pieces.(i).offset pieces.(i).length >>= fun sha ->
-  if SHA1.equal sha pieces.(i).hash then
-    Lwt.wrap1 push @@ PieceVerified i
-  else
-    Lwt.wrap1 push @@ PieceFailed i
+  upon (fun () -> Store.digest store pieces.(i).offset pieces.(i).length)
+    (fun sha ->
+       push (if SHA1.equal sha pieces.(i).hash then PieceVerified i else PieceFailed i)
+    )
+    (fun e -> push (Error e))
 
 let record_block store peers pieces i off s push =
   let j = off / block_size in
   match pieces.(i).state with
   | Pending ->
-      Log.warn "Received block #%d for piece #%d, not requested ???" j i;
-      Lwt.return_unit
+      Log.warn "Received block #%d for piece #%d, not requested ???" j i
   | Verified ->
-      Log.warn "Received block #%d for piece #%d, already completed" j i;
-      Lwt.return_unit
+      Log.warn "Received block #%d for piece #%d, already completed" j i
   | Active parts ->
       let c = parts.(j) in
       if c >= 0 then begin
@@ -332,14 +330,12 @@ let record_block store peers pieces i off s push =
           j i pieces.(i).have (Array.length parts - pieces.(i).have)
       end;
       let off = Int64.(add pieces.(i).offset (of_int off)) in
-      Store.write store off s >>= fun () ->
-      if pieces.(i).have = Array.length parts then
-        verify_piece store peers pieces i push
-      else
-        Lwt.return_unit
-
-let record_block store peers pieces i off s push =
-  Lwt.ignore_result (record_block store peers pieces i off s push)
+      upon (fun () -> Store.write store off s)
+        (fun () ->
+           if pieces.(i).have = Array.length parts then
+             verify_piece store peers pieces i push
+        )
+        (fun e -> push (Error e))
 
 let request_rejected pieces (i, off, _) =
   match pieces.(i).state with
@@ -360,12 +356,9 @@ let share_torrent bt meta store pieces have peers =
     (* log_event e; *)
     | Rechoke (opt, nopt) ->
         let opt, nopt = rechoke peers opt nopt in
-        let _ =
-          Lwt.try_bind (fun () -> Lwt_unix.sleep choke_timeout)
-            (fun () -> Lwt.wrap1 bt.push (Rechoke (opt, nopt)))
-            (fun e -> Lwt.wrap1 bt.push (Error e))
-        in
-        ()
+        upon (fun () -> Lwt_unix.sleep choke_timeout)
+          (fun () -> bt.push (Rechoke (opt, nopt)))
+          (fun e -> bt.push (Error e))
 
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
