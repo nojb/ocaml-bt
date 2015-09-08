@@ -47,6 +47,8 @@ type event =
   | HandshakeOk of addr * Util.Socket.t * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
+  | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
+  | StorageError of exn
 
 type t =
   { id : SHA1.t;
@@ -288,11 +290,16 @@ let update_interest pieces p =
   in
   loop 0
 
-let send_block store pieces p i off len =
+let send_block store pieces p i off len push =
   match pieces.(i).state with
   | Verified ->
       let off1 = Int64.(add pieces.(i).offset (of_int off)) in
-      Lwt.ignore_result (Store.read store off1 len >>= Lwt.wrap4 Peer.piece p i off)
+      let _ =
+        Lwt.try_bind (fun () -> Store.read store off1 len)
+          (fun buf -> push (BlockReadyToSend (p, i, off, buf)); Lwt.return_unit)
+          (fun e -> push (StorageError e); Lwt.return_unit)
+      in
+      ()
   | Pending
   | Active _ ->
       ()
@@ -371,6 +378,9 @@ let share_torrent bt meta store pieces have peers =
         (* FIXME FIXME *)
         ()
 
+    | StorageError e ->
+        failwith "storage error"
+
     | HandshakeFailed addr ->
         PeerMgr.handshake_failed bt.peer_mgr addr
 
@@ -404,9 +414,17 @@ let share_torrent bt meta store pieces have peers =
 
     | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
         if i >= 0 && i < Array.length pieces then
-          peer id (fun p -> send_block store pieces p i off len)
+          send_block store pieces id i off len bt.push
         else
           Log.warn "! PEER REQUEST invalid piece:%d" i
+
+    | BlockReadyToSend (id, idx, ofs, buf) ->
+        begin match Hashtbl.find peers id with
+        | exception Not_found ->
+            Log.warn "Trying to send a piece to non-existent peer"
+        | p ->
+            Peer.piece p idx ofs buf
+        end
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
         if i >= 0 && i < Array.length pieces then
@@ -452,6 +470,8 @@ let share_torrent bt meta store pieces have peers =
       match handle e with
       | exception Exit ->
           Lwt.return_unit
+      | exception e ->
+          Lwt.fail e
       | () ->
           loop ()
     )
@@ -604,6 +624,8 @@ let rec fetch_metadata bt =
 
     | _, PieceVerified _
     | _, PieceFailed _
+    | _, BlockReadyToSend _
+    | _, StorageError _
     | _, TorrentComplete ->
         assert false
 
