@@ -48,7 +48,8 @@ type event =
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
   | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
-  | StorageError of exn
+  | Error of exn
+  | Rechoke of SHA1.t option * int
 
 type t =
   { id : SHA1.t;
@@ -94,50 +95,47 @@ let rechoke_compare (p1, salt1) (p2, salt2) =
   else
     compare salt1 salt2
 
-let rechoke peers =
-  let rec loop opt nopt =
-    (* Log.info "RECHOKING"; *)
-    let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
-    let wires =
-      let add _ p wires =
-        match (* Peer.is_seeder p, *)false, opt with (* FIXME FIXME *)
-        | true, _ ->
-            Peer.choke p;
-            wires
-        | false, Some opt when SHA1.equal (Peer.id p) opt ->
-            wires
-        | false, _ ->
-            (p, Random.int (1 lsl 29)) :: wires
-      in
-      Hashtbl.fold add peers []
+let rechoke peers opt nopt =
+  (* Log.info "RECHOKING"; *)
+  let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
+  let wires =
+    let add _ p wires =
+      match (* Peer.is_seeder p, *)false, opt with (* FIXME FIXME *)
+      | true, _ ->
+          Peer.choke p;
+          wires
+      | false, Some opt when SHA1.equal (Peer.id p) opt ->
+          wires
+      | false, _ ->
+          (p, Random.int (1 lsl 29)) :: wires
     in
-    let wires = List.sort rechoke_compare wires in
-    (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
-    let rec select n acc = function
-      | (p, _) as w :: wires when n < rechoke_slots ->
-          let n = if Peer.peer_interested p then n + 1 else n in
-          select n (w :: acc) wires
-      | wires ->
-          begin match opt with
-          | Some _ ->
-              acc, wires, opt, nopt
-          | None ->
-              let wires = List.filter (fun (p, _) -> Peer.peer_interested p) wires in
-              if List.length wires > 0 then
-                let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
-                (opt :: acc), wires, Some (Peer.id p), rechoke_optimistic_duration
-              else
-                acc, wires, None, nopt
-          end
-    in
-    let unchoke, choke, opt, nopt = select 0 [] wires in
-    (* Log.debug "RECHOKE total=%d unchoke=%d choke=%d" (Hashtbl.length peers) (List.length unchoke) *)
-    (*   (List.length choke); *)
-    List.iter (fun (p, _) -> Peer.unchoke p) unchoke;
-    List.iter (fun (p, _) -> Peer.choke p) choke;
-    Lwt_unix.sleep choke_timeout >>= fun () -> loop opt nopt
+    Hashtbl.fold add peers []
   in
-  loop None rechoke_optimistic_duration
+  let wires = List.sort rechoke_compare wires in
+  (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
+  let rec select n acc = function
+    | (p, _) as w :: wires when n < rechoke_slots ->
+        let n = if Peer.peer_interested p then n + 1 else n in
+        select n (w :: acc) wires
+    | wires ->
+        begin match opt with
+        | Some _ ->
+            acc, wires, opt, nopt
+        | None ->
+            let wires = List.filter (fun (p, _) -> Peer.peer_interested p) wires in
+            if List.length wires > 0 then
+              let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
+              (opt :: acc), wires, Some (Peer.id p), rechoke_optimistic_duration
+            else
+              acc, wires, None, nopt
+        end
+  in
+  let unchoke, choke, opt, nopt = select 0 [] wires in
+  (* Log.debug "RECHOKE total=%d unchoke=%d choke=%d" (Hashtbl.length peers) (List.length unchoke) *)
+  (*   (List.length choke); *)
+  List.iter (fun (p, _) -> Peer.unchoke p) unchoke;
+  List.iter (fun (p, _) -> Peer.choke p) choke;
+  (opt, nopt)
 
 type piece_state =
   | Pending
@@ -297,7 +295,7 @@ let send_block store pieces p i off len push =
       let _ =
         Lwt.try_bind (fun () -> Store.read store off1 len)
           (fun buf -> push (BlockReadyToSend (p, i, off, buf)); Lwt.return_unit)
-          (fun e -> push (StorageError e); Lwt.return_unit)
+          (fun e -> push (Error e); Lwt.return_unit)
       in
       ()
   | Pending
@@ -357,9 +355,18 @@ let share_torrent bt meta store pieces have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
   update_requests pieces peers;
-  Lwt.ignore_result (rechoke peers);
+  bt.push (Rechoke (None, rechoke_optimistic_duration));
   let handle = function
     (* log_event e; *)
+    | Rechoke (opt, nopt) ->
+        let opt, nopt = rechoke peers opt nopt in
+        let _ =
+          Lwt.try_bind (fun () -> Lwt_unix.sleep choke_timeout)
+            (fun () -> Lwt.wrap1 bt.push (Rechoke (opt, nopt)))
+            (fun e -> Lwt.wrap1 bt.push (Error e))
+        in
+        ()
+
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
         Log.info "TORRENT COMPLETE";
@@ -378,8 +385,8 @@ let share_torrent bt meta store pieces have peers =
         (* FIXME FIXME *)
         ()
 
-    | StorageError e ->
-        failwith "storage error"
+    | Error e ->
+        raise e
 
     | HandshakeFailed addr ->
         PeerMgr.handshake_failed bt.peer_mgr addr
@@ -625,7 +632,8 @@ let rec fetch_metadata bt =
     | _, PieceVerified _
     | _, PieceFailed _
     | _, BlockReadyToSend _
-    | _, StorageError _
+    | _, Error _
+    | _, Rechoke _
     | _, TorrentComplete ->
         assert false
 
