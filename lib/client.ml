@@ -351,83 +351,71 @@ let share_torrent bt meta store pieces have peers =
   Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
   update_requests pieces peers;
   Lwt.ignore_result (rechoke peers);
-  let rec loop () =
-    Lwt_stream.next bt.chan >>= fun e ->
+  let handle = function
     (* log_event e; *)
-    match e with
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
         Log.info "TORRENT COMPLETE";
-        Lwt.return_unit
+        raise Exit
 
     | PeersReceived addrs ->
-        List.iter (PeerMgr.add bt.peer_mgr) addrs;
-        loop ()
+        List.iter (PeerMgr.add bt.peer_mgr) addrs
 
     | PieceVerified i ->
         pieces.(i).state <- Verified;
         Bits.set have i;
-        Hashtbl.iter (fun _ p -> Peer.have p i) peers;
+        Hashtbl.iter (fun _ p -> Peer.have p i) peers
         (* maybe update interest ? *)
-        loop ()
 
     | PieceFailed i ->
         (* FIXME FIXME *)
-        loop ()
+        ()
 
     | HandshakeFailed addr ->
-        PeerMgr.handshake_failed bt.peer_mgr addr;
-        loop ()
+        PeerMgr.handshake_failed bt.peer_mgr addr
 
     | PeerEvent (id, Peer.PeerDisconnected reqs) ->
         List.iter (request_rejected pieces) reqs;
         PeerMgr.peer_disconnected bt.peer_mgr id;
-        Hashtbl.remove peers id;
+        Hashtbl.remove peers id
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
-        loop ()
 
     | PeerEvent (_, Peer.Choked reqs) ->
-        List.iter (request_rejected pieces) reqs;
-        loop ()
+        List.iter (request_rejected pieces) reqs
 
     | PeerEvent (id, Peer.Unchoked)
     | PeerEvent (id, Peer.Have _)
     | PeerEvent (id, Peer.HaveBitfield _) ->
         peer id (update_interest pieces);
-        update_requests pieces peers;
-        loop ()
+        update_requests pieces peers
 
     | PeerEvent (_, Peer.Interested)
     | PeerEvent (_, Peer.NotInterested) ->
         (* rechoke *)
-        loop ()
+        ()
 
     | PeerEvent (id, Peer.MetaRequested i) ->
         peer id
-          (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i));
-        loop ()
+          (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i))
 
     | PeerEvent (_, Peer.GotMetaPiece _)
     | PeerEvent (_, Peer.RejectMetaPiece _) ->
-        loop ()
+        ()
 
     | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
         if i >= 0 && i < Array.length pieces then
           peer id (fun p -> send_block store pieces p i off len)
         else
-          Log.warn "! PEER REQUEST invalid piece:%d" i;
-        loop ()
+          Log.warn "! PEER REQUEST invalid piece:%d" i
 
     | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
         if i >= 0 && i < Array.length pieces then
           record_block store peers pieces i off s bt.push
         else
-          Log.warn "! PIECE invalid piece:%d" i;
-        loop ()
+          Log.warn "! PIECE invalid piece:%d" i
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
-        List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added;
-        loop ()
+        List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added
 
     | PeerEvent (_, Peer.DHTPort _) ->
         (* let addr, _ = Peer.addr p in *)
@@ -439,15 +427,14 @@ let share_torrent bt meta store pieces have peers =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end; *)
         (* FIXME *)
-        loop ()
+        ()
 
     | ConnectToPeer (addr, timeout) ->
-        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
-        loop ()
+        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push
 
     | IncomingPeer _ ->
         (* FIXME FIXME *)
-        loop ()
+        ()
 
     | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
@@ -455,11 +442,19 @@ let share_torrent bt meta store pieces have peers =
         Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
         update_interest pieces p;
-        update_requests pieces peers;
-        loop ()
+        update_requests pieces peers
 
     | PeerEvent (_, Peer.AvailableMetadata _) ->
-        loop ()
+        ()
+  in
+  let rec loop () =
+    Lwt.bind (Lwt_stream.next bt.chan) (fun e ->
+      match handle e with
+      | exception Exit ->
+          Lwt.return_unit
+      | () ->
+          loop ()
+    )
   in
   loop ()
 
