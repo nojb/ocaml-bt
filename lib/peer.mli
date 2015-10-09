@@ -49,7 +49,7 @@ type event =
 
 type t
 
-val create : SHA1.t -> (event -> unit) -> Util.Socket.t -> t
+val create : SHA1.t -> (event -> unit) -> Util.socket -> t
 
 val id : t -> SHA1.t
 (** The peer ID. *)

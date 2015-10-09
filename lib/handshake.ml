@@ -215,7 +215,7 @@ module Encryption = struct
     in
     loop t.buf state
 
-  let handle_server _ =
+  let handle_server _ _ =
     assert false
 
   let (<+>) = Cs.(<+>)
@@ -243,7 +243,7 @@ module Encryption = struct
     `Error "not implemented"
 
   type result =
-    | Ok of Util.Socket.t * Cstruct.t
+    | Ok of Util.socket * Cstruct.t
     | Failed
 
   open Lwt.Infix
@@ -254,10 +254,10 @@ module Encryption = struct
     let read_buf = Cstruct.create buf_size in
     let rec loop = function
       | `Ok (t, Some cs) ->
-          Lwt_cstruct.complete (Util.Socket.write sock) cs >>= fun () ->
+          Lwt_cstruct.complete (sock # write) cs >>= fun () ->
           loop (handle t Cs.empty)
       | `Ok (t, None) ->
-          Util.Socket.read sock read_buf >>= begin function
+          sock # read read_buf >>= begin function
           | 0 ->
               Lwt.fail End_of_file
           | n ->
@@ -268,7 +268,7 @@ module Encryption = struct
       | `Success (None, rest) ->
           Lwt.return (sock, rest)
       | `Success (Some (enc, dec), rest) ->
-          Lwt.return (Util.Socket.encrypt sock enc dec, rest)
+          Lwt.return (new Util.encrypt sock enc dec, rest)
     in
     loop t
 
@@ -314,11 +314,11 @@ let parse_handshake cs =
       `Error (Printf.sprintf "bad protocol length %d" n)
 
 let outgoing_handshake ~id ~info_hash sock rest =
-  Lwt_cstruct.complete (Util.Socket.write sock) (handshake_message id info_hash) >>= fun () ->
+  Lwt_cstruct.complete (sock # write) (handshake_message id info_hash) >>= fun () ->
   assert (Cstruct.len rest <= handshake_len);
   let hs = Cstruct.create handshake_len in
   Cstruct.blit rest 0 hs 0 (Cstruct.len rest);
-  Lwt_cstruct.complete (Util.Socket.read sock) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
+  Lwt_cstruct.complete (sock # read) (Cstruct.shift hs (Cstruct.len rest)) >>= fun () ->
   match parse_handshake hs with
   | `Ok (ext, info_hash', peer_id) ->
       if SHA1.equal info_hash info_hash' then begin
@@ -335,7 +335,7 @@ type kind =
 type addr = Unix.inet_addr * int
 
 type result =
-  | Ok of Util.Socket.t * Bits.t * SHA1.t
+  | Ok of Util.socket * Bits.t * SHA1.t
   | Failed
 
 let with_socket f =
@@ -357,7 +357,7 @@ let outgoing kind ~id ~info_hash addr =
       (Unix.string_of_inet_addr ip) port;
     let sa = Lwt_unix.ADDR_INET (ip, port) in
     Lwt_unix.connect fd sa >>= fun () ->
-    f ~info_hash (Util.Socket.tcp fd) >>= fun (sock, rest) ->
+    f ~info_hash (new Util.tcp fd) >>= fun (sock, rest) ->
     outgoing_handshake ~id ~info_hash sock rest
   in
   with_socket connect

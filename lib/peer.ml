@@ -660,12 +660,12 @@ let handle_err p sock e =
   Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short p.id (Printexc.to_string e);
   let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
   p.push (PeerDisconnected reqs);
-  Lwt.catch (fun () -> Util.Socket.close sock) (fun _ -> Lwt.return_unit)
+  Lwt.catch (sock # close) (fun _ -> Lwt.return_unit)
 
 let reader_loop p sock =
   let buf = Cstruct.create Wire.max_packet_len in
   let rec loop off =
-    Lwt_unix.with_timeout keepalive_delay (fun () -> Util.Socket.read sock @@ Cstruct.shift buf off) >>= function
+    Lwt_unix.with_timeout keepalive_delay (fun () -> sock # read (Cstruct.shift buf off)) >>= function
     | 0 ->
         Lwt.fail End_of_file
     | n ->
@@ -685,7 +685,7 @@ let writer_loop p sock =
   let write m =
     Log.debug "[%a] <-- %a" SHA1.print_hex_short p.id Wire.print m;
     let buf = Util.W.into_cstruct (Wire.writer m) buf in
-    Lwt_cstruct.complete (Util.Socket.write sock) buf
+    Lwt_cstruct.complete (sock # write) buf
   in
   let rec loop () =
     Lwt.pick

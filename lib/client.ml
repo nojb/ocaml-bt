@@ -40,11 +40,11 @@ type addr = Unix.inet_addr * int
 type event =
   | PeersReceived of addr list
   | ConnectToPeer of addr * float
-  | IncomingPeer of addr * Util.Socket.t
+  | IncomingPeer of addr * Util.socket
   | PieceVerified of int
   | PieceFailed of int
   | HandshakeFailed of addr
-  | HandshakeOk of addr * Util.Socket.t * Bits.t * SHA1.t
+  | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
   | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
@@ -751,7 +751,7 @@ let start_server ?(port = 0) push =
     Lwt_unix.accept fd >>= fun (fd, sa) ->
     Log.debug "accepted connection from %s" (Util.string_of_sockaddr sa);
     let addr = match sa with Unix.ADDR_INET (ip, p) -> ip, p | Unix.ADDR_UNIX _ -> assert false in
-    push (IncomingPeer (addr, Util.Socket.tcp fd));
+    push (IncomingPeer (addr, new Util.tcp fd));
     loop ()
   in
   loop ()

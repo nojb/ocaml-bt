@@ -20,7 +20,7 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
 type result =
-  | Ok of Util.Socket.t * Bits.t * SHA1.t
+  | Ok of Util.socket * Bits.t * SHA1.t
   | Failed
 
 type addr = Unix.inet_addr * int
