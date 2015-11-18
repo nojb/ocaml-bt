@@ -53,21 +53,29 @@ module Udp = struct
   let generate_trans_id () =
     Random.int32 Int32.max_int
 
-  let parse_connect_response cs =
-    match Cstruct.BE.get_uint32 cs 0 with
-    | 3l ->
-        `Error Cstruct.(to_string @@ shift cs 4)
-    | n ->
-        let trans_id' = Cstruct.BE.get_uint32 cs 4 in
-        let conn_id = Cstruct.BE.get_uint64 cs 8 in
-        `Ok (trans_id', conn_id)
+  (* let packet = Bytes.create (1 lsr 16) *)
+  (*     8 + 4 + 4 + 20 + 20 + 8 + 8 + 8 + 4 + 4 + 4 + 4 + 2) *)
 
-  let make_connect_request trans_id =
-    let cs = Cstruct.create 16 in
-    Cstruct.BE.set_uint64 cs 0 0x41727101980L;
-    Cstruct.BE.set_uint32 cs 8 0l;
-    Cstruct.BE.set_uint32 cs 12 trans_id;
-    cs
+  module BE = EndianBytes.BigEndian
+
+  let recv_connect_response fd pkt =
+    let%lwt n = Lwt_unix.recv fd pkt 0 (Bytes.length pkt) in
+    let%lwt ()  =
+      match BE.get_int32 packet 0 with
+      | 3l ->
+          [%lwt failwith "error in econnect response"]
+      | _ ->
+          Lwt.return_unit
+    in
+    let trans_id' = BE.get_int32 pkt 4 in
+    let conn_id = BE.get_int64 pkt 8 in
+    Lwt.return (trans_id', conn_id)
+
+  let send_connect_request fd pkt trans_id =
+    BE.set_int64 pkt 0 0x41727101980L;
+    BE.set_uint32 pkt 8 0l;
+    BE.set_uint32 pkt 12 trans_id;
+    Lwt_unix.send fd pkt 0 16 []
 
   let int32_of_event = function
     | `None -> 0l
@@ -75,50 +83,53 @@ module Udp = struct
     | `Started -> 2l
     | `Stopped -> 3l
 
-  let make_announce_request conn_id trans_id t =
-    let cs = Cstruct.create (8 + 4 + 4 + 20 + 20 + 8 + 8 + 8 + 4 + 4 + 4 + 4 + 2) in
-    Cstruct.BE.set_uint64 cs 0 conn_id;
-    Cstruct.BE.set_uint32 cs 8 1l;
-    Cstruct.BE.set_uint32 cs 12 trans_id;
-    Cstruct.blit (SHA1.to_raw t.info_hash) 0 cs 16 20;
-    Cstruct.blit (SHA1.to_raw t.id) 0 cs 36 20;
-    Cstruct.BE.set_uint64 cs 56 t.down;
-    Cstruct.BE.set_uint64 cs 64 t.left;
-    Cstruct.BE.set_uint64 cs 72 t.up;
-    Cstruct.BE.set_uint32 cs 80 (int32_of_event t.event);
-    Cstruct.BE.set_uint32 cs 84 0l;
-    Cstruct.BE.set_uint32 cs 88 0l;
-    Cstruct.BE.set_uint32 cs 92 (-1l);
-    Cstruct.BE.set_uint16 cs 96 t.port;
-    cs
+  let send_announce_request fd pkt
+      ~conn_id ~trans_id ~info_hash ~id ~down ~left ~up ~event ~port =
+    BE.set_int64 pkt 0 conn_id;
+    BE.set_int32 pkt 8 1l;
+    BE.set_int32 pkt 12 trans_id;
+    Bytes.blit (SHA1.to_raw info_hash) 0 pkt 16 20;
+    Bytes.blit (SHA1.to_raw id) 0 pkt 36 20;
+    BE.set_int64 pkt 56 down;
+    BE.set_int64 pkt 64 left;
+    BE.set_int64 pkt 72 up;
+    BE.set_int32 pkt 80 (int32_of_event event);
+    BE.set_int32 pkt 84 0l;
+    BE.set_int32 pkt 88 0l;
+    BE.set_int32 pkt 92 (-1l);
+    BE.set_uint16 pkt 96 port;
+    Lwt_unix.send fd pkt 0 98 []
 
-  let parse_announce_response cs =
-    match Cstruct.BE.get_uint32 cs 0 with
-    | 3l ->
-        `Error Cstruct.(to_string @@ shift cs 4)
-    | 1l ->
-        let trans_id = Cstruct.BE.get_uint32 cs 4 in
-        let interval = Cstruct.BE.get_uint32 cs 8 in
-        let leechers = Cstruct.BE.get_uint32 cs 12 in
-        let seeders = Cstruct.BE.get_uint32 cs 16 in
-        let rec loop buf =
-          if Cstruct.len buf >= 6 then
-            let p, buf = Cstruct.split buf 6 in
-            let ip =
-              Printf.sprintf "%d.%d.%d.%d"
-                (Cstruct.get_uint8 p 0) (Cstruct.get_uint8 p 1)
-                (Cstruct.get_uint8 p 2) (Cstruct.get_uint8 p 3)
-            in
-            let ip = Unix.inet_addr_of_string ip in
-            let port = Cstruct.BE.get_uint16 p 4 in
-            (ip, port) :: loop buf
-          else
-            []
+  let recv_announce_response fd pkt =
+    let%lwt n = Lwt_unix.recv fd pkt 0 (Bytes.length pkt) in
+    let%lwt () =
+      match BE.get_int32 pkt 0 with
+      | 3l ->
+          [%lwt raise (Error Cstruct.(to_string @@ shift cs 4))]
+      | 1l ->
+          Lwt.return_unit
+      | _ ->
+          [%lwt raise (Error "parse_announce_response")]
+    in
+    let trans_id = BE.get_int32 pkt 4 in
+    let interval = BE.get_int32 pkt 8 in
+    let leechers = BE.get_int32 pkt 12 in
+    let seeders = BE.get_int32 pkt 16 in
+    let rec loop off =
+      if off + 6 <= n then
+        let ip =
+          Printf.sprintf "%d.%d.%d.%d"
+            (BE.get_uint8 pkt 0) (BE.get_uint8 pkt 1)
+            (BE.get_uint8 pkt 2) (Be.get_uint8 pkt 3)
         in
-        let peers = loop (Cstruct.shift cs 20) in
-        `Ok (trans_id, interval, leechers, seeders, peers)
-    | _ ->
-        `Error "parse_announce_response"
+        let ip = Unix.inet_addr_of_string ip in
+        let port = BE.get_uint16 pkt 4 in
+        (ip, port) :: loop (off + 6)
+      else
+        []
+    in
+    let peers = loop 20 in
+    Lwt.return (trans_id, interval, leechers, seeders, peers)
 
   let delay n = 15. *. 2. ** float n
 
@@ -162,6 +173,37 @@ module Udp = struct
           `Error "trans_id don't match"
         else
           `Success (Int32.to_float interval, Int32.to_int leechers, Int32.to_int seeders, peers)
+
+  let announce fd pkt =
+    let rec loop n =
+      let trans_id = generate_trans_id () in
+      let%lwt () = send_connect_request fd pkt trans_id in
+      match%lwt recv_connect_response fd pkt with
+      | exception Lwt_unix.Timeout ->
+          if n >= 8 then
+            [%lwt failwith "Too many retries"]
+          else
+            let%lwt () = Lwt_unix.sleep (delay n) in
+            loop (n+1)
+      | trans_id', conn_id ->
+          let%lwt () = if trans_id <> trans_id' then [%lwt failwith "trans_id do not match"] in
+          let rec loop1 n =
+            let trans_id = generate_trans_id () in
+            let%lwt () = send_announce_request fd pkt conn_id trans_id in
+            match%lwt recv_announce_response fd pkt with
+            | exception Lwt_unix.Timeout ->
+                if n >= 2 then
+                  loop 0
+                else
+                  let%lwt () = Lwt_unix.sleep (delay n) in
+                  loop1 (n+1)
+            | trans_id', interval, leecheers, seeders, peers ->
+                let%lwt () = if trans_id <> trans_id' then [%lwt failwith "trans_id do not match"] in
+                Lwt.return (interval, leechers, seeders, peers)
+          in
+          loop1 0
+    in
+    loop 0
 
   let create ~up ~left ~down ~info_hash ~id ~port ~event  =
     let trans_id = generate_trans_id () in
