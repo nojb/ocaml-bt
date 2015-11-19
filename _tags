@@ -1,7 +1,7 @@
 true: package(dolog)
 true: package(nocrypto)
 true: package(cstruct), package(cstruct.lwt)
-true: package(lwt)
+true: package(lwt), package(lwt.ppx)
 true: package(uri)
 true: package(cohttp)
 true: bin_annot
