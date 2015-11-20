@@ -234,6 +234,41 @@ end = struct
 
 end
 
+module IncompleteMetadata = struct
+  type t =
+    {
+      length : int;
+      pieces : Bits.t;
+      raw : Cstruct.t;
+    }
+
+  let metadata_block_size = 1 lsl 14
+  let metadata_max_size = 1 lsl 22
+
+  let create ~length =
+    let size = (length + metadata_block_size - 1) / metadata_block_size in
+    { length; pieces = Bits.create size; raw = Cstruct.create length }
+
+  let add m n buf =
+    if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
+    Bits.set m.pieces n;
+    Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
+    Bits.has_all m.pieces
+
+  let verify m info_hash =
+    if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
+    if SHA1.(equal (digest m.raw) info_hash) then
+      Some m.raw
+    else
+      None
+
+  let iter_missing f m =
+    for i = 0 to Bits.length m.pieces - 1 do
+      if not (Bits.is_set m.pieces i) then
+        f i
+    done
+end
+
 module Handshake = struct
 
   module Encryption = struct
@@ -618,7 +653,6 @@ module Peers = struct
     | AvailableMetadata of int
     | MetaRequested of int
     | GotMetaPiece of int * Cstruct.t
-    | RejectMetaPiece of int
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
     | HandshakeFailed of addr
@@ -660,10 +694,32 @@ module Peers = struct
       queue                   : Wire.message Lwt_sequence.t;
     }
 
+  type piece_state =
+    | Pending
+    | Active of int array
+    | Verified
+
+  type piece =
+    {
+      mutable state : piece_state;
+      length : int;
+      offset : int64;
+      mutable have : int;
+      hash : SHA1.t;
+    }
+
+  type metadata =
+    | Complete of Metadata.t
+    | Incomplete of IncompleteMetadata.t
+
   type t =
     {
+      id : SHA1.t;
+      info_hash : SHA1.t;
       peers : (SHA1.t, peer) Hashtbl.t;
-      push : SHA1.t -> event -> unit;
+      mutable pieces : piece array;
+      mutable metadata : metadata;
+      mutable has_metadata : bool;
     }
 
   let count t =
@@ -691,8 +747,8 @@ module Peers = struct
   (*   create_peer id t.push sock *)
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
 
-  let peer_choking p =
-    p.peer_choking
+  (* let peer_choking p = *)
+  (*   p.peer_choking *)
 
   (* let peer_interested p = *)
   (*   p.peer_interested *)
@@ -735,13 +791,41 @@ module Peers = struct
     let m, data = Bcode.decode_partial data in
     let msg_type = Bcode.to_int (Bcode.find "msg_type" m) in
     let piece = Bcode.to_int (Bcode.find "piece" m) in
-    match msg_type with
-    | 0 -> (* request *)
-        t.push p.id (MetaRequested piece)
-    | 1 -> (* data *)
-        t.push p.id (GotMetaPiece (piece, data))
-    | 2 -> (* reject *)
-        t.push p.id (RejectMetaPiece piece)
+    match t.metadata, msg_type with
+    | Incomplete _, 0 -> (* request *)
+        let id = Hashtbl.find p.extensions UT_metadata in
+        let m =
+          let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
+          Bcode.encode (Bcode.Dict d)
+        in
+        send p @@ Wire.EXTENDED (id, m)
+    | Complete m, 0 ->
+        let metadata_piece len i data p =
+          let id = Hashtbl.find p.extensions UT_metadata in
+          let m =
+            let d =
+              [ "msg_type",   Bcode.Int 1L;
+                "piece",      Bcode.Int (Int64.of_int piece);
+                "total_size", Bcode.Int (Int64.of_int len) ]
+            in
+            Cs.(Bcode.encode (Bcode.Dict d) <+> data)
+          in
+          send p @@ Wire.EXTENDED (id, m)
+        in
+        metadata_piece (Metadata.length meta) piece (Metadata.get_piece meta piece)
+    | Complete _, 1 -> (* data *)
+        ()
+    | Incomplete m, 1 ->
+        if IncompleteMetadata.add m' i s then begin
+          match IncompleteMetadata.verify m' bt.ih with
+          | Some raw ->
+              (* debug "got full metadata"; *)
+              let m' = Metadata.create (Bcode.decode raw) in
+              Lwt.return (m', peers)
+          | None ->
+              Log.error "METADATA HASH CHECK FAILED";
+              loop None
+        end
     | _ ->
         ()
 
@@ -972,26 +1056,6 @@ module Peers = struct
       send_ut_pex p added dropped
     end
 
-  let reject_metadata_request p piece =
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let m =
-      let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
-      Bcode.encode (Bcode.Dict d)
-    in
-    send p @@ Wire.EXTENDED (id, m)
-
-  let metadata_piece len i data p =
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let m =
-      let d =
-        [ "msg_type",   Bcode.Int 1L;
-          "piece",      Bcode.Int (Int64.of_int i);
-          "total_size", Bcode.Int (Int64.of_int len) ]
-      in
-      Cs.(Bcode.encode (Bcode.Dict d) <+> data)
-    in
-    send p @@ Wire.EXTENDED (id, m)
-
   let on_message t p m =
     match m with
     | Wire.KEEP_ALIVE ->
@@ -1006,7 +1070,7 @@ module Peers = struct
     | Wire.UNCHOKE ->
         if p.peer_choking then begin
           p.peer_choking <- false;
-          t.push p.id Unchoked
+          update_requests t
         end
     | Wire.INTERESTED ->
         if not p.peer_interested then begin
@@ -1198,25 +1262,25 @@ let max_requests = 5
 
 type addr = Unix.inet_addr * int
 
-type event =
-  | PeersReceived of addr list
-  | ConnectToPeer of addr * float
-  | IncomingPeer of addr * Util.socket
-  | PieceVerified of int
-  | PieceFailed of int
-  | TorrentComplete
-  | PeerEvent of SHA1.t * Peer.event
-  | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
-  | Error of exn
-  | Rechoke of SHA1.t option * int
+(* type event = *)
+(*   | PeersReceived of addr list *)
+(*   | ConnectToPeer of addr * float *)
+(*   | IncomingPeer of addr * Util.socket *)
+(*   | PieceVerified of int *)
+(*   | PieceFailed of int *)
+(*   | TorrentComplete *)
+(*   | PeerEvent of SHA1.t * Peer.event *)
+(*   | BlockReadyToSend of SHA1.t * int * int * Cstruct.t *)
+(*   | Error of exn *)
+(*   | Rechoke of SHA1.t option * int *)
 
 type t =
-  { id : SHA1.t;
+  {
+    id : SHA1.t;
     ih : SHA1.t;
     trackers : Uri.t list;
     peer_mgr : PeerMgr.swarm;
-    chan : event Lwt_stream.t;
-    push : event -> unit }
+  }
 
 (* let pex_delay = 60.0 *)
 
@@ -1224,18 +1288,6 @@ type t =
 (*   let pex = Hashtbl.fold (fun addr _ l -> addr :: l) pm.peers [] in *)
 (*   iter_peers (fun p -> Peer.send_pex p pex) pm; *)
 (*   Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm *)
-
-type piece_state =
-  | Pending
-  | Active of int array
-  | Verified
-
-type piece =
-  { mutable state : piece_state;
-    length : int;
-    offset : int64;
-    mutable have : int;
-    hash : SHA1.t }
 
 let request_block parts = function
   | false ->
@@ -1314,20 +1366,13 @@ let request_pending pieces has start finish =
 let request_pending pieces has =
   let n = Random.int (Array.length pieces + 1) in
   match request_pending pieces has n (Array.length pieces) with
-  | None ->
-      begin match request_pending pieces has 0 n with
-      | None ->
-          request_endgame pieces has
-      | Some _ as r ->
-          r
-      end
-  | Some _ as r ->
-      r
+  | None -> request_pending pieces has 0 n
+  | Some _ as r -> r
 
 let request_active pieces has =
   let rec loop i =
     if i >= Array.length pieces then
-      request_pending pieces has
+      None
     else
       match pieces.(i).state with
       | Verified
@@ -1348,16 +1393,27 @@ let request_active pieces has =
 
 let request p pieces =
   if Peer.requests p < max_requests then
-    match request_active pieces (Peer.has p) with
+    let res =
+      match request_active pieces (Peer.has p) with
+      | Some _ as res -> res
+      | None ->
+          match request_pending pieces has with
+          | Some _ as res -> res
+          | None -> request_endgame pieces has
+    in
+    match res with
     | Some (i, j) ->
         let off = j * block_size in
         let len = min block_size (pieces.(i).length - off) in
-        Peer.request p i off len
+        Peers.send_request p i off len
     | None ->
         ()
 
-let update_requests pieces peers =
-  Hashtbl.iter (fun _ p -> if not (Peer.peer_choking p) then request p pieces) peers
+let update_requests t =
+  if t.has_metadata then begin
+    let request _ p = if not p.peer_choking then request p t.pieces in
+    Hashtbl.iter request t.peers
+  end
 
 let update_interest pieces p =
   let rec loop i =
@@ -1439,7 +1495,7 @@ let share_torrent bt meta store pieces have (peers : Peers.t) =
   (* let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in *)
   Peers.have_bitfield peers have;
   (* Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers; *)
-  update_requests pieces peers;
+  update_requests t;
   (* bt.push (Rechoke (None, rechoke_optimistic_duration)); *)
   let handle = function
     (* log_event e; *)
@@ -1497,10 +1553,6 @@ let share_torrent bt meta store pieces have (peers : Peers.t) =
     | PeerEvent (id, Peer.MetaRequested i) ->
         peer id
           (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i))
-
-    | PeerEvent (_, Peer.GotMetaPiece _)
-    | PeerEvent (_, Peer.RejectMetaPiece _) ->
-        ()
 
     | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
         if i >= 0 && i < Array.length pieces then
@@ -1591,39 +1643,6 @@ let load_torrent bt m =
       Lwt.return (store, pieces, have)
   in
   loop 0
-
-module IncompleteMetadata = struct
-  type t =
-    { length : int;
-      pieces : Bits.t;
-      raw : Cstruct.t }
-
-  let metadata_block_size = 1 lsl 14
-  let metadata_max_size = 1 lsl 22
-
-  let create ~length =
-    let size = (length + metadata_block_size - 1) / metadata_block_size in
-    { length; pieces = Bits.create size; raw = Cstruct.create length }
-
-  let add m n buf =
-    if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
-    Bits.set m.pieces n;
-    Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
-    Bits.has_all m.pieces
-
-  let verify m info_hash =
-    if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
-    if SHA1.(equal (digest m.raw) info_hash) then
-      Some m.raw
-    else
-      None
-
-  let iter_missing f m =
-    for i = 0 to Bits.length m.pieces - 1 do
-      if not (Bits.is_set m.pieces i) then
-        f i
-    done
-end
 
 let rec fetch_metadata bt =
   (* let peers = Hashtbl.create 20 in *)
@@ -1726,7 +1745,6 @@ let rec fetch_metadata bt =
     | _, PeerEvent (_, Peer.NotInterested)
     | _, PeerEvent (_, Peer.Have _)
     | _, PeerEvent (_, Peer.HaveBitfield _)
-    | _, PeerEvent (_, Peer.RejectMetaPiece _)
     | _, PeerEvent (_, Peer.BlockRequested _)
     | _, PeerEvent (_, Peer.BlockReceived _) ->
         loop m
