@@ -1,9 +1,7 @@
 lib/Bcode
 lib/SHA1
 lib/Bits
-lib/Metadata
 lib/Magnet
-lib/Store
 lib/Tracker
 lib/Util
 lib/PeerMgr

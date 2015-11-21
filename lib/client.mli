@@ -21,12 +21,12 @@
 
 (** Client *)
 
-type t
+(* type t *)
 
-val create : Magnet.t -> t
-(** Create a client sharing the torrent specified by the magnet link. *)
+(* val create : Magnet.t -> t *)
+(* (\** Create a client sharing the torrent specified by the magnet link. *\) *)
 
-val start : t -> unit Lwt.t
+(* val start : t -> unit Lwt.t *)
 (** Start the client event loop.  Currently the thread never finishes because
     the client keeps seeding after it comples the torrent. *)
 
@@ -35,6 +35,6 @@ val start : t -> unit Lwt.t
 
 type addr = Unix.inet_addr * int
 
-module LPD : sig
-  val start : port:int -> info_hash:SHA1.t -> (SHA1.t * addr -> unit) -> unit
-end
+(* module LPD : sig *)
+(*   val start : port:int -> info_hash:SHA1.t -> (SHA1.t * addr -> unit) -> unit *)
+(* end *)
