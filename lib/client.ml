@@ -24,6 +24,39 @@ module Log  = Log.Make (struct let section = "[Client]" end)
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
+module IncompleteMetadata = struct
+  type t =
+    { length : int;
+      pieces : Bits.t;
+      raw : Cstruct.t }
+
+  let metadata_block_size = 1 lsl 14
+  let metadata_max_size = 1 lsl 22
+
+  let create ~length =
+    let size = (length + metadata_block_size - 1) / metadata_block_size in
+    { length; pieces = Bits.create size; raw = Cstruct.create length }
+
+  let add m n buf =
+    if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
+    Bits.set m.pieces n;
+    Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
+    Bits.has_all m.pieces
+
+  let verify m info_hash =
+    if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
+    if SHA1.(equal (digest m.raw) info_hash) then
+      Some m.raw
+    else
+      None
+
+  let iter_missing f m =
+    for i = 0 to Bits.length m.pieces - 1 do
+      if not (Bits.is_set m.pieces i) then
+        f i
+    done
+end
+
 module Speedometer : sig
 
   type t
@@ -235,6 +268,147 @@ end = struct
 
 end
 
+let listen_backlog = 5
+let listen_ports = [50000]
+let choke_timeout = 5.
+let rechoke_interval = 10.
+let rechoke_optimistic_duration = 2
+let rechoke_slots = 10
+let block_size = 1 lsl 14 (* 16384 *)
+let max_requests = 5
+
+module Piece = struct
+  type piece_state =
+    | Pending
+    | Active of int array
+    | Verified
+
+  type piece =
+    { mutable state : piece_state;
+      length : int;
+      offset : int64;
+      mutable have : int;
+      hash : SHA1.t }
+
+  let make m i =
+    {
+      state = Pending;
+      length = Metadata.piece_length m i;
+      offset = Metadata.offset m i 0;
+      have = 0;
+      hash = Metadata.hash m i
+    }
+
+  let request_block parts = function
+    | false ->
+        let rec loop i =
+          if i >= Array.length parts then
+            None
+          else
+          if parts.(i) = 0 then
+            (parts.(i) <- 1; Some i)
+          else
+            loop (i + 1)
+        in
+        loop 0
+    | true ->
+        let rec loop min index i =
+          if i >= Array.length parts then
+            if index >= 0 then
+              (parts.(index) <- parts.(index) + 1; Some index)
+            else
+              None
+          else
+          if parts.(i) >= 0 && (parts.(i) < min || min < 0) then
+            loop parts.(i) i (i + 1)
+          else
+            loop min index (i + 1)
+        in
+        loop (-1) (-1) 0
+
+  let request_endgame pieces has =
+    let rec loop i =
+      if i >= Array.length pieces then
+        None
+      else
+        match pieces.(i).state with
+        | Verified
+        | Pending ->
+            loop (i + 1)
+        | Active parts ->
+            if has i then
+              match request_block parts true with
+              | Some j ->
+                  Log.debug "Requesting ENDGAME block #%d of #%d" j i;
+                  Some (i, j)
+              | None ->
+                  None
+            else
+              loop (i + 1)
+    in
+    loop 0
+
+  let request_pending pieces has start finish =
+    if start < 0 || start > finish || finish > Array.length pieces then
+      invalid_arg "request_pending";
+    let rec loop i =
+      if i >= finish then
+        None
+      else
+        match pieces.(i).state with
+        | Pending ->
+            let nparts = (pieces.(i).length + block_size - 1) / block_size in
+            let parts = Array.make nparts 0 in
+            pieces.(i).state <- Active parts;
+            begin match request_block parts false with
+            | None ->
+                assert false
+            | Some j ->
+                Log.debug "Requesting PENDING block #%d of #%d" j i;
+                Some (i, j)
+            end
+        | Active _
+        | Verified ->
+            loop (i + 1)
+    in
+    loop start
+
+  let request_pending pieces has =
+    let n = Random.int (Array.length pieces + 1) in
+    match request_pending pieces has n (Array.length pieces) with
+    | None ->
+        begin match request_pending pieces has 0 n with
+        | None ->
+            request_endgame pieces has
+        | Some _ as r ->
+            r
+        end
+    | Some _ as r ->
+        r
+
+  let request_active pieces has =
+    let rec loop i =
+      if i >= Array.length pieces then
+        request_pending pieces has
+      else
+        match pieces.(i).state with
+        | Verified
+        | Pending ->
+            loop (i + 1)
+        | Active parts ->
+            if has i then
+              match request_block parts false with
+              | None ->
+                  loop (i + 1)
+              | Some j ->
+                  Log.debug "Requesting ACTIVE block #%d of #%d" j i;
+                  Some (i, j)
+            else
+              loop (i + 1)
+    in
+    loop 0
+end
+
 module Peer = struct
   type addr = Unix.inet_addr * int
 
@@ -299,8 +473,25 @@ module Peer = struct
       queue                   : Wire.message Lwt_sequence.t;
       push                    : event -> unit }
 
-  let strl f l =
-    "[" ^ String.concat " " (List.map f l) ^ "]"
+  type incomplete =
+    IncompleteMetadata.t
+
+  type complete =
+    {
+      store : Store.t;
+      pieces : Piece.piece array;
+      metadata : Metadata.t;
+    }
+
+  type swarm_state =
+    | Incomplete of incomplete
+    | Complete of complete
+
+  type swarm =
+    {
+      peers : (SHA1.t, t) Hashtbl.t;
+      state : swarm_state;
+    }
 
   let supports p name =
     Hashtbl.mem p.extensions name
@@ -771,15 +962,6 @@ end
 
 open Lwt.Infix
 
-let listen_backlog = 5
-let listen_ports = [50000]
-let choke_timeout = 5.
-let rechoke_interval = 10.
-let rechoke_optimistic_duration = 2
-let rechoke_slots = 10
-let block_size = 1 lsl 14 (* 16384 *)
-let max_requests = 5
-
 type addr = Unix.inet_addr * int
 
 type event =
@@ -882,133 +1064,12 @@ let rechoke peers opt nopt =
   List.iter (fun (p, _) -> Peer.choke p) choke;
   (opt, nopt)
 
-type piece_state =
-  | Pending
-  | Active of int array
-  | Verified
-
-type piece =
-  { mutable state : piece_state;
-    length : int;
-    offset : int64;
-    mutable have : int;
-    hash : SHA1.t }
-
-let request_block parts = function
-  | false ->
-      let rec loop i =
-        if i >= Array.length parts then
-          None
-        else
-        if parts.(i) = 0 then
-          (parts.(i) <- 1; Some i)
-        else
-          loop (i + 1)
-      in
-      loop 0
-  | true ->
-      let rec loop min index i =
-        if i >= Array.length parts then
-          if index >= 0 then
-            (parts.(index) <- parts.(index) + 1; Some index)
-          else
-            None
-        else
-        if parts.(i) >= 0 && (parts.(i) < min || min < 0) then
-          loop parts.(i) i (i + 1)
-        else
-          loop min index (i + 1)
-      in
-      loop (-1) (-1) 0
-
-let request_endgame pieces has =
-  let rec loop i =
-    if i >= Array.length pieces then
-      None
-    else
-      match pieces.(i).state with
-      | Verified
-      | Pending ->
-          loop (i + 1)
-      | Active parts ->
-          if has i then
-            match request_block parts true with
-            | Some j ->
-                Log.debug "Requesting ENDGAME block #%d of #%d" j i;
-                Some (i, j)
-            | None ->
-                None
-          else
-            loop (i + 1)
-  in
-  loop 0
-
-let request_pending pieces has start finish =
-  if start < 0 || start > finish || finish > Array.length pieces then
-    invalid_arg "request_pending";
-  let rec loop i =
-    if i >= finish then
-      None
-    else
-      match pieces.(i).state with
-      | Pending ->
-          let nparts = (pieces.(i).length + block_size - 1) / block_size in
-          let parts = Array.make nparts 0 in
-          pieces.(i).state <- Active parts;
-          begin match request_block parts false with
-          | None ->
-              assert false
-          | Some j ->
-              Log.debug "Requesting PENDING block #%d of #%d" j i;
-              Some (i, j)
-          end
-      | Active _
-      | Verified ->
-          loop (i + 1)
-  in
-  loop start
-
-let request_pending pieces has =
-  let n = Random.int (Array.length pieces + 1) in
-  match request_pending pieces has n (Array.length pieces) with
-  | None ->
-      begin match request_pending pieces has 0 n with
-      | None ->
-          request_endgame pieces has
-      | Some _ as r ->
-          r
-      end
-  | Some _ as r ->
-      r
-
-let request_active pieces has =
-  let rec loop i =
-    if i >= Array.length pieces then
-      request_pending pieces has
-    else
-      match pieces.(i).state with
-      | Verified
-      | Pending ->
-          loop (i + 1)
-      | Active parts ->
-          if has i then
-            match request_block parts false with
-            | None ->
-                loop (i + 1)
-            | Some j ->
-                Log.debug "Requesting ACTIVE block #%d of #%d" j i;
-                Some (i, j)
-          else
-            loop (i + 1)
-  in
-  loop 0
-
 let request p pieces =
   if Peer.requests p < max_requests then
-    match request_active pieces (Peer.has p) with
+    match Piece.request_active pieces (Peer.has p) with
     | Some (i, j) ->
         let off = j * block_size in
-        let len = min block_size (pieces.(i).length - off) in
+        let len = min block_size (pieces.(i).Piece.length - off) in
         Peer.request p i off len
     | None ->
         ()
@@ -1020,11 +1081,11 @@ let update_interest pieces p =
   let rec loop i =
     if i < Array.length pieces then
       if Peer.has p i then
-        match pieces.(i).state with
-        | Active _
-        | Pending ->
+        match pieces.(i).Piece.state with
+        | Piece.Active _
+        | Piece.Pending ->
             Peer.interested p
-        | Verified ->
+        | Piece.Verified ->
             loop (i + 1)
       else
         loop (i + 1)
@@ -1037,31 +1098,31 @@ let upon t f g =
   Lwt.async (fun () -> Lwt.try_bind t (Lwt.wrap1 f) (Lwt.wrap1 g))
 
 let send_block store pieces p i off len push =
-  match pieces.(i).state with
-  | Verified ->
-      let off1 = Int64.(add pieces.(i).offset (of_int off)) in
+  match pieces.(i).Piece.state with
+  | Piece.Verified ->
+      let off1 = Int64.(add pieces.(i).Piece.offset (of_int off)) in
       upon (fun () -> Store.read store off1 len)
         (fun buf -> push (BlockReadyToSend (p, i, off, buf)))
         (fun e -> push (Error e))
-  | Pending
-  | Active _ ->
+  | Piece.Pending
+  | Piece.Active _ ->
       ()
 
 let verify_piece store peers pieces i push =
-  upon (fun () -> Store.digest store pieces.(i).offset pieces.(i).length)
+  upon (fun () -> Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length)
     (fun sha ->
-       push (if SHA1.equal sha pieces.(i).hash then PieceVerified i else PieceFailed i)
+       push (if SHA1.equal sha pieces.(i).Piece.hash then PieceVerified i else PieceFailed i)
     )
     (fun e -> push (Error e))
 
 let record_block store peers pieces i off s push =
   let j = off / block_size in
-  match pieces.(i).state with
-  | Pending ->
+  match pieces.(i).Piece.state with
+  | Piece.Pending ->
       Log.warn "Received block #%d for piece #%d, not requested ???" j i
-  | Verified ->
+  | Piece.Verified ->
       Log.warn "Received block #%d for piece #%d, already completed" j i
-  | Active parts ->
+  | Piece.Active parts ->
       let c = parts.(j) in
       if c >= 0 then begin
         parts.(j) <- (-1);
@@ -1070,23 +1131,23 @@ let record_block store peers pieces i off s push =
             Peer.cancel p i j (Cstruct.len s)
         in
         if c > 1 then Hashtbl.iter cancel peers;
-        pieces.(i).have <- pieces.(i).have + 1;
+        pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
         Log.info "Received block #%d for piece #%d, have %d, missing %d"
-          j i pieces.(i).have (Array.length parts - pieces.(i).have)
+          j i pieces.(i).Piece.have (Array.length parts - pieces.(i).Piece.have)
       end;
-      let off = Int64.(add pieces.(i).offset (of_int off)) in
+      let off = Int64.(add pieces.(i).Piece.offset (of_int off)) in
       upon (fun () -> Store.write store off s)
         (fun () ->
-           if pieces.(i).have = Array.length parts then
+           if pieces.(i).Piece.have = Array.length parts then
              verify_piece store peers pieces i push
         )
         (fun e -> push (Error e))
 
 let request_rejected pieces (i, off, _) =
-  match pieces.(i).state with
-  | Verified
-  | Pending -> ()
-  | Active parts ->
+  match pieces.(i).Piece.state with
+  | Piece.Verified
+  | Piece.Pending -> ()
+  | Piece.Active parts ->
       let j = off / block_size in
       if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
 
@@ -1114,7 +1175,7 @@ let share_torrent bt meta store pieces have peers =
         List.iter (PeerMgr.add bt.peer_mgr) addrs
 
     | PieceVerified i ->
-        pieces.(i).state <- Verified;
+        pieces.(i).Piece.state <- Piece.Verified;
         Bits.set have i;
         Hashtbl.iter (fun _ p -> Peer.have p i) peers
         (* maybe update interest ? *)
@@ -1223,22 +1284,15 @@ let share_torrent bt meta store pieces have peers =
   in
   loop ()
 
-let make_piece m i =
-  { state = Pending;
-    length = Metadata.piece_length m i;
-    offset = Metadata.offset m i 0;
-    have = 0;
-    hash = Metadata.hash m i }
-
 let load_torrent bt m =
   Store.create (Metadata.files m) >>= fun store ->
-  let pieces = Array.init (Metadata.piece_count m) (make_piece m) in
+  let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
   let have = Bits.create (Metadata.piece_count m) in
   let rec loop i =
     if i < Metadata.piece_count m then begin
-      Store.digest store pieces.(i).offset pieces.(i).length >>= fun sha ->
-      if SHA1.equal sha pieces.(i).hash then begin
-        pieces.(i).state <- Verified;
+      Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
+      if SHA1.equal sha pieces.(i).Piece.hash then begin
+        pieces.(i).Piece.state <- Piece.Verified;
         Bits.set have i
       end;
       loop (i + 1)
@@ -1246,39 +1300,6 @@ let load_torrent bt m =
       Lwt.return (store, pieces, have)
   in
   loop 0
-
-module IncompleteMetadata = struct
-  type t =
-    { length : int;
-      pieces : Bits.t;
-      raw : Cstruct.t }
-
-  let metadata_block_size = 1 lsl 14
-  let metadata_max_size = 1 lsl 22
-
-  let create ~length =
-    let size = (length + metadata_block_size - 1) / metadata_block_size in
-    { length; pieces = Bits.create size; raw = Cstruct.create length }
-
-  let add m n buf =
-    if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
-    Bits.set m.pieces n;
-    Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
-    Bits.has_all m.pieces
-
-  let verify m info_hash =
-    if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
-    if SHA1.(equal (digest m.raw) info_hash) then
-      Some m.raw
-    else
-      None
-
-  let iter_missing f m =
-    for i = 0 to Bits.length m.pieces - 1 do
-      if not (Bits.is_set m.pieces i) then
-        f i
-    done
-end
 
 let rec fetch_metadata bt =
   let peers = Hashtbl.create 20 in
