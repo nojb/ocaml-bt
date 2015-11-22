@@ -1,7 +1,7 @@
 OCAMLBUILD = ocamlbuild -classic-display -use-ocamlfind
 
 all:
-	$(OCAMLBUILD) otorrent/otorrent.byte
+	$(OCAMLBUILD) lib/client.byte
 
 clean:
 	$(OCAMLBUILD) -clean

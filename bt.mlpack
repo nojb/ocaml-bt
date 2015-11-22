@@ -3,7 +3,6 @@ lib/SHA1
 lib/Bits
 lib/Metadata
 lib/Magnet
-lib/Peer
 lib/Store
 lib/Tracker
 lib/Util
