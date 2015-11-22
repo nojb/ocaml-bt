@@ -264,12 +264,25 @@ module Peer = struct
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
 
+  type ut_extension =
+    | UT_pex
+    | UT_metadata
+
+  let string_of_ut_extension = function
+    | UT_pex -> "ut_pex"
+    | UT_metadata -> "ut_metadata"
+
+  let ut_extension_of_string = function
+    | "ut_pex" -> UT_pex
+    | "ut_metadata" -> UT_metadata
+    | s -> Printf.ksprintf failwith "ut_extension_of_string: %s" s
+
   type t =
     { id                      : SHA1.t;
       blame                   : Bits.t;
       have                    : Bits.t;
       extbits                 : Bits.t;
-      extensions              : (string, int) Hashtbl.t;
+      extensions              : (ut_extension, int) Hashtbl.t;
       mutable last_pex        : addr list;
       mutable am_choking      : bool;
       mutable am_interested   : bool;
@@ -288,9 +301,6 @@ module Peer = struct
 
   let strl f l =
     "[" ^ String.concat " " (List.map f l) ^ "]"
-
-  let ut_pex = "ut_pex"
-  let ut_metadata = "ut_metadata"
 
   let supports p name =
     Hashtbl.mem p.extensions name
@@ -391,9 +401,13 @@ module Peer = struct
     in
     p.push @@ GotPEX (List.combine added added_f, loop dropped)
 
-  let supported_extensions =
-    [ 1, ("ut_metadata", got_ut_metadata);
-      2, ("ut_pex", got_ut_pex) ]
+  let got_ut_extension = function
+    | UT_metadata -> got_ut_metadata
+    | UT_pex -> got_ut_pex
+
+  let supported_ut_extensions =
+    [ 1, UT_metadata;
+      2, UT_pex ]
 
   (* Outgoing *)
 
@@ -414,12 +428,14 @@ module Peer = struct
 
   let extended_handshake p =
     let m =
-      List.map (fun (id, (name, _)) ->
-        name, Bcode.Int (Int64.of_int id)) supported_extensions
+      List.map (fun (id, name) ->
+        string_of_ut_extension name, Bcode.Int (Int64.of_int id)) supported_ut_extensions
     in
     let m = Bcode.Dict ["m", Bcode.Dict m] in
     Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.id
-      (String.concat " " (List.map (fun (n, (name, _)) -> Printf.sprintf "%s %d" name n) supported_extensions));
+      (String.concat " " (List.map (fun (n, name) ->
+           Printf.sprintf "%s %d" (string_of_ut_extension name) n)
+           supported_ut_extensions));
     send p @@ Wire.EXTENDED (0, Bcode.encode m)
 
   let choke p =
@@ -472,8 +488,8 @@ module Peer = struct
     send p @@ Wire.PORT i
 
   let request_metadata_piece p i =
-    if i < 0 || not (Hashtbl.mem p.extensions ut_metadata) then invalid_arg "request_metadata_piece";
-    let id = Hashtbl.find p.extensions ut_metadata in
+    if i < 0 || not (Hashtbl.mem p.extensions UT_metadata) then invalid_arg "request_metadata_piece";
+    let id = Hashtbl.find p.extensions UT_metadata in
     let d =
       [ "msg_type", Bcode.Int 0L;
         "piece", Bcode.Int (Int64.of_int i) ]
@@ -481,7 +497,7 @@ module Peer = struct
     send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
   let send_ut_pex p added dropped =
-    let id = Hashtbl.find p.extensions "ut_pex" in
+    let id = Hashtbl.find p.extensions UT_pex in
     let rec c (ip, port) =
       let cs =
         Scanf.sscanf (Unix.string_of_inet_addr ip) "%d.%d.%d.%d"
@@ -505,7 +521,7 @@ module Peer = struct
     send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
   let send_pex pex p =
-    if supports p ut_pex then begin
+    if supports p UT_pex then begin
       let added = List.filter (fun a -> not (List.mem a p.last_pex)) pex in
       let dropped = List.filter (fun a -> not (List.mem a pex)) p.last_pex in
       p.last_pex <- pex;
@@ -513,7 +529,7 @@ module Peer = struct
     end
 
   let reject_metadata_request p piece =
-    let id = Hashtbl.find p.extensions ut_metadata in
+    let id = Hashtbl.find p.extensions UT_metadata in
     let m =
       let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
       Bcode.encode (Bcode.Dict d)
@@ -521,7 +537,7 @@ module Peer = struct
     send p @@ Wire.EXTENDED (id, m)
 
   let metadata_piece len i data p =
-    let id = Hashtbl.find p.extensions ut_metadata in
+    let id = Hashtbl.find p.extensions UT_metadata in
     let m =
       let d =
         [ "msg_type",   Bcode.Int 1L;
@@ -623,17 +639,24 @@ module Peer = struct
       List.map (fun (name, id) -> (name, Bcode.to_int id))
     in
     List.iter (fun (name, id) ->
-      if id = 0 then Hashtbl.remove p.extensions name
-      else Hashtbl.replace p.extensions name id) m;
+      try
+        let name = ut_extension_of_string name in
+        if id = 0 then Hashtbl.remove p.extensions name
+        else Hashtbl.replace p.extensions name id
+      with
+        _ -> ()) m;
     Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.id
       (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
-    if Hashtbl.mem p.extensions ut_metadata then
+    if Hashtbl.mem p.extensions UT_metadata then
       p.push @@ AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)
 
   let on_extended p id data =
     Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.id id;
-    let (_, f) = List.assoc id supported_extensions in
-    f p data
+    try
+      let ute = List.assoc id supported_ut_extensions in
+      got_ut_extension ute p data
+    with
+    | _ -> ()
 
   let on_port p i =
     p.push @@ DHTPort i
