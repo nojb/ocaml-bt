@@ -446,7 +446,6 @@ module Peer = struct
   let keepalive_delay = 20. (* FIXME *)
 
   type event =
-    | Choked of (int * int * int) list
     | Interested
     | NotInterested
     | PeerDisconnected of (int * int * int) list
@@ -874,6 +873,14 @@ module Peer = struct
     in
     loop 0
 
+  let request_rejected pieces (i, off, _) =
+    match pieces.(i).Piece.state with
+    | Piece.Verified
+    | Piece.Pending -> ()
+    | Piece.Active parts ->
+        let j = off / block_size in
+        if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
+
   let on_message t p m =
     match m with
     | Wire.KEEP_ALIVE -> ()
@@ -882,7 +889,11 @@ module Peer = struct
           p.peer_choking <- true;
           let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
           Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) p.requests;
-          p.push @@ Choked reqs
+          match t.state with
+          | Complete {pieces; _} ->
+              List.iter (request_rejected pieces) reqs
+          | Incomplete _ ->
+              ()
         end
     | Wire.UNCHOKE ->
         if p.peer_choking then begin
@@ -1121,7 +1132,6 @@ module Peer = struct
     | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
     | TorrentComplete
     | PeerEvent of SHA1.t * event
-    | Error of exn
 
   let welcome t push sock exts id =
     let p = create_peer id (fun e -> push (PeerEvent (id, e))) sock in
@@ -1224,7 +1234,6 @@ type event = Peer.global_event =
   | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
-  | Error of exn
 
 type t =
   {
@@ -1247,20 +1256,10 @@ type t =
 let upon t f g =
   Lwt.async (fun () -> Lwt.try_bind t (Lwt.wrap1 f) (Lwt.wrap1 g))
 
-let request_rejected pieces (i, off, _) =
-  match pieces.(i).Piece.state with
-  | Piece.Verified
-  | Piece.Pending -> ()
-  | Piece.Active parts ->
-      let j = off / block_size in
-      if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
-
 let share_torrent bt meta store pieces have peers =
   Log.info "TORRENT SHARE have:%d total:%d peers:%d"
     (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers);
   let handle = function
-    (* log_event e; *)
-
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
         Log.info "TORRENT COMPLETE";
@@ -1269,25 +1268,14 @@ let share_torrent bt meta store pieces have peers =
     | PeersReceived addrs ->
         List.iter (PeerMgr.add bt.peer_mgr) addrs
 
-    | Error e ->
-        raise e
-
     | HandshakeFailed addr ->
         PeerMgr.handshake_failed bt.peer_mgr addr
 
     | PeerEvent (id, Peer.PeerDisconnected reqs) ->
-        List.iter (request_rejected pieces) reqs;
+        List.iter (Peer.request_rejected pieces) reqs;
         PeerMgr.peer_disconnected bt.peer_mgr id;
         Hashtbl.remove peers id
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
-
-    | PeerEvent (_, Peer.Choked reqs) ->
-        List.iter (request_rejected pieces) reqs
-
-    | PeerEvent (_, Peer.Interested)
-    | PeerEvent (_, Peer.NotInterested) ->
-        (* rechoke *)
-        ()
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added
@@ -1398,11 +1386,9 @@ let rec fetch_metadata bt =
         (* FIXME *)
         loop ()
 
-    | Error _
     | TorrentComplete ->
         assert false
 
-    | PeerEvent (_, Peer.Choked _)
     | PeerEvent (_, Peer.Interested)
     | PeerEvent (_, Peer.NotInterested) ->
         loop ()
