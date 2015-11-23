@@ -481,7 +481,6 @@ module Peer = struct
       queue                   : Wire.message Lwt_sequence.t;
     }
 
-
   type incomplete =
     IncompleteMetadata.t
 
@@ -506,24 +505,9 @@ module Peer = struct
       mutable state : swarm_state;
     }
 
-  let id p =
-    p.peer_id
-
-  let peer_choking p =
-    p.peer_choking
-
-  let peer_interested p =
-    p.peer_interested
-
   let has p i =
     if i < 0 then invalid_arg "Peer.has";
     i < Bits.length p.have && Bits.is_set p.have i
-
-  let am_choking p =
-    p.am_choking
-
-  let am_interested p =
-    p.am_interested
 
   let download_speed p =
     Speedometer.speed p.download
@@ -840,7 +824,7 @@ module Peer = struct
           ()
 
   let update_requests pieces peers =
-    Hashtbl.iter (fun _ p -> if not (peer_choking p) then request p pieces) peers
+    Hashtbl.iter (fun _ p -> if not p.peer_choking then request p pieces) peers
 
   let update_interest pieces p =
     let rec loop i =
@@ -1146,8 +1130,8 @@ module Peer = struct
     if upload_speed p1 <> upload_speed p2 then
       compare (upload_speed p2) (upload_speed p1)
     else
-    if am_choking p1 <> am_choking p2 then
-      compare (am_choking p1) (am_choking p2)
+    if p1.am_choking <> p2.am_choking then
+      compare p1.am_choking p2.am_choking
     else
       compare salt1 salt2
 
@@ -1160,7 +1144,7 @@ module Peer = struct
         | true, _ ->
             choke p;
             wires
-        | false, Some opt when SHA1.equal (id p) opt ->
+        | false, Some opt when SHA1.equal p.peer_id opt ->
             wires
         | false, _ ->
             (p, Random.int (1 lsl 29)) :: wires
@@ -1171,17 +1155,17 @@ module Peer = struct
     (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
     let rec select n acc = function
       | (p, _) as w :: wires when n < rechoke_slots ->
-          let n = if peer_interested p then n + 1 else n in
+          let n = if p.peer_interested then n + 1 else n in
           select n (w :: acc) wires
       | wires ->
           begin match opt with
           | Some _ ->
               acc, wires, opt, nopt
           | None ->
-              let wires = List.filter (fun (p, _) -> peer_interested p) wires in
+              let wires = List.filter (fun (p, _) -> p.peer_interested) wires in
               if List.length wires > 0 then
                 let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
-                (opt :: acc), wires, Some (id p), rechoke_optimistic_duration
+                (opt :: acc), wires, Some p.peer_id, rechoke_optimistic_duration
               else
                 acc, wires, None, nopt
           end
