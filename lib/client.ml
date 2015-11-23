@@ -1045,13 +1045,45 @@ module Peer = struct
     List.iter (fun (p, _) -> unchoke p) to_unchoke;
     List.iter (fun (p, _) -> choke p) to_choke;
     (opt, nopt)
+
+  type global_event =
+    | PeersReceived of addr list
+    | ConnectToPeer of addr * float
+    | IncomingPeer of addr * Util.socket
+    | PieceVerified of int
+    | PieceFailed of int
+    | HandshakeFailed of addr
+    | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
+    | TorrentComplete
+    | PeerEvent of SHA1.t * event
+    | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
+    | Error of exn
+    | Rechoke of SHA1.t option * int
+
+  let connect ~id ~info_hash addr timeout push =
+    let push = function
+      | Handshake.Ok (sock, ext, peer_id) ->
+          Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
+            SHA1.print_hex_short peer_id;
+          push @@ HandshakeOk (addr, sock, ext, peer_id)
+      | Handshake.Failed ->
+          Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+          push @@ HandshakeFailed addr
+    in
+    (Lwt_unix.sleep timeout >>= fun () -> Handshake.outgoing ~id ~info_hash addr push; Lwt.return_unit) |>
+    Lwt.ignore_result
+
+  let welcome push sock exts id =
+    create id (fun e -> push (PeerEvent (id, e))) sock
+    (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
+
 end
 
 open Lwt.Infix
 
 type addr = Unix.inet_addr * int
 
-type event =
+type event = Peer.global_event =
   | PeersReceived of addr list
   | ConnectToPeer of addr * float
   | IncomingPeer of addr * Util.socket
@@ -1082,23 +1114,6 @@ type t =
 (*   let pex = Hashtbl.fold (fun addr _ l -> addr :: l) pm.peers [] in *)
 (*   iter_peers (fun p -> Peer.send_pex p pex) pm; *)
 (*   Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm *)
-
-let connect_to_peer ~id ~info_hash addr timeout push =
-  let push = function
-    | Handshake.Ok (sock, ext, peer_id) ->
-       Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
-         SHA1.print_hex_short peer_id;
-       push @@ HandshakeOk (addr, sock, ext, peer_id)
-    | Handshake.Failed ->
-       Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-       push @@ HandshakeFailed addr
-  in
-  (Lwt_unix.sleep timeout >>= fun () -> Handshake.outgoing ~id ~info_hash addr push; Lwt.return_unit) |>
-  Lwt.ignore_result
-
-let welcome push sock exts id =
-  Peer.create id (fun e -> push (PeerEvent (id, e))) sock
-  (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
 
 let request p pieces =
   if Peer.requests p < max_requests then
@@ -1290,7 +1305,7 @@ let share_torrent bt meta store pieces have peers =
         ()
 
     | ConnectToPeer (addr, timeout) ->
-        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push
+        Peer.connect ~id:bt.id ~info_hash:bt.ih addr timeout bt.push
 
     | IncomingPeer _ ->
         (* FIXME FIXME *)
@@ -1298,7 +1313,7 @@ let share_torrent bt meta store pieces have peers =
 
     | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = welcome bt.push sock exts id in
+        let p = Peer.welcome bt.push sock exts id in
         Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
         update_interest pieces p;
@@ -1351,7 +1366,7 @@ let rec fetch_metadata bt =
 
     | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = welcome bt.push sock exts id in
+        let p = Peer.welcome bt.push sock exts id in
         Hashtbl.replace peers id p;
         loop ()
 
@@ -1360,7 +1375,7 @@ let rec fetch_metadata bt =
         loop ()
 
     | ConnectToPeer (addr, timeout) ->
-        connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
+        Peer.connect ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
         loop ()
 
     | IncomingPeer _ ->
