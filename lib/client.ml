@@ -454,7 +454,6 @@ module Peer = struct
     | BlockReceived of int * int * Cstruct.t
     | PeerDisconnected of (int * int * int) list
     | AvailableMetadata of int
-    | MetaRequested of int
     | GotMetaPiece of int * Cstruct.t
     | RejectMetaPiece of int
     | GotPEX of (addr * pex_flags) list * addr list
@@ -571,13 +570,44 @@ module Peer = struct
     p.strikes <- p.strikes + 1;
     p.strikes
 
-  let got_ut_metadata p data =
+  let send p m =
+    ignore (Lwt_sequence.add_r m p.queue);
+    Lwt_condition.signal p.send ()
+
+  let reject_metadata_request p piece =
+    let id = Hashtbl.find p.extensions UT_metadata in
+    let m =
+      let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
+      Bcode.encode (Bcode.Dict d)
+    in
+    send p @@ Wire.EXTENDED (id, m)
+
+  let metadata_piece len i data p =
+    let id = Hashtbl.find p.extensions UT_metadata in
+    let m =
+      let d =
+        [ "msg_type",   Bcode.Int 1L;
+          "piece",      Bcode.Int (Int64.of_int i);
+          "total_size", Bcode.Int (Int64.of_int len) ]
+      in
+      Cs.(Bcode.encode (Bcode.Dict d) <+> data)
+    in
+    send p @@ Wire.EXTENDED (id, m)
+
+  let got_ut_metadata t p data =
     let m, data = Bcode.decode_partial data in
     let msg_type = Bcode.to_int (Bcode.find "msg_type" m) in
     let piece = Bcode.to_int (Bcode.find "piece" m) in
     match msg_type with
     | 0 -> (* request *)
-        p.push @@ MetaRequested piece
+        begin match t.state with
+        | Incomplete _ ->
+            reject_metadata_request p piece
+        | Complete {metadata; _} ->
+            metadata_piece
+              (Metadata.length metadata) piece
+              (Metadata.get_piece metadata piece) p
+        end
     | 1 -> (* data *)
         p.push @@ GotMetaPiece (piece, data)
     | 2 -> (* reject *)
@@ -585,7 +615,7 @@ module Peer = struct
     | _ ->
         ()
 
-  let got_ut_pex p data =
+  let got_ut_pex _t p data =
     (* FIXME support for IPv6 *)
     let m = Bcode.decode data in
     let added = Bcode.find "added" m |> Bcode.to_cstruct in
@@ -633,10 +663,6 @@ module Peer = struct
       2, UT_pex ]
 
   (* Outgoing *)
-
-  let send p m =
-    ignore (Lwt_sequence.add_r m p.queue);
-    Lwt_condition.signal p.send ()
 
   let piece p i o buf =
     p.uploaded <- Int64.add p.uploaded (Int64.of_int @@ Cstruct.len buf);
@@ -751,29 +777,9 @@ module Peer = struct
       send_ut_pex p added dropped
     end
 
-  let reject_metadata_request p piece =
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let m =
-      let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
-      Bcode.encode (Bcode.Dict d)
-    in
-    send p @@ Wire.EXTENDED (id, m)
-
-  let metadata_piece len i data p =
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let m =
-      let d =
-        [ "msg_type",   Bcode.Int 1L;
-          "piece",      Bcode.Int (Int64.of_int i);
-          "total_size", Bcode.Int (Int64.of_int len) ]
-      in
-      Cs.(Bcode.encode (Bcode.Dict d) <+> data)
-    in
-    send p @@ Wire.EXTENDED (id, m)
-
   (* Incoming *)
 
-  let on_message _t p m =
+  let on_message t p m =
     match m with
     | Wire.KEEP_ALIVE -> ()
     | Wire.CHOKE ->
@@ -872,7 +878,7 @@ module Peer = struct
         begin
           try
             let ute = List.assoc id supported_ut_extensions in
-            got_ut_extension ute p data
+            got_ut_extension ute t p data
           with
           | _ -> ()
         end
@@ -1238,10 +1244,6 @@ let share_torrent bt meta store pieces have peers =
         (* rechoke *)
         ()
 
-    | PeerEvent (id, Peer.MetaRequested i) ->
-        peer id
-          (Peer.metadata_piece (Metadata.length meta) i (Metadata.get_piece meta i))
-
     | PeerEvent (_, Peer.GotMetaPiece _)
     | PeerEvent (_, Peer.RejectMetaPiece _) ->
         ()
@@ -1375,10 +1377,6 @@ let rec fetch_metadata bt =
         end else begin
           Log.warn "! METADATA length %d is too large, ignoring." len;
         end;
-        loop ()
-
-    | PeerEvent (id, Peer.MetaRequested i) ->
-        peer id (fun p -> Peer.reject_metadata_request p i);
         loop ()
 
     | PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
