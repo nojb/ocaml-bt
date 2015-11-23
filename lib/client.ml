@@ -773,132 +773,111 @@ module Peer = struct
 
   (* Incoming *)
 
-  let on_choke p =
-    if not p.peer_choking then begin
-      p.peer_choking <- true;
-      let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
-      Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) p.requests;
-      p.push @@ Choked reqs
-    end
-
-  let on_unchoke p =
-    if p.peer_choking then begin
-      p.peer_choking <- false;
-      p.push @@ Unchoked
-    end
-
-  let on_interested p =
-    if not p.peer_interested then begin
-      p.peer_interested <- true;
-      p.push @@ Interested
-    end
-
-  let on_not_interested p =
-    if p.peer_interested then begin
-      p.peer_interested <- false;
-      p.push @@ NotInterested
-    end
-
-  let on_have p i =
-    (* check for got_bitfield_already FIXME *)
-    Bits.resize p.have (i + 1);
-    if not (Bits.is_set p.have i) then begin
-      Bits.set p.have i;
-      p.push @@ Have i
-    end
-
-  let on_bitfield p b =
-    (* check for redefinition *)
-    Bits.set_length p.have (Bits.length b);
-    Bits.blit b 0 p.have 0 (Bits.length b);
-    (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
-    p.push @@ HaveBitfield p.have
-
-  let on_request p i off len =
-    if not p.am_choking then begin
-      let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
-      (* Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
-      p.push @@ BlockRequested (i, off, len)
-    end
-
-  let on_piece p i off s =
-    begin match
-      Lwt_sequence.find_node_opt_l
-        (fun (i', off', len') -> i = i && off = off' && len' = Cstruct.len s)
-        p.requests
-    with
-    | None ->
-        Log.warn "! Received peer block #%d of #%d which we were not expecting"
-          (off / (16 * 1024)) i
-    | Some n ->
-        Lwt_sequence.remove n
-    end;
-    p.downloaded <- Int64.add p.downloaded (Int64.of_int @@ Cstruct.len s);
-    Speedometer.add p.download (Cstruct.len s);
-    Bits.resize p.blame (i + 1);
-    Bits.set p.blame i;
-    (* TODO emit Downloaded event *)
-    p.push @@ BlockReceived (i, off, s)
-
-  let on_cancel p i off len =
-    (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
-    let n =
-      Lwt_sequence.find_node_opt_l
-        (fun (i', off', len') -> i = i && off = off' && len = len')
-        p.peer_requests
-    in
-    match n with
-    | Some n ->
-        (* FIXME broadcast event *)
-        Lwt_sequence.remove n
-    | None ->
-        Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
-          SHA1.print_hex_short p.peer_id i off len
-
-  let on_extended_handshake p s =
-    let bc = Bcode.decode s in
-    let m =
-      Bcode.find "m" bc |> Bcode.to_dict |>
-      List.map (fun (name, id) -> (name, Bcode.to_int id))
-    in
-    List.iter (fun (name, id) ->
-      try
-        let name = ut_extension_of_string name in
-        if id = 0 then Hashtbl.remove p.extensions name
-        else Hashtbl.replace p.extensions name id
-      with
-        _ -> ()) m;
-    Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.peer_id
-      (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
-    if Hashtbl.mem p.extensions UT_metadata then
-      p.push @@ AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)
-
-  let on_extended p id data =
-    Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.peer_id id;
-    try
-      let ute = List.assoc id supported_ut_extensions in
-      got_ut_extension ute p data
-    with
-    | _ -> ()
-
-  let on_port p i =
-    p.push @@ DHTPort i
-
   let on_message _t p m =
     match m with
-    | Wire.KEEP_ALIVE            -> ()
-    | Wire.CHOKE                 -> on_choke p
-    | Wire.UNCHOKE               -> on_unchoke p
-    | Wire.INTERESTED            -> on_interested p
-    | Wire.NOT_INTERESTED        -> on_not_interested p
-    | Wire.HAVE i                -> on_have p i
-    | Wire.BITFIELD b            -> on_bitfield p b
-    | Wire.REQUEST (i, off, len) -> on_request p i off len
-    | Wire.PIECE (i, off, s)     -> on_piece p i off s
-    | Wire.CANCEL (i, off, len)  -> on_cancel p i off len
-    | Wire.EXTENDED (0, s)       -> on_extended_handshake p s
-    | Wire.EXTENDED (id, data)   -> on_extended p id data
-    | Wire.PORT i                -> on_port p i
+    | Wire.KEEP_ALIVE -> ()
+    | Wire.CHOKE ->
+        if not p.peer_choking then begin
+          p.peer_choking <- true;
+          let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
+          Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) p.requests;
+          p.push @@ Choked reqs
+        end
+    | Wire.UNCHOKE ->
+        if p.peer_choking then begin
+          p.peer_choking <- false;
+          p.push @@ Unchoked
+        end
+    | Wire.INTERESTED ->
+        if not p.peer_interested then begin
+          p.peer_interested <- true;
+          p.push @@ Interested
+        end
+    | Wire.NOT_INTERESTED ->
+        if p.peer_interested then begin
+          p.peer_interested <- false;
+          p.push @@ NotInterested
+        end
+    | Wire.HAVE i ->
+        (* check for got_bitfield_already FIXME *)
+        Bits.resize p.have (i + 1);
+        if not (Bits.is_set p.have i) then begin
+          Bits.set p.have i;
+          p.push @@ Have i
+        end
+    | Wire.BITFIELD b ->
+        (* check for redefinition *)
+        Bits.set_length p.have (Bits.length b);
+        Bits.blit b 0 p.have 0 (Bits.length b);
+        (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
+        p.push @@ HaveBitfield p.have
+    | Wire.REQUEST (i, off, len) ->
+        if not p.am_choking then begin
+          let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
+          (* Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
+          p.push @@ BlockRequested (i, off, len)
+        end
+    | Wire.PIECE (i, off, s) ->
+        begin match
+          Lwt_sequence.find_node_opt_l
+            (fun (i', off', len') -> i = i && off = off' && len' = Cstruct.len s)
+            p.requests
+        with
+        | None ->
+            Log.warn "! Received peer block #%d of #%d which we were not expecting"
+              (off / (16 * 1024)) i
+        | Some n ->
+            Lwt_sequence.remove n
+        end;
+        p.downloaded <- Int64.add p.downloaded (Int64.of_int @@ Cstruct.len s);
+        Speedometer.add p.download (Cstruct.len s);
+        Bits.resize p.blame (i + 1);
+        Bits.set p.blame i;
+        (* TODO emit Downloaded event *)
+        p.push @@ BlockReceived (i, off, s)
+    | Wire.CANCEL (i, off, len) ->
+        (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
+        let n =
+          Lwt_sequence.find_node_opt_l
+            (fun (i', off', len') -> i = i && off = off' && len = len')
+            p.peer_requests
+        in
+        begin match n with
+        | Some n ->
+            (* FIXME broadcast event *)
+            Lwt_sequence.remove n
+        | None ->
+            Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
+              SHA1.print_hex_short p.peer_id i off len
+        end
+    | Wire.EXTENDED (0, s) ->
+        let bc = Bcode.decode s in
+        let m =
+          Bcode.find "m" bc |> Bcode.to_dict |>
+          List.map (fun (name, id) -> (name, Bcode.to_int id))
+        in
+        List.iter (fun (name, id) ->
+          try
+            let name = ut_extension_of_string name in
+            if id = 0 then Hashtbl.remove p.extensions name
+            else Hashtbl.replace p.extensions name id
+          with
+            _ -> ()) m;
+        Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.peer_id
+          (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
+        if Hashtbl.mem p.extensions UT_metadata then
+          p.push @@ AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)
+    | Wire.EXTENDED (id, data) ->
+        Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.peer_id id;
+        begin
+          try
+            let ute = List.assoc id supported_ut_extensions in
+            got_ut_extension ute p data
+          with
+          | _ -> ()
+        end
+    | Wire.PORT i ->
+        p.push @@ DHTPort i
     | _                          -> ()
 
   (* Event loop *)
