@@ -1112,11 +1112,6 @@ module Peer = struct
       queue = Lwt_sequence.create ()
     }
 
-  type global_event =
-    | PeersReceived of addr list
-    | IncomingPeer of addr * Util.socket
-    | TorrentComplete
-
   let welcome t push sock exts id =
     let p = create_peer id sock in
     (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
@@ -1255,21 +1250,6 @@ open Lwt.Infix
 
 type addr = Unix.inet_addr * int
 
-type event = Peer.global_event =
-  | PeersReceived of addr list
-  | IncomingPeer of addr * Util.socket
-  | TorrentComplete
-
-type t =
-  {
-    id : SHA1.t;
-    ih : SHA1.t;
-    trackers : Uri.t list;
-    swarm : Peer.swarm;
-    chan : event Lwt_stream.t;
-    push : event -> unit
-  }
-
 (* let pex_delay = 60.0 *)
 
 (* let rec pex_pulse pm = *)
@@ -1280,18 +1260,10 @@ type t =
 let upon t f g =
   Lwt.async (fun () -> Lwt.try_bind t (Lwt.wrap1 f) (Lwt.wrap1 g))
 
-let share_torrent bt meta store pieces have peers =
-  Log.info "TORRENT SHARE have:%d total:%d peers:%d"
-    (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers);
-  let handle = function
-    | TorrentComplete ->
-        (* FIXME TODO FIXME *)
-        Log.info "TORRENT COMPLETE";
-        raise Exit
-
-    | PeersReceived addrs ->
-        List.iter (PeerMgr.add bt.swarm.peer_man) addrs
-
+(* let share_torrent bt meta store pieces have peers = *)
+(*   Log.info "TORRENT SHARE have:%d total:%d peers:%d" *)
+(*     (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers); *)
+(*   let handle = function *)
     (* | PeerEvent (_, Peer.DHTPort _) -> *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -1303,51 +1275,48 @@ let share_torrent bt meta store pieces have peers =
         (* end; *)
         (* FIXME *)
 
-    | IncomingPeer _ ->
-        (* FIXME FIXME *)
-        ()
+  (*   | IncomingPeer _ -> *)
+  (*       (\* FIXME FIXME *\) *)
+  (*       () *)
 
-  in
-  let rec loop () =
-    Lwt.bind (Lwt_stream.next bt.chan) (fun e ->
-      match handle e with
-      | exception Exit ->
-          Lwt.return_unit
-      | exception e ->
-          Lwt.fail e
-      | () ->
-          loop ()
-    )
-  in
-  loop ()
+  (* in *)
+  (* let rec loop () = *)
+  (*   Lwt.bind (Lwt_stream.next bt.chan) (fun e -> *)
+  (*     match handle e with *)
+  (*     | exception Exit -> *)
+  (*         Lwt.return_unit *)
+  (*     | exception e -> *)
+  (*         Lwt.fail e *)
+  (*     | () -> *)
+  (*         loop () *)
+  (*   ) *)
+  (* in *)
+  (* loop () *)
 
-let rec fetch_metadata bt =
-  let rec loop () =
-    Lwt_stream.next bt.chan >>= fun e ->
-    (* log_event e; *)
-    match e with
-    | PeersReceived addrs ->
-        List.iter (PeerMgr.add bt.swarm.peer_man) addrs;
-        loop ()
+(* let rec fetch_metadata bt = *)
+(*   let rec loop () = *)
+(*     Lwt_stream.next bt.chan >>= fun e -> *)
+(*     (\* log_event e; *\) *)
+(*     match e with *)
 
-    | IncomingPeer _ ->
-        (* FIXME TODO FIXME *)
-        loop ()
+(*     | IncomingPeer _ -> *)
+(*         (\* FIXME TODO FIXME *\) *)
+(*         loop () *)
 
-    (* | PeerEvent (_, Peer.DHTPort i) -> *)
-        (* debug "got dht port %d from %s" i (Peer.to_string p); *)
-        (* let addr, _ = Peer.addr p in *)
-        (* Lwt.async begin fun () -> *)
-        (*   DHT.ping bt.dht (addr, i) >|= function *)
-        (*   | Some (id, addr) -> *)
-        (*       DHT.update bt.dht Kademlia.Good id addr *)
-        (*   | None -> *)
-        (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
-        (* end *)
-        (* FIXME *)
+(*     (\* | PeerEvent (_, Peer.DHTPort i) -> *\) *)
+(*         (\* debug "got dht port %d from %s" i (Peer.to_string p); *\) *)
+(*         (\* let addr, _ = Peer.addr p in *\) *)
+(*         (\* Lwt.async begin fun () -> *\) *)
+(*         (\*   DHT.ping bt.dht (addr, i) >|= function *\) *)
+(*         (\*   | Some (id, addr) -> *\) *)
+(*         (\*       DHT.update bt.dht Kademlia.Good id addr *\) *)
+(*         (\*   | None -> *\) *)
+(*         (\*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *\) *)
+(*         (\* end *\) *)
+(*         (\* FIXME *\) *)
 
-  in
-  loop ()
+(*   in *)
+(*   loop () *)
 
 module LPD  = struct
 
@@ -1457,31 +1426,41 @@ let start_server ?(port = 0) push =
     Lwt_unix.accept fd >>= fun (fd, sa) ->
     Log.debug "accepted connection from %s" (Util.string_of_sockaddr sa);
     let addr = match sa with Unix.ADDR_INET (ip, p) -> ip, p | Unix.ADDR_UNIX _ -> assert false in
-    push (IncomingPeer (addr, new Util.tcp fd));
+    push addr (new Util.tcp fd);
     loop ()
   in
   loop ()
 
-let start_server ?port push =
+let start_server ?port () =
+  let push addr sock =
+    (* FIXME *)
+    ()
+  in
   Lwt.ignore_result (start_server ?port push)
 
-let start bt =
-  start_server bt.push;
-  List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
-  fetch_metadata bt >>= fun (m, peers) ->
-  Peer.load_torrent bt m >>= fun (store, pieces, have) ->
-  Log.info "Torrent loaded have %d/%d pieces" (Bits.count_ones have) (Bits.length have);
-  share_torrent bt m store pieces have peers
+let start_trackers {Peer.id; info_hash; peer_man; _} trackers =
+  let rec aux tracker =
+    Tracker.announce ~info_hash id tracker >>= fun (interval, addrs) ->
+    List.iter (PeerMgr.add peer_man) addrs;
+    Lwt_unix.sleep interval >>= fun () ->
+    aux tracker
+  in
+  Lwt.ignore_result (Lwt_list.iter_p aux trackers)
+
+let start t trackers =
+  start_server ();
+  start_trackers t trackers
+  (* fetch_metadata bt >>= fun (m, peers) -> *)
+  (* Peer.load_torrent bt m >>= fun (store, pieces, have) -> *)
+  (* Log.info "Torrent loaded have %d/%d pieces" (Bits.count_ones have) (Bits.length have); *)
+  (* share_torrent bt m store pieces have peers *)
+
+type t = Peer.swarm
 
 let create mg =
-  let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
+  (* let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in *)
   let id = SHA1.generate ~prefix:"OCAML" () in
-  let ih = mg.Magnet.xt in
-  {
-    id;
-    ih;
-    trackers = mg.Magnet.tr;
-    swarm = Peer.create id ih;
-    chan = ch;
-    push;
-  }
+  let info_hash = mg.Magnet.xt in
+  let sw = Peer.create id info_hash in
+  start sw mg.Magnet.tr;
+  sw

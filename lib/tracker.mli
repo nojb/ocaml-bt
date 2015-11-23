@@ -29,4 +29,4 @@ type event =
 
 type addr = Unix.inet_addr * int
 
-val announce : info_hash:SHA1.t -> (addr list -> unit) -> SHA1.t -> Uri.t -> unit
+val announce : info_hash:SHA1.t -> SHA1.t -> Uri.t -> (float * addr list) Lwt.t

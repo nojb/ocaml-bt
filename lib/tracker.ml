@@ -328,7 +328,7 @@ let debug url fmt =
 let error url fmt =
   Log.error ("[%s] " ^^ fmt) (Uri.to_string url)
 
-let announce ~info_hash url push id =
+let announce ~info_hash id url =
   let read_buf = Cstruct.create max_datagram_size in
   let rec loop fd = function
     | `Ok (t, (tout, buf)) ->
@@ -349,9 +349,7 @@ let announce ~info_hash url push id =
         Lwt.fail (Failure s)
     | `Success (interval, leechers, seeders, peers) ->
         debug url "received %d peers" (List.length peers);
-        push peers;
-        Lwt_unix.sleep interval >>= fun () ->
-        loop fd (create ~info_hash ~id `Udp)
+        Lwt.return (interval, peers)
   in
   match Uri.scheme url with
   | Some "udp" ->
@@ -369,8 +367,3 @@ let announce ~info_hash url push id =
   | None ->
       error url "no tracker scheme";
       Lwt.fail (Failure "no tracker scheme")
-
-let announce ~info_hash push id url =
-  Lwt.ignore_result @@ Lwt.catch
-    (fun () -> announce ~info_hash url push id)
-    (fun exn -> error url "exn : %s" (Printexc.to_string exn); Lwt.return_unit)
