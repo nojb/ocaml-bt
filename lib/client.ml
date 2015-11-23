@@ -310,7 +310,8 @@ module Piece = struct
       length : int;
       offset : int64;
       mutable have : int;
-      hash : SHA1.t }
+      hash : SHA1.t;
+      num_blocks : int }
 
   let make m i =
     {
@@ -318,7 +319,8 @@ module Piece = struct
       length = Metadata.piece_length m i;
       offset = Metadata.offset m i 0;
       have = 0;
-      hash = Metadata.hash m i
+      hash = Metadata.hash m i;
+      num_blocks = Metadata.block_count m i;
     }
 
   let request_block parts = function
@@ -451,7 +453,6 @@ module Peer = struct
     | Have of int
     | HaveBitfield of Bits.t
     | BlockRequested of int * int * int
-    | BlockReceived of int * int * Cstruct.t
     | PeerDisconnected of (int * int * int) list
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
@@ -502,6 +503,7 @@ module Peer = struct
       store : Store.t;
       pieces : Piece.piece array;
       metadata : Metadata.t;
+      we_have : Bits.t;
     }
 
   type swarm_state =
@@ -724,10 +726,10 @@ module Peer = struct
       send p Wire.NOT_INTERESTED
     end
 
-  let have p i =
+  let send_have p i =
     send p @@ Wire.HAVE i
 
-  let have_bitfield p bits =
+  let send_have_bitfield p bits =
     (* check for redefined length FIXME *)
     Bits.set_length p.have (Bits.length bits);
     Bits.set_length p.blame (Bits.length bits);
@@ -791,6 +793,49 @@ module Peer = struct
 
   (* Incoming *)
 
+  open Lwt.Infix
+
+  let verify_piece store peers piece =
+    if piece.Piece.have = piece.Piece.num_blocks then
+      Store.digest store piece.Piece.offset piece.Piece.length >>= fun sha ->
+      Lwt.return (SHA1.equal sha piece.Piece.hash)
+    else
+      Lwt.return false
+
+  let record_block {we_have; store; pieces} peers i off s =
+    let j = off / block_size in
+    match pieces.(i).Piece.state with
+    | Piece.Pending ->
+        Log.warn "Received block #%d for piece #%d, not requested ???" j i
+    | Piece.Verified ->
+        Log.warn "Received block #%d for piece #%d, already completed" j i
+    | Piece.Active parts ->
+        let c = parts.(j) in
+        if c >= 0 then begin
+          parts.(j) <- (-1);
+          let do_cancel _ p =
+            if requested p i j (Cstruct.len s) then
+              cancel p i j (Cstruct.len s)
+          in
+          if c > 1 then Hashtbl.iter do_cancel peers;
+          pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
+          Log.info "Received block #%d for piece #%d, have %d, missing %d"
+            j i pieces.(i).Piece.have (Array.length parts - pieces.(i).Piece.have)
+        end;
+        let off = Int64.(add pieces.(i).Piece.offset (of_int off)) in
+        Lwt.async (fun () ->
+          Store.write store off s >>= fun () ->
+          verify_piece store peers pieces.(i) >>= function
+          | true ->
+              pieces.(i).Piece.state <- Piece.Verified;
+              Bits.set we_have i;
+              Hashtbl.iter (fun _ p -> send_have p i) peers;
+              Lwt.return_unit
+              (* maybe update interest ? *)
+          | false -> (* FIXME FIXME *)
+              Lwt.return_unit
+        )
+
   let on_message t p m =
     match m with
     | Wire.KEEP_ALIVE -> ()
@@ -852,7 +897,15 @@ module Peer = struct
         Bits.resize p.blame (i + 1);
         Bits.set p.blame i;
         (* TODO emit Downloaded event *)
-        p.push @@ BlockReceived (i, off, s)
+        begin match t.state with
+        | Incomplete _ ->
+            ()
+        | Complete c ->
+            if i >= 0 && i < Array.length c.pieces then
+              record_block c t.peers i off s
+            else
+              Log.warn "! PIECE invalid piece:%d" i
+        end
     | Wire.CANCEL (i, off, len) ->
         (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
         let n =
@@ -1169,41 +1222,6 @@ let send_block store pieces p i off len push =
   | Piece.Active _ ->
       ()
 
-let verify_piece store peers pieces i push =
-  upon (fun () -> Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length)
-    (fun sha ->
-       push (if SHA1.equal sha pieces.(i).Piece.hash then PieceVerified i else PieceFailed i)
-    )
-    (fun e -> push (Error e))
-
-let record_block store peers pieces i off s push =
-  let j = off / block_size in
-  match pieces.(i).Piece.state with
-  | Piece.Pending ->
-      Log.warn "Received block #%d for piece #%d, not requested ???" j i
-  | Piece.Verified ->
-      Log.warn "Received block #%d for piece #%d, already completed" j i
-  | Piece.Active parts ->
-      let c = parts.(j) in
-      if c >= 0 then begin
-        parts.(j) <- (-1);
-        let rec cancel _ p =
-          if Peer.requested p i j (Cstruct.len s) then
-            Peer.cancel p i j (Cstruct.len s)
-        in
-        if c > 1 then Hashtbl.iter cancel peers;
-        pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
-        Log.info "Received block #%d for piece #%d, have %d, missing %d"
-          j i pieces.(i).Piece.have (Array.length parts - pieces.(i).Piece.have)
-      end;
-      let off = Int64.(add pieces.(i).Piece.offset (of_int off)) in
-      upon (fun () -> Store.write store off s)
-        (fun () ->
-           if pieces.(i).Piece.have = Array.length parts then
-             verify_piece store peers pieces i push
-        )
-        (fun e -> push (Error e))
-
 let request_rejected pieces (i, off, _) =
   match pieces.(i).Piece.state with
   | Piece.Verified
@@ -1216,7 +1234,7 @@ let share_torrent bt meta store pieces have peers =
   Log.info "TORRENT SHARE have:%d total:%d peers:%d"
     (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers);
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  Hashtbl.iter (fun _ p -> Peer.have_bitfield p have; update_interest pieces p) peers;
+  Hashtbl.iter (fun _ p -> Peer.send_have_bitfield p have; update_interest pieces p) peers;
   update_requests pieces peers;
   bt.push (Rechoke (None, rechoke_optimistic_duration));
   let handle = function
@@ -1238,7 +1256,7 @@ let share_torrent bt meta store pieces have peers =
     | PieceVerified i ->
         pieces.(i).Piece.state <- Piece.Verified;
         Bits.set have i;
-        Hashtbl.iter (fun _ p -> Peer.have p i) peers
+        Hashtbl.iter (fun _ p -> Peer.send_have p i) peers
         (* maybe update interest ? *)
 
     | PieceFailed i ->
@@ -1285,12 +1303,6 @@ let share_torrent bt meta store pieces have peers =
             Peer.piece p idx ofs buf
         end
 
-    | PeerEvent (_, Peer.BlockReceived (i, off, s)) ->
-        if i >= 0 && i < Array.length pieces then
-          record_block store peers pieces i off s bt.push
-        else
-          Log.warn "! PIECE invalid piece:%d" i
-
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added
 
@@ -1316,7 +1328,7 @@ let share_torrent bt meta store pieces have peers =
     | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
         let p = Peer.welcome bt.swarm bt.push sock exts id in
-        Peer.have_bitfield p have;
+        Peer.send_have_bitfield p have;
         Hashtbl.replace peers id p;
         update_interest pieces p;
         update_requests pieces peers
@@ -1416,8 +1428,7 @@ let rec fetch_metadata bt =
     | PeerEvent (_, Peer.NotInterested)
     | PeerEvent (_, Peer.Have _)
     | PeerEvent (_, Peer.HaveBitfield _)
-    | PeerEvent (_, Peer.BlockRequested _)
-    | PeerEvent (_, Peer.BlockReceived _) ->
+    | PeerEvent (_, Peer.BlockRequested _) ->
         loop ()
   in
   loop ()
