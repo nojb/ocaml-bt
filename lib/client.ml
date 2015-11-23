@@ -1046,7 +1046,7 @@ module Peer = struct
         (handle_err p sock)
     end
 
-  let create peer_id push sock =
+  let create_peer peer_id push sock =
     {
       peer_id;
       am_choking = true;
@@ -1079,10 +1079,9 @@ module Peer = struct
     | TorrentComplete
     | PeerEvent of SHA1.t * event
     | Error of exn
-    | Rechoke of SHA1.t option * int
 
   let welcome t push sock exts id =
-    let p = create id (fun e -> push (PeerEvent (id, e))) sock in
+    let p = create_peer id (fun e -> push (PeerEvent (id, e))) sock in
     (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
     start t p sock;
     extended_handshake p;
@@ -1155,6 +1154,19 @@ module Peer = struct
     List.iter (fun (p, _) -> unchoke p) to_unchoke;
     List.iter (fun (p, _) -> choke p) to_choke;
     (opt, nopt)
+
+  let the_loop t =
+    let rec loop opt nopt =
+      let opt, nopt = rechoke t.peers opt nopt in
+      Lwt_unix.sleep choke_timeout >>= fun () ->
+      loop opt nopt
+    in
+    loop None rechoke_optimistic_duration
+
+  let create id info_hash =
+    let sw = create_swarm id info_hash in
+    Lwt.ignore_result (Lwt.wrap1 the_loop sw);
+    sw
 end
 
 open Lwt.Infix
@@ -1170,7 +1182,6 @@ type event = Peer.global_event =
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
   | Error of exn
-  | Rechoke of SHA1.t option * int
 
 type t =
   {
@@ -1237,14 +1248,8 @@ let share_torrent bt meta store pieces have peers =
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
   Hashtbl.iter (fun _ p -> Peer.send_have_bitfield p have; update_interest pieces p) peers;
   update_requests pieces peers;
-  bt.push (Rechoke (None, rechoke_optimistic_duration));
   let handle = function
     (* log_event e; *)
-    | Rechoke (opt, nopt) ->
-        let opt, nopt = Peer.rechoke peers opt nopt in
-        upon (fun () -> Lwt_unix.sleep choke_timeout)
-          (fun () -> bt.push (Rechoke (opt, nopt)))
-          (fun e -> bt.push (Error e))
 
     | TorrentComplete ->
         (* FIXME TODO FIXME *)
@@ -1392,7 +1397,6 @@ let rec fetch_metadata bt =
         loop ()
 
     | Error _
-    | Rechoke _
     | TorrentComplete ->
         assert false
 
@@ -1539,7 +1543,7 @@ let create mg =
     id;
     ih;
     trackers = mg.Magnet.tr;
-    swarm = Peer.create_swarm id ih;
+    swarm = Peer.create id ih;
     chan = ch;
     push;
     peer_mgr
