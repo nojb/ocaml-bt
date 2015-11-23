@@ -454,7 +454,6 @@ module Peer = struct
     | BlockReceived of int * int * Cstruct.t
     | PeerDisconnected of (int * int * int) list
     | AvailableMetadata of int
-    | RejectMetaPiece of int
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
 
@@ -626,9 +625,7 @@ module Peer = struct
         | Complete _ ->
             ()
         end
-    | 2 -> (* reject *)
-        p.push @@ RejectMetaPiece piece
-    | _ ->
+    | 2 (* reject *) | _ ->
         ()
 
   let got_ut_pex _t p data =
@@ -1260,9 +1257,6 @@ let share_torrent bt meta store pieces have peers =
         (* rechoke *)
         ()
 
-    | PeerEvent (_, Peer.RejectMetaPiece _) ->
-        ()
-
     | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
         if i >= 0 && i < Array.length pieces then
           send_block store pieces id i off len bt.push
@@ -1427,7 +1421,6 @@ let rec fetch_metadata bt =
     | PeerEvent (_, Peer.NotInterested)
     | PeerEvent (_, Peer.Have _)
     | PeerEvent (_, Peer.HaveBitfield _)
-    | PeerEvent (_, Peer.RejectMetaPiece _)
     | PeerEvent (_, Peer.BlockRequested _)
     | PeerEvent (_, Peer.BlockReceived _) ->
         loop ()
