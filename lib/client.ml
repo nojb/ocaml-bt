@@ -454,7 +454,6 @@ module Peer = struct
     | BlockReceived of int * int * Cstruct.t
     | PeerDisconnected of (int * int * int) list
     | AvailableMetadata of int
-    | GotMetaPiece of int * Cstruct.t
     | RejectMetaPiece of int
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
@@ -508,7 +507,7 @@ module Peer = struct
     }
 
   type swarm_state =
-    | Incomplete of incomplete
+    | Incomplete of incomplete * Cstruct.t Lwt.u
     | Complete of complete
 
   type swarm =
@@ -520,11 +519,12 @@ module Peer = struct
     }
 
   let create_swarm id info_hash =
+    let t, u = Lwt.wait () in
     {
       id;
       info_hash;
       peers = Hashtbl.create 0;
-      state = Incomplete (IncompleteMetadata.create ());
+      state = Incomplete (IncompleteMetadata.create (), u);
     }
 
   let id p =
@@ -609,7 +609,23 @@ module Peer = struct
               (Metadata.get_piece metadata piece) p
         end
     | 1 -> (* data *)
-        p.push @@ GotMetaPiece (piece, data)
+        begin match t.state with
+        | Incomplete (m, gotit) ->
+            if IncompleteMetadata.add m piece data then begin
+              match IncompleteMetadata.verify m t.info_hash with
+              | Some raw ->
+                  Lwt.wakeup_later gotit raw
+                  (* debug "got full metadata"; *)
+                  (* let m = Metadata.create (Bcode.decode raw) in *)
+                  (* t.state <- Complete (m, *)
+                  (* Lwt.return m *)
+              | None ->
+                  IncompleteMetadata.reset m;
+                  Log.error "METADATA HASH CHECK FAILED"
+            end
+        | Complete _ ->
+            ()
+        end
     | 2 -> (* reject *)
         p.push @@ RejectMetaPiece piece
     | _ ->
@@ -1244,7 +1260,6 @@ let share_torrent bt meta store pieces have peers =
         (* rechoke *)
         ()
 
-    | PeerEvent (_, Peer.GotMetaPiece _)
     | PeerEvent (_, Peer.RejectMetaPiece _) ->
         ()
 
@@ -1378,20 +1393,6 @@ let rec fetch_metadata bt =
           Log.warn "! METADATA length %d is too large, ignoring." len;
         end;
         loop ()
-
-    | PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
-        if IncompleteMetadata.add m i s then
-          match IncompleteMetadata.verify m bt.ih with
-          | Some raw ->
-              (* debug "got full metadata"; *)
-              let m = Metadata.create (Bcode.decode raw) in
-              Lwt.return (m, peers)
-          | None ->
-              IncompleteMetadata.reset m;
-              Log.error "METADATA HASH CHECK FAILED";
-              loop ()
-        else
-          loop ()
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
