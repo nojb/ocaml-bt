@@ -960,6 +960,60 @@ module Peer = struct
     extended_handshake p;
     p
 
+  let rechoke_compare (p1, salt1) (p2, salt2) =
+    if download_speed p1 <> download_speed p2 then
+      compare (download_speed p2) (download_speed p1)
+    else
+    if upload_speed p1 <> upload_speed p2 then
+      compare (upload_speed p2) (upload_speed p1)
+    else
+    if am_choking p1 <> am_choking p2 then
+      compare (am_choking p1) (am_choking p2)
+    else
+      compare salt1 salt2
+
+  let rechoke peers opt nopt =
+    (* Log.info "RECHOKING"; *)
+    let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
+    let wires =
+      let add _ p wires =
+        match (* Peer.is_seeder p, *)false, opt with (* FIXME FIXME *)
+        | true, _ ->
+            choke p;
+            wires
+        | false, Some opt when SHA1.equal (id p) opt ->
+            wires
+        | false, _ ->
+            (p, Random.int (1 lsl 29)) :: wires
+      in
+      Hashtbl.fold add peers []
+    in
+    let wires = List.sort rechoke_compare wires in
+    (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
+    let rec select n acc = function
+      | (p, _) as w :: wires when n < rechoke_slots ->
+          let n = if peer_interested p then n + 1 else n in
+          select n (w :: acc) wires
+      | wires ->
+          begin match opt with
+          | Some _ ->
+              acc, wires, opt, nopt
+          | None ->
+              let wires = List.filter (fun (p, _) -> peer_interested p) wires in
+              if List.length wires > 0 then
+                let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
+                (opt :: acc), wires, Some (id p), rechoke_optimistic_duration
+              else
+                acc, wires, None, nopt
+          end
+    in
+    let to_unchoke, to_choke, opt, nopt = select 0 [] wires in
+    (* Log.debug "RECHOKE total=%d unchoke=%d choke=%d" (Hashtbl.length peers) (List.length unchoke) *)
+    (*   (List.length choke); *)
+    List.iter (fun (p, _) -> unchoke p) to_unchoke;
+    List.iter (fun (p, _) -> choke p) to_choke;
+    (opt, nopt)
+
   type incomplete =
     IncompleteMetadata.t
 
@@ -1044,60 +1098,6 @@ let connect_to_peer ~id ~info_hash addr timeout push =
 let welcome push sock exts id =
   Peer.create id (fun e -> push (PeerEvent (id, e))) sock
   (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
-
-let rechoke_compare (p1, salt1) (p2, salt2) =
-  if Peer.download_speed p1 <> Peer.download_speed p2 then
-    compare (Peer.download_speed p2) (Peer.download_speed p1)
-  else
-  if Peer.upload_speed p1 <> Peer.upload_speed p2 then
-    compare (Peer.upload_speed p2) (Peer.upload_speed p1)
-  else
-  if Peer.am_choking p1 <> Peer.am_choking p2 then
-    compare (Peer.am_choking p1) (Peer.am_choking p2)
-  else
-    compare salt1 salt2
-
-let rechoke peers opt nopt =
-  (* Log.info "RECHOKING"; *)
-  let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
-  let wires =
-    let add _ p wires =
-      match (* Peer.is_seeder p, *)false, opt with (* FIXME FIXME *)
-      | true, _ ->
-          Peer.choke p;
-          wires
-      | false, Some opt when SHA1.equal (Peer.id p) opt ->
-          wires
-      | false, _ ->
-          (p, Random.int (1 lsl 29)) :: wires
-    in
-    Hashtbl.fold add peers []
-  in
-  let wires = List.sort rechoke_compare wires in
-  (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
-  let rec select n acc = function
-    | (p, _) as w :: wires when n < rechoke_slots ->
-        let n = if Peer.peer_interested p then n + 1 else n in
-        select n (w :: acc) wires
-    | wires ->
-        begin match opt with
-        | Some _ ->
-            acc, wires, opt, nopt
-        | None ->
-            let wires = List.filter (fun (p, _) -> Peer.peer_interested p) wires in
-            if List.length wires > 0 then
-              let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
-              (opt :: acc), wires, Some (Peer.id p), rechoke_optimistic_duration
-            else
-              acc, wires, None, nopt
-        end
-  in
-  let unchoke, choke, opt, nopt = select 0 [] wires in
-  (* Log.debug "RECHOKE total=%d unchoke=%d choke=%d" (Hashtbl.length peers) (List.length unchoke) *)
-  (*   (List.length choke); *)
-  List.iter (fun (p, _) -> Peer.unchoke p) unchoke;
-  List.iter (fun (p, _) -> Peer.choke p) choke;
-  (opt, nopt)
 
 let request p pieces =
   if Peer.requests p < max_requests then
@@ -1196,7 +1196,7 @@ let share_torrent bt meta store pieces have peers =
   let handle = function
     (* log_event e; *)
     | Rechoke (opt, nopt) ->
-        let opt, nopt = rechoke peers opt nopt in
+        let opt, nopt = Peer.rechoke peers opt nopt in
         upon (fun () -> Lwt_unix.sleep choke_timeout)
           (fun () -> bt.push (Rechoke (opt, nopt)))
           (fun e -> bt.push (Error e))
