@@ -445,10 +445,6 @@ module Peer = struct
 
   let keepalive_delay = 20. (* FIXME *)
 
-  type event =
-    | PeerDisconnected of (int * int * int) list
-    | DHTPort of int
-
   type ut_extension =
     | UT_pex
     | UT_metadata
@@ -483,7 +479,6 @@ module Peer = struct
       peer_requests           : (int * int * int) Lwt_sequence.t;
       send                    : unit Lwt_condition.t;
       queue                   : Wire.message Lwt_sequence.t;
-      push                    : event -> unit
     }
 
 
@@ -864,13 +859,20 @@ module Peer = struct
     in
     loop 0
 
-  let request_rejected pieces (i, off, _) =
-    match pieces.(i).Piece.state with
-    | Piece.Verified
-    | Piece.Pending -> ()
-    | Piece.Active parts ->
-        let j = off / block_size in
-        if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
+  let request_rejected t reqs =
+    match t.state with
+    | Complete {pieces; _} ->
+        let aux (i, off, _) =
+          match pieces.(i).Piece.state with
+          | Piece.Verified
+          | Piece.Pending -> ()
+          | Piece.Active parts ->
+              let j = off / block_size in
+              if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
+        in
+        List.iter aux reqs
+    | Incomplete _ ->
+        ()
 
   let on_message t p m =
     match m with
@@ -880,11 +882,7 @@ module Peer = struct
           p.peer_choking <- true;
           let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
           Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) p.requests;
-          match t.state with
-          | Complete {pieces; _} ->
-              List.iter (request_rejected pieces) reqs
-          | Incomplete _ ->
-              ()
+          request_rejected t reqs
         end
     | Wire.UNCHOKE ->
         if p.peer_choking then begin
@@ -1023,18 +1021,20 @@ module Peer = struct
           with
           | _ -> ()
         end
-    | Wire.PORT i ->
-        p.push @@ DHTPort i
-    | _                          -> ()
+    | Wire.PORT _ | _ -> ()
 
   (* Event loop *)
 
   open Lwt.Infix
 
-  let handle_err p sock e =
+  let handle_err t p sock e =
     Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short p.peer_id (Printexc.to_string e);
     let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
-    p.push (PeerDisconnected reqs);
+
+    request_rejected t reqs;
+    PeerMgr.peer_disconnected t.peer_man p.peer_id;
+    Hashtbl.remove t.peers p.peer_id;
+
     Lwt.catch (sock # close) (fun _ -> Lwt.return_unit)
 
   let reader_loop t p sock =
@@ -1086,10 +1086,10 @@ module Peer = struct
     Lwt.ignore_result begin
       Lwt.catch
         (fun () -> Lwt.pick [reader_loop t p sock; writer_loop t p sock])
-        (handle_err p sock)
+        (handle_err t p sock)
     end
 
-  let create_peer peer_id push sock =
+  let create_peer peer_id sock =
     {
       peer_id;
       am_choking = true;
@@ -1109,18 +1109,16 @@ module Peer = struct
       requests = Lwt_sequence.create ();
       peer_requests = Lwt_sequence.create ();
       send = Lwt_condition.create ();
-      queue = Lwt_sequence.create ();
-      push
+      queue = Lwt_sequence.create ()
     }
 
   type global_event =
     | PeersReceived of addr list
     | IncomingPeer of addr * Util.socket
     | TorrentComplete
-    | PeerEvent of SHA1.t * event
 
   let welcome t push sock exts id =
-    let p = create_peer id (fun e -> push (PeerEvent (id, e))) sock in
+    let p = create_peer id sock in
     (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
     start t p sock;
     extended_handshake p;
@@ -1208,6 +1206,23 @@ module Peer = struct
     in
     loop None rechoke_optimistic_duration
 
+  let load_torrent bt m =
+    Store.create (Metadata.files m) >>= fun store ->
+    let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
+    let have = Bits.create (Metadata.piece_count m) in
+    let rec loop i =
+      if i < Metadata.piece_count m then begin
+        Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
+        if SHA1.equal sha pieces.(i).Piece.hash then begin
+          pieces.(i).Piece.state <- Piece.Verified;
+          Bits.set have i
+        end;
+        loop (i + 1)
+      end else
+        Lwt.return (store, pieces, have)
+    in
+    loop 0
+
   let create_swarm id info_hash =
     let t, u = Lwt.wait () in
     let rec swarm =
@@ -1244,7 +1259,6 @@ type event = Peer.global_event =
   | PeersReceived of addr list
   | IncomingPeer of addr * Util.socket
   | TorrentComplete
-  | PeerEvent of SHA1.t * Peer.event
 
 type t =
   {
@@ -1278,13 +1292,7 @@ let share_torrent bt meta store pieces have peers =
     | PeersReceived addrs ->
         List.iter (PeerMgr.add bt.swarm.peer_man) addrs
 
-    (* | PeerEvent (id, Peer.PeerDisconnected reqs) -> *)
-    (*     List.iter (Peer.request_rejected pieces) reqs; *)
-    (*     PeerMgr.peer_disconnected bt.peer_mgr id; *)
-    (*     Hashtbl.remove peers id *)
-        (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
-
-    | PeerEvent (_, Peer.DHTPort _) ->
+    (* | PeerEvent (_, Peer.DHTPort _) -> *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
         (*   DHT.ping bt.dht (addr, i) >|= function *)
@@ -1294,7 +1302,6 @@ let share_torrent bt meta store pieces have peers =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end; *)
         (* FIXME *)
-        ()
 
     | IncomingPeer _ ->
         (* FIXME FIXME *)
@@ -1314,25 +1321,7 @@ let share_torrent bt meta store pieces have peers =
   in
   loop ()
 
-let load_torrent bt m =
-  Store.create (Metadata.files m) >>= fun store ->
-  let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
-  let have = Bits.create (Metadata.piece_count m) in
-  let rec loop i =
-    if i < Metadata.piece_count m then begin
-      Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
-      if SHA1.equal sha pieces.(i).Piece.hash then begin
-        pieces.(i).Piece.state <- Piece.Verified;
-        Bits.set have i
-      end;
-      loop (i + 1)
-    end else
-      Lwt.return (store, pieces, have)
-  in
-  loop 0
-
 let rec fetch_metadata bt =
-  let peers = Hashtbl.create 20 in
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
     (* log_event e; *)
@@ -1345,12 +1334,7 @@ let rec fetch_metadata bt =
         (* FIXME TODO FIXME *)
         loop ()
 
-    | PeerEvent (id, Peer.PeerDisconnected _) ->
-        PeerMgr.peer_disconnected bt.swarm.peer_man id;
-        Hashtbl.remove peers id;
-        loop ()
-
-    | PeerEvent (_, Peer.DHTPort i) ->
+    (* | PeerEvent (_, Peer.DHTPort i) -> *)
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -1361,10 +1345,6 @@ let rec fetch_metadata bt =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end *)
         (* FIXME *)
-        loop ()
-
-    | TorrentComplete ->
-        assert false
 
   in
   loop ()
@@ -1489,7 +1469,7 @@ let start bt =
   start_server bt.push;
   List.iter (Tracker.announce ~info_hash:bt.ih (fun peers -> bt.push (PeersReceived peers)) bt.id) bt.trackers;
   fetch_metadata bt >>= fun (m, peers) ->
-  load_torrent bt m >>= fun (store, pieces, have) ->
+  Peer.load_torrent bt m >>= fun (store, pieces, have) ->
   Log.info "Torrent loaded have %d/%d pieces" (Bits.count_ones have) (Bits.length have);
   share_torrent bt m store pieces have peers
 
