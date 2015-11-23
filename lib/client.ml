@@ -452,7 +452,6 @@ module Peer = struct
     | NotInterested
     | Have of int
     | HaveBitfield of Bits.t
-    | BlockRequested of int * int * int
     | PeerDisconnected of (int * int * int) list
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
@@ -678,7 +677,7 @@ module Peer = struct
 
   (* Outgoing *)
 
-  let piece p i o buf =
+  let send_piece p i o buf =
     p.uploaded <- Int64.add p.uploaded (Int64.of_int @@ Cstruct.len buf);
     Speedometer.add p.upload (Cstruct.len buf);
     (* TODO emit Uploaded event *)
@@ -836,6 +835,18 @@ module Peer = struct
               Lwt.return_unit
         )
 
+  let send_block store pieces p i off len =
+    match pieces.(i).Piece.state with
+    | Piece.Verified ->
+        let off1 = Int64.(add pieces.(i).Piece.offset (of_int off)) in
+        Lwt.async (fun () ->
+          Store.read store off1 len >|= fun buf ->
+          send_piece p i off buf
+        )
+    | Piece.Pending
+    | Piece.Active _ ->
+        ()
+
   let on_message t p m =
     match m with
     | Wire.KEEP_ALIVE -> ()
@@ -878,7 +889,14 @@ module Peer = struct
         if not p.am_choking then begin
           let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
           (* Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
-          p.push @@ BlockRequested (i, off, len)
+          match t.state with
+          | Complete {pieces; store; _} ->
+              if i >= 0 && i < Array.length pieces then
+                send_block store pieces p i off len
+              else
+                Log.warn "! PEER REQUEST invalid piece:%d" i
+          | Incomplete _ ->
+              ()
         end
     | Wire.PIECE (i, off, s) ->
         begin match
@@ -1056,13 +1074,10 @@ module Peer = struct
     | PeersReceived of addr list
     | ConnectToPeer of addr * float
     | IncomingPeer of addr * Util.socket
-    | PieceVerified of int
-    | PieceFailed of int
     | HandshakeFailed of addr
     | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
     | TorrentComplete
     | PeerEvent of SHA1.t * event
-    | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
     | Error of exn
     | Rechoke of SHA1.t option * int
 
@@ -1150,13 +1165,10 @@ type event = Peer.global_event =
   | PeersReceived of addr list
   | ConnectToPeer of addr * float
   | IncomingPeer of addr * Util.socket
-  | PieceVerified of int
-  | PieceFailed of int
   | HandshakeFailed of addr
   | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
-  | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
   | Error of exn
   | Rechoke of SHA1.t option * int
 
@@ -1211,17 +1223,6 @@ let update_interest pieces p =
 let upon t f g =
   Lwt.async (fun () -> Lwt.try_bind t (Lwt.wrap1 f) (Lwt.wrap1 g))
 
-let send_block store pieces p i off len push =
-  match pieces.(i).Piece.state with
-  | Piece.Verified ->
-      let off1 = Int64.(add pieces.(i).Piece.offset (of_int off)) in
-      upon (fun () -> Store.read store off1 len)
-        (fun buf -> push (BlockReadyToSend (p, i, off, buf)))
-        (fun e -> push (Error e))
-  | Piece.Pending
-  | Piece.Active _ ->
-      ()
-
 let request_rejected pieces (i, off, _) =
   match pieces.(i).Piece.state with
   | Piece.Verified
@@ -1253,16 +1254,6 @@ let share_torrent bt meta store pieces have peers =
     | PeersReceived addrs ->
         List.iter (PeerMgr.add bt.peer_mgr) addrs
 
-    | PieceVerified i ->
-        pieces.(i).Piece.state <- Piece.Verified;
-        Bits.set have i;
-        Hashtbl.iter (fun _ p -> Peer.send_have p i) peers
-        (* maybe update interest ? *)
-
-    | PieceFailed i ->
-        (* FIXME FIXME *)
-        ()
-
     | Error e ->
         raise e
 
@@ -1288,20 +1279,6 @@ let share_torrent bt meta store pieces have peers =
     | PeerEvent (_, Peer.NotInterested) ->
         (* rechoke *)
         ()
-
-    | PeerEvent (id, Peer.BlockRequested (i, off, len)) ->
-        if i >= 0 && i < Array.length pieces then
-          send_block store pieces id i off len bt.push
-        else
-          Log.warn "! PEER REQUEST invalid piece:%d" i
-
-    | BlockReadyToSend (id, idx, ofs, buf) ->
-        begin match Hashtbl.find peers id with
-        | exception Not_found ->
-            Log.warn "Trying to send a piece to non-existent peer"
-        | p ->
-            Peer.piece p idx ofs buf
-        end
 
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added
@@ -1414,9 +1391,6 @@ let rec fetch_metadata bt =
         (* FIXME *)
         loop ()
 
-    | PieceVerified _
-    | PieceFailed _
-    | BlockReadyToSend _
     | Error _
     | Rechoke _
     | TorrentComplete ->
@@ -1427,8 +1401,7 @@ let rec fetch_metadata bt =
     | PeerEvent (_, Peer.Interested)
     | PeerEvent (_, Peer.NotInterested)
     | PeerEvent (_, Peer.Have _)
-    | PeerEvent (_, Peer.HaveBitfield _)
-    | PeerEvent (_, Peer.BlockRequested _) ->
+    | PeerEvent (_, Peer.HaveBitfield _) ->
         loop ()
   in
   loop ()
