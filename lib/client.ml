@@ -25,36 +25,58 @@ module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
 module IncompleteMetadata = struct
-  type t =
-    { length : int;
+  type data =
+    {
+      length : int;
       pieces : Bits.t;
-      raw : Cstruct.t }
+      raw : Cstruct.t
+    }
+
+  type t = data option ref
+
+  let reset t = t := None
 
   let metadata_block_size = 1 lsl 14
   let metadata_max_size = 1 lsl 22
 
-  let create ~length =
-    let size = (length + metadata_block_size - 1) / metadata_block_size in
-    { length; pieces = Bits.create size; raw = Cstruct.create length }
+  let create () = ref None
+
+  let set_length t length =
+    match !t with
+    | None ->
+        let size = (length + metadata_block_size - 1) / metadata_block_size in
+        t := Some {length; pieces = Bits.create size; raw = Cstruct.create length}
+    | Some data ->
+        if data.length <> length then
+          Printf.ksprintf failwith "Metadata size mismatch: %d vs %d" length data.length
 
   let add m n buf =
-    if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
-    Bits.set m.pieces n;
-    Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
-    Bits.has_all m.pieces
+    match !m with
+    | None -> false
+    | Some m ->
+        if n < 0 || n >= Bits.length m.pieces then invalid_arg "add";
+        Bits.set m.pieces n;
+        Cstruct.blit buf 0 m.raw (n * metadata_block_size) (Cstruct.len buf);
+        Bits.has_all m.pieces
 
   let verify m info_hash =
-    if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
-    if SHA1.(equal (digest m.raw) info_hash) then
-      Some m.raw
-    else
-      None
+    match !m with
+    | None -> None
+    | Some m ->
+        if not (Bits.has_all m.pieces) then invalid_arg "IncompleteMetadata.verify";
+        if SHA1.(equal (digest m.raw) info_hash) then
+          Some m.raw
+        else
+          None
 
   let iter_missing f m =
-    for i = 0 to Bits.length m.pieces - 1 do
-      if not (Bits.is_set m.pieces i) then
-        f i
-    done
+    match !m with
+    | None -> assert false
+    | Some m ->
+        for i = 0 to Bits.length m.pieces - 1 do
+          if not (Bits.is_set m.pieces i) then
+            f i
+        done
 end
 
 module Speedometer : sig
@@ -472,26 +494,6 @@ module Peer = struct
       send                    : unit Lwt_condition.t;
       queue                   : Wire.message Lwt_sequence.t;
       push                    : event -> unit }
-
-  type incomplete =
-    IncompleteMetadata.t
-
-  type complete =
-    {
-      store : Store.t;
-      pieces : Piece.piece array;
-      metadata : Metadata.t;
-    }
-
-  type swarm_state =
-    | Incomplete of incomplete
-    | Complete of complete
-
-  type swarm =
-    {
-      peers : (SHA1.t, t) Hashtbl.t;
-      state : swarm_state;
-    }
 
   let supports p name =
     Hashtbl.mem p.extensions name
@@ -958,6 +960,36 @@ module Peer = struct
     extended_handshake p;
     p
 
+  type incomplete =
+    IncompleteMetadata.t
+
+  type complete =
+    {
+      store : Store.t;
+      pieces : Piece.piece array;
+      metadata : Metadata.t;
+    }
+
+  type swarm_state =
+    | Incomplete of incomplete
+    | Complete of complete
+
+  type swarm =
+    {
+      id : SHA1.t;
+      info_hash : SHA1.t;
+      peers : (SHA1.t, t) Hashtbl.t;
+      mutable state : swarm_state;
+    }
+
+  let create_swarm id info_hash =
+    {
+      id;
+      info_hash;
+      peers = Hashtbl.create 0;
+      state = Incomplete (IncompleteMetadata.create ());
+    }
+
 end
 
 open Lwt.Infix
@@ -979,12 +1011,15 @@ type event =
   | Rechoke of SHA1.t option * int
 
 type t =
-  { id : SHA1.t;
+  {
+    id : SHA1.t;
     ih : SHA1.t;
     trackers : Uri.t list;
     peer_mgr : PeerMgr.swarm;
+    swarm : Peer.swarm;
     chan : event Lwt_stream.t;
-    push : event -> unit }
+    push : event -> unit
+  }
 
 (* let pex_delay = 60.0 *)
 
@@ -1304,78 +1339,76 @@ let load_torrent bt m =
 let rec fetch_metadata bt =
   let peers = Hashtbl.create 20 in
   let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  let rec loop m =
+  let m = IncompleteMetadata.create () in
+  let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
     (* log_event e; *)
-    match m, e with
-    | _, PeersReceived addrs ->
+    match e with
+    | PeersReceived addrs ->
         List.iter (PeerMgr.add bt.peer_mgr) addrs;
-        loop m
+        loop ()
 
-    | _, HandshakeOk (addr, sock, exts, id) ->
+    | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
         let p = welcome bt.push sock exts id in
         Hashtbl.replace peers id p;
-        loop m
+        loop ()
 
-    | _, HandshakeFailed addr ->
+    | HandshakeFailed addr ->
         PeerMgr.handshake_failed bt.peer_mgr addr;
-        loop m
+        loop ()
 
-    | _, ConnectToPeer (addr, timeout) ->
+    | ConnectToPeer (addr, timeout) ->
         connect_to_peer ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
-        loop m
+        loop ()
 
-    | _, IncomingPeer _ ->
+    | IncomingPeer _ ->
         (* FIXME TODO FIXME *)
-        loop m
+        loop ()
 
-    | _, PeerEvent (id, Peer.PeerDisconnected _) ->
+    | PeerEvent (id, Peer.PeerDisconnected _) ->
         PeerMgr.peer_disconnected bt.peer_mgr id;
         Hashtbl.remove peers id;
-        loop m
+        loop ()
 
-    | None, PeerEvent (id, Peer.AvailableMetadata len) ->
-        if len <= IncompleteMetadata.metadata_max_size then
-          let m' = IncompleteMetadata.create len in
-          peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
-          loop (Some m')
-        else begin
+    | PeerEvent (id, Peer.AvailableMetadata len) ->
+        if len <= IncompleteMetadata.metadata_max_size then begin
+          try
+            IncompleteMetadata.set_length m len;
+            peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m);
+          with
+          | _ ->
+              IncompleteMetadata.reset m;
+        end else begin
           Log.warn "! METADATA length %d is too large, ignoring." len;
-          loop None
-        end
+        end;
+        loop ()
 
-    | Some m', PeerEvent (id, Peer.AvailableMetadata len) ->
-        peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m');
-        loop m
-
-    | _, PeerEvent (id, Peer.MetaRequested i) ->
+    | PeerEvent (id, Peer.MetaRequested i) ->
         peer id (fun p -> Peer.reject_metadata_request p i);
-        loop m
+        loop ()
 
-    | Some m', PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
-        if IncompleteMetadata.add m' i s then
-          match IncompleteMetadata.verify m' bt.ih with
+    | PeerEvent (_, Peer.GotMetaPiece (i, s)) ->
+        if IncompleteMetadata.add m i s then
+          match IncompleteMetadata.verify m bt.ih with
           | Some raw ->
               (* debug "got full metadata"; *)
-              let m' = Metadata.create (Bcode.decode raw) in
-              Lwt.return (m', peers)
+              let m = Metadata.create (Bcode.decode raw) in
+              Lwt.return (m, peers)
           | None ->
+              IncompleteMetadata.reset m;
               Log.error "METADATA HASH CHECK FAILED";
-              loop None
+              loop ()
         else
-          loop m
+          loop ()
 
-    | None, PeerEvent (_, Peer.GotMetaPiece _) ->
-        loop m
-
-    | _, PeerEvent (_, Peer.GotPEX (added, dropped)) ->
+    | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
         List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added;
-        loop m
+        loop ()
 
-    | _, PeerEvent (_, Peer.DHTPort i) ->
+    | PeerEvent (_, Peer.DHTPort i) ->
         (* debug "got dht port %d from %s" i (Peer.to_string p); *)
         (* let addr, _ = Peer.addr p in *)
         (* Lwt.async begin fun () -> *)
@@ -1386,28 +1419,28 @@ let rec fetch_metadata bt =
         (*       debug "%s did not reply to dht ping on port %d" (Peer.to_string p) i *)
         (* end *)
         (* FIXME *)
-        loop m
+        loop ()
 
-    | _, PieceVerified _
-    | _, PieceFailed _
-    | _, BlockReadyToSend _
-    | _, Error _
-    | _, Rechoke _
-    | _, TorrentComplete ->
+    | PieceVerified _
+    | PieceFailed _
+    | BlockReadyToSend _
+    | Error _
+    | Rechoke _
+    | TorrentComplete ->
         assert false
 
-    | _, PeerEvent (_, Peer.Unchoked)
-    | _, PeerEvent (_, Peer.Choked _)
-    | _, PeerEvent (_, Peer.Interested)
-    | _, PeerEvent (_, Peer.NotInterested)
-    | _, PeerEvent (_, Peer.Have _)
-    | _, PeerEvent (_, Peer.HaveBitfield _)
-    | _, PeerEvent (_, Peer.RejectMetaPiece _)
-    | _, PeerEvent (_, Peer.BlockRequested _)
-    | _, PeerEvent (_, Peer.BlockReceived _) ->
-        loop m
+    | PeerEvent (_, Peer.Unchoked)
+    | PeerEvent (_, Peer.Choked _)
+    | PeerEvent (_, Peer.Interested)
+    | PeerEvent (_, Peer.NotInterested)
+    | PeerEvent (_, Peer.Have _)
+    | PeerEvent (_, Peer.HaveBitfield _)
+    | PeerEvent (_, Peer.RejectMetaPiece _)
+    | PeerEvent (_, Peer.BlockRequested _)
+    | PeerEvent (_, Peer.BlockReceived _) ->
+        loop ()
   in
-  loop None
+  loop ()
 
 module LPD  = struct
 
@@ -1536,9 +1569,14 @@ let start bt =
 let create mg =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
   let peer_mgr = PeerMgr.create (fun addr timeout -> push @@ ConnectToPeer (addr, timeout)) in
-  { id = SHA1.generate ~prefix:"OCAML" ();
-    ih = mg.Magnet.xt;
+  let id = SHA1.generate ~prefix:"OCAML" () in
+  let ih = mg.Magnet.xt in
+  {
+    id;
+    ih;
     trackers = mg.Magnet.tr;
+    swarm = Peer.create_swarm id ih;
     chan = ch;
     push;
-    peer_mgr }
+    peer_mgr
+  }
