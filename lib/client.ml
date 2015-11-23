@@ -884,7 +884,7 @@ module Peer = struct
   let on_port p i =
     p.push @@ DHTPort i
 
-  let on_message p m =
+  let on_message _t p m =
     match m with
     | Wire.KEEP_ALIVE            -> ()
     | Wire.CHOKE                 -> on_choke p
@@ -911,7 +911,7 @@ module Peer = struct
     p.push (PeerDisconnected reqs);
     Lwt.catch (sock # close) (fun _ -> Lwt.return_unit)
 
-  let reader_loop p sock =
+  let reader_loop t p sock =
     let buf = Cstruct.create Wire.max_packet_len in
     let rec loop off =
       Lwt_unix.with_timeout keepalive_delay (fun () -> sock # read (Cstruct.shift buf off)) >>= function
@@ -924,12 +924,12 @@ module Peer = struct
           List.iter
             (fun m ->
                Log.debug "[%a] --> %a" SHA1.print_hex_short p.peer_id Wire.print m) msgs;
-          List.iter (on_message p) msgs;
+          List.iter (on_message t p) msgs;
           loop (n - off)
     in
     loop 0
 
-  let writer_loop p sock =
+  let writer_loop _t p sock =
     let buf = Cstruct.create Wire.max_packet_len in
     let write m =
       Log.debug "[%a] <-- %a" SHA1.print_hex_short p.peer_id Wire.print m;
@@ -956,41 +956,71 @@ module Peer = struct
     in
     loop ()
 
-  let start p sock =
+  let start t p sock =
     Lwt.ignore_result begin
       Lwt.catch
-        (fun () -> Lwt.pick [reader_loop p sock; writer_loop p sock])
+        (fun () -> Lwt.pick [reader_loop t p sock; writer_loop t p sock])
         (handle_err p sock)
     end
 
   let create peer_id push sock =
-    let p =
-      {
-        peer_id;
-        am_choking = true;
-        am_interested = false;
-        peer_choking = true;
-        peer_interested = false;
-        extbits = Bits.create (8 * 8);
-        extensions = Hashtbl.create 3;
-        uploaded = 0L;
-        downloaded = 0L;
-        download = Speedometer.create ();
-        upload = Speedometer.create ();
-        strikes = 0;
-        blame = Bits.create 0;
-        have = Bits.create 0;
-        last_pex = [];
-        requests = Lwt_sequence.create ();
-        peer_requests = Lwt_sequence.create ();
-        send = Lwt_condition.create ();
-        queue = Lwt_sequence.create ();
-        push
-      }
-    in
-    start p sock;
+    {
+      peer_id;
+      am_choking = true;
+      am_interested = false;
+      peer_choking = true;
+      peer_interested = false;
+      extbits = Bits.create (8 * 8);
+      extensions = Hashtbl.create 3;
+      uploaded = 0L;
+      downloaded = 0L;
+      download = Speedometer.create ();
+      upload = Speedometer.create ();
+      strikes = 0;
+      blame = Bits.create 0;
+      have = Bits.create 0;
+      last_pex = [];
+      requests = Lwt_sequence.create ();
+      peer_requests = Lwt_sequence.create ();
+      send = Lwt_condition.create ();
+      queue = Lwt_sequence.create ();
+      push
+    }
+
+  type global_event =
+    | PeersReceived of addr list
+    | ConnectToPeer of addr * float
+    | IncomingPeer of addr * Util.socket
+    | PieceVerified of int
+    | PieceFailed of int
+    | HandshakeFailed of addr
+    | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
+    | TorrentComplete
+    | PeerEvent of SHA1.t * event
+    | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
+    | Error of exn
+    | Rechoke of SHA1.t option * int
+
+  let welcome t push sock exts id =
+    let p = create id (fun e -> push (PeerEvent (id, e))) sock in
+    (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
+    start t p sock;
     extended_handshake p;
     p
+
+  let connect t ~id ~info_hash addr timeout push =
+    let push = function
+      | Handshake.Ok (sock, ext, peer_id) ->
+          Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
+            SHA1.print_hex_short peer_id;
+          Hashtbl.add t.peers peer_id (welcome t push sock ext peer_id);
+          push @@ HandshakeOk (addr, sock, ext, peer_id)
+      | Handshake.Failed ->
+          Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+          push @@ HandshakeFailed addr
+    in
+    (Lwt_unix.sleep timeout >>= fun () -> Handshake.outgoing ~id ~info_hash addr push; Lwt.return_unit) |>
+    Lwt.ignore_result
 
   let rechoke_compare (p1, salt1) (p2, salt2) =
     if download_speed p1 <> download_speed p2 then
@@ -1045,39 +1075,6 @@ module Peer = struct
     List.iter (fun (p, _) -> unchoke p) to_unchoke;
     List.iter (fun (p, _) -> choke p) to_choke;
     (opt, nopt)
-
-  type global_event =
-    | PeersReceived of addr list
-    | ConnectToPeer of addr * float
-    | IncomingPeer of addr * Util.socket
-    | PieceVerified of int
-    | PieceFailed of int
-    | HandshakeFailed of addr
-    | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
-    | TorrentComplete
-    | PeerEvent of SHA1.t * event
-    | BlockReadyToSend of SHA1.t * int * int * Cstruct.t
-    | Error of exn
-    | Rechoke of SHA1.t option * int
-
-  let welcome push sock exts id =
-    create id (fun e -> push (PeerEvent (id, e))) sock
-    (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
-
-  let connect t ~id ~info_hash addr timeout push =
-    let push = function
-      | Handshake.Ok (sock, ext, peer_id) ->
-          Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
-            SHA1.print_hex_short peer_id;
-          Hashtbl.add t.peers peer_id (welcome push sock ext peer_id);
-          push @@ HandshakeOk (addr, sock, ext, peer_id)
-      | Handshake.Failed ->
-          Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-          push @@ HandshakeFailed addr
-    in
-    (Lwt_unix.sleep timeout >>= fun () -> Handshake.outgoing ~id ~info_hash addr push; Lwt.return_unit) |>
-    Lwt.ignore_result
-
 end
 
 open Lwt.Infix
@@ -1314,7 +1311,7 @@ let share_torrent bt meta store pieces have peers =
 
     | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = Peer.welcome bt.push sock exts id in
+        let p = Peer.welcome bt.swarm bt.push sock exts id in
         Peer.have_bitfield p have;
         Hashtbl.replace peers id p;
         update_interest pieces p;
@@ -1367,7 +1364,7 @@ let rec fetch_metadata bt =
 
     | HandshakeOk (addr, sock, exts, id) ->
         PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = Peer.welcome bt.push sock exts id in
+        let p = Peer.welcome bt.swarm bt.push sock exts id in
         Hashtbl.replace peers id p;
         loop ()
 
