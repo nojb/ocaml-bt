@@ -474,7 +474,8 @@ module Peer = struct
     | s -> Printf.ksprintf failwith "ut_extension_of_string: %s" s
 
   type t =
-    { id                      : SHA1.t;
+    {
+      peer_id : SHA1.t;
       blame                   : Bits.t;
       have                    : Bits.t;
       extbits                 : Bits.t;
@@ -493,13 +494,42 @@ module Peer = struct
       peer_requests           : (int * int * int) Lwt_sequence.t;
       send                    : unit Lwt_condition.t;
       queue                   : Wire.message Lwt_sequence.t;
-      push                    : event -> unit }
+      push                    : event -> unit
+    }
 
-  let supports p name =
-    Hashtbl.mem p.extensions name
+
+  type incomplete =
+    IncompleteMetadata.t
+
+  type complete =
+    {
+      store : Store.t;
+      pieces : Piece.piece array;
+      metadata : Metadata.t;
+    }
+
+  type swarm_state =
+    | Incomplete of incomplete
+    | Complete of complete
+
+  type swarm =
+    {
+      id : SHA1.t;
+      info_hash : SHA1.t;
+      peers : (SHA1.t, t) Hashtbl.t;
+      mutable state : swarm_state;
+    }
+
+  let create_swarm id info_hash =
+    {
+      id;
+      info_hash;
+      peers = Hashtbl.create 0;
+      state = Incomplete (IncompleteMetadata.create ());
+    }
 
   let id p =
-    p.id
+    p.peer_id
 
   let peer_choking p =
     p.peer_choking
@@ -625,7 +655,7 @@ module Peer = struct
         string_of_ut_extension name, Bcode.Int (Int64.of_int id)) supported_ut_extensions
     in
     let m = Bcode.Dict ["m", Bcode.Dict m] in
-    Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.id
+    Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.peer_id
       (String.concat " " (List.map (fun (n, name) ->
            Printf.sprintf "%s %d" (string_of_ut_extension name) n)
            supported_ut_extensions));
@@ -663,7 +693,7 @@ module Peer = struct
     (* check for redefined length FIXME *)
     Bits.set_length p.have (Bits.length bits);
     Bits.set_length p.blame (Bits.length bits);
-    Log.info "> BITFIELD id:%a have:%d total:%d" SHA1.print_hex_short p.id
+    Log.info "> BITFIELD id:%a have:%d total:%d" SHA1.print_hex_short p.peer_id
       (Bits.count_ones bits) (Bits.length bits);
     send p @@ Wire.BITFIELD bits
 
@@ -675,7 +705,7 @@ module Peer = struct
       Lwt_sequence.remove n
     with
     | Not_found ->
-        Log.warn "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.print_hex_short p.id i o l
+        Log.warn "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.print_hex_short p.peer_id i o l
 
   let send_port p i =
     send p @@ Wire.PORT i
@@ -709,12 +739,12 @@ module Peer = struct
         "added.f", Bcode.String (Cs.create_with (List.length added) 0);
         "dropped", Bcode.String (c dropped) ]
     in
-    Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short p.id
+    Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short p.peer_id
       (List.length added) (List.length dropped);
     send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
   let send_pex pex p =
-    if supports p UT_pex then begin
+    if Hashtbl.mem p.extensions UT_pex then begin
       let added = List.filter (fun a -> not (List.mem a p.last_pex)) pex in
       let dropped = List.filter (fun a -> not (List.mem a pex)) p.last_pex in
       p.last_pex <- pex;
@@ -823,7 +853,7 @@ module Peer = struct
         Lwt_sequence.remove n
     | None ->
         Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
-          SHA1.print_hex_short p.id i off len
+          SHA1.print_hex_short p.peer_id i off len
 
   let on_extended_handshake p s =
     let bc = Bcode.decode s in
@@ -838,13 +868,13 @@ module Peer = struct
         else Hashtbl.replace p.extensions name id
       with
         _ -> ()) m;
-    Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.id
+    Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.peer_id
       (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
     if Hashtbl.mem p.extensions UT_metadata then
       p.push @@ AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)
 
   let on_extended p id data =
-    Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.id id;
+    Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.peer_id id;
     try
       let ute = List.assoc id supported_ut_extensions in
       got_ut_extension ute p data
@@ -876,7 +906,7 @@ module Peer = struct
   open Lwt.Infix
 
   let handle_err p sock e =
-    Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short p.id (Printexc.to_string e);
+    Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short p.peer_id (Printexc.to_string e);
     let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.requests [] in
     p.push (PeerDisconnected reqs);
     Lwt.catch (sock # close) (fun _ -> Lwt.return_unit)
@@ -893,7 +923,7 @@ module Peer = struct
           Cstruct.blit buf off buf 0 (n - off);
           List.iter
             (fun m ->
-               Log.debug "[%a] --> %a" SHA1.print_hex_short p.id Wire.print m) msgs;
+               Log.debug "[%a] --> %a" SHA1.print_hex_short p.peer_id Wire.print m) msgs;
           List.iter (on_message p) msgs;
           loop (n - off)
     in
@@ -902,7 +932,7 @@ module Peer = struct
   let writer_loop p sock =
     let buf = Cstruct.create Wire.max_packet_len in
     let write m =
-      Log.debug "[%a] <-- %a" SHA1.print_hex_short p.id Wire.print m;
+      Log.debug "[%a] <-- %a" SHA1.print_hex_short p.peer_id Wire.print m;
       let buf = Util.W.into_cstruct (Wire.writer m) buf in
       Lwt_cstruct.complete (sock # write) buf
     in
@@ -933,9 +963,10 @@ module Peer = struct
         (handle_err p sock)
     end
 
-  let create id push sock =
+  let create peer_id push sock =
     let p =
-      { id;
+      {
+        peer_id;
         am_choking = true;
         am_interested = false;
         peer_choking = true;
@@ -954,7 +985,8 @@ module Peer = struct
         peer_requests = Lwt_sequence.create ();
         send = Lwt_condition.create ();
         queue = Lwt_sequence.create ();
-        push }
+        push
+      }
     in
     start p sock;
     extended_handshake p;
@@ -1013,37 +1045,6 @@ module Peer = struct
     List.iter (fun (p, _) -> unchoke p) to_unchoke;
     List.iter (fun (p, _) -> choke p) to_choke;
     (opt, nopt)
-
-  type incomplete =
-    IncompleteMetadata.t
-
-  type complete =
-    {
-      store : Store.t;
-      pieces : Piece.piece array;
-      metadata : Metadata.t;
-    }
-
-  type swarm_state =
-    | Incomplete of incomplete
-    | Complete of complete
-
-  type swarm =
-    {
-      id : SHA1.t;
-      info_hash : SHA1.t;
-      peers : (SHA1.t, t) Hashtbl.t;
-      mutable state : swarm_state;
-    }
-
-  let create_swarm id info_hash =
-    {
-      id;
-      info_hash;
-      peers = Hashtbl.create 0;
-      state = Incomplete (IncompleteMetadata.create ());
-    }
-
 end
 
 open Lwt.Infix
