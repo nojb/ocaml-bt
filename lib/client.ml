@@ -453,7 +453,6 @@ module Peer = struct
     | BlockRequested of int * int * int
     | BlockReceived of int * int * Cstruct.t
     | PeerDisconnected of (int * int * int) list
-    | AvailableMetadata of int
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
 
@@ -884,8 +883,23 @@ module Peer = struct
             _ -> ()) m;
         Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.peer_id
           (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
-        if Hashtbl.mem p.extensions UT_metadata then
-          p.push @@ AvailableMetadata (Bcode.find "metadata_size" bc |> Bcode.to_int)
+        if Hashtbl.mem p.extensions UT_metadata then begin
+          match t.state with
+          | Incomplete (m, _) ->
+              let len = Bcode.find "metadata_size" bc |> Bcode.to_int in
+              if len <= IncompleteMetadata.metadata_max_size then begin
+                try
+                  IncompleteMetadata.set_length m len;
+                  IncompleteMetadata.iter_missing (request_metadata_piece p) m;
+                with
+                | _ ->
+                    IncompleteMetadata.reset m;
+              end else begin
+                Log.warn "! METADATA length %d is too large, ignoring." len;
+              end
+          | Complete _ ->
+              ()
+        end
     | Wire.EXTENDED (id, data) ->
         Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.peer_id id;
         begin
@@ -1306,9 +1320,6 @@ let share_torrent bt meta store pieces have peers =
         Hashtbl.replace peers id p;
         update_interest pieces p;
         update_requests pieces peers
-
-    | PeerEvent (_, Peer.AvailableMetadata _) ->
-        ()
   in
   let rec loop () =
     Lwt.bind (Lwt_stream.next bt.chan) (fun e ->
@@ -1342,8 +1353,6 @@ let load_torrent bt m =
 
 let rec fetch_metadata bt =
   let peers = Hashtbl.create 20 in
-  let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  let m = IncompleteMetadata.create () in
   let rec loop () =
     Lwt_stream.next bt.chan >>= fun e ->
     (* log_event e; *)
@@ -1374,20 +1383,6 @@ let rec fetch_metadata bt =
         PeerMgr.peer_disconnected bt.peer_mgr id;
         Hashtbl.remove peers id;
         loop ()
-
-    | PeerEvent (id, Peer.AvailableMetadata len) ->
-        if len <= IncompleteMetadata.metadata_max_size then begin
-          try
-            IncompleteMetadata.set_length m len;
-            peer id (fun p -> IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m);
-          with
-          | _ ->
-              IncompleteMetadata.reset m;
-        end else begin
-          Log.warn "! METADATA length %d is too large, ignoring." len;
-        end;
-        loop ()
-
     | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
         (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
         (*   (List.length added) (List.length dropped); *)
