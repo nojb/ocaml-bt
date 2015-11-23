@@ -447,11 +447,8 @@ module Peer = struct
 
   type event =
     | Choked of (int * int * int) list
-    | Unchoked
     | Interested
     | NotInterested
-    | Have of int
-    | HaveBitfield of Bits.t
     | PeerDisconnected of (int * int * int) list
     | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
@@ -683,7 +680,7 @@ module Peer = struct
     (* TODO emit Uploaded event *)
     send p @@ Wire.PIECE (i, o, buf)
 
-  let request p i ofs len =
+  let send_request p i ofs len =
     if p.peer_choking then invalid_arg "Peer.request";
     ignore (Lwt_sequence.add_r (i, ofs, len) p.requests);
     send p @@ Wire.REQUEST (i, ofs, len)
@@ -847,6 +844,36 @@ module Peer = struct
     | Piece.Active _ ->
         ()
 
+  let request p pieces =
+    if requests p < max_requests then
+      match Piece.request_active pieces (has p) with
+      | Some (i, j) ->
+          let off = j * block_size in
+          let len = min block_size (pieces.(i).Piece.length - off) in
+          send_request p i off len
+      | None ->
+          ()
+
+  let update_requests pieces peers =
+    Hashtbl.iter (fun _ p -> if not (peer_choking p) then request p pieces) peers
+
+  let update_interest pieces p =
+    let rec loop i =
+      if i < Array.length pieces then
+        if has p i then
+          match pieces.(i).Piece.state with
+          | Piece.Active _
+          | Piece.Pending ->
+              interested p
+          | Piece.Verified ->
+              loop (i + 1)
+        else
+          loop (i + 1)
+      else
+        not_interested p
+    in
+    loop 0
+
   let on_message t p m =
     match m with
     | Wire.KEEP_ALIVE -> ()
@@ -860,7 +887,12 @@ module Peer = struct
     | Wire.UNCHOKE ->
         if p.peer_choking then begin
           p.peer_choking <- false;
-          p.push @@ Unchoked
+          match t.state with
+          | Complete {pieces; _} ->
+              update_interest pieces p;
+              update_requests pieces t.peers
+          | Incomplete _ ->
+              ()
         end
     | Wire.INTERESTED ->
         if not p.peer_interested then begin
@@ -877,14 +909,25 @@ module Peer = struct
         Bits.resize p.have (i + 1);
         if not (Bits.is_set p.have i) then begin
           Bits.set p.have i;
-          p.push @@ Have i
+          match t.state with
+          | Complete {pieces; _} ->
+              update_interest pieces p;
+              update_requests pieces t.peers
+          | Incomplete _ ->
+              ()
         end
     | Wire.BITFIELD b ->
         (* check for redefinition *)
         Bits.set_length p.have (Bits.length b);
         Bits.blit b 0 p.have 0 (Bits.length b);
         (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
-        p.push @@ HaveBitfield p.have
+        begin match t.state with
+        | Complete {pieces; _} ->
+            update_interest pieces p;
+            update_requests pieces t.peers
+        | Incomplete _ ->
+            ()
+        end
     | Wire.REQUEST (i, off, len) ->
         if not p.am_choking then begin
           let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
@@ -1201,36 +1244,6 @@ type t =
 (*   iter_peers (fun p -> Peer.send_pex p pex) pm; *)
 (*   Lwt_unix.sleep pex_delay >>= fun () -> pex_pulse pm *)
 
-let request p pieces =
-  if Peer.requests p < max_requests then
-    match Piece.request_active pieces (Peer.has p) with
-    | Some (i, j) ->
-        let off = j * block_size in
-        let len = min block_size (pieces.(i).Piece.length - off) in
-        Peer.request p i off len
-    | None ->
-        ()
-
-let update_requests pieces peers =
-  Hashtbl.iter (fun _ p -> if not (Peer.peer_choking p) then request p pieces) peers
-
-let update_interest pieces p =
-  let rec loop i =
-    if i < Array.length pieces then
-      if Peer.has p i then
-        match pieces.(i).Piece.state with
-        | Piece.Active _
-        | Piece.Pending ->
-            Peer.interested p
-        | Piece.Verified ->
-            loop (i + 1)
-      else
-        loop (i + 1)
-    else
-      Peer.not_interested p
-  in
-  loop 0
-
 let upon t f g =
   Lwt.async (fun () -> Lwt.try_bind t (Lwt.wrap1 f) (Lwt.wrap1 g))
 
@@ -1245,9 +1258,6 @@ let request_rejected pieces (i, off, _) =
 let share_torrent bt meta store pieces have peers =
   Log.info "TORRENT SHARE have:%d total:%d peers:%d"
     (Bits.count_ones have) (Bits.length have) (Hashtbl.length peers);
-  let peer id f = try let p = Hashtbl.find peers id in f p with Not_found -> () in
-  Hashtbl.iter (fun _ p -> Peer.send_have_bitfield p have; update_interest pieces p) peers;
-  update_requests pieces peers;
   let handle = function
     (* log_event e; *)
 
@@ -1273,12 +1283,6 @@ let share_torrent bt meta store pieces have peers =
 
     | PeerEvent (_, Peer.Choked reqs) ->
         List.iter (request_rejected pieces) reqs
-
-    | PeerEvent (id, Peer.Unchoked)
-    | PeerEvent (id, Peer.Have _)
-    | PeerEvent (id, Peer.HaveBitfield _) ->
-        peer id (update_interest pieces);
-        update_requests pieces peers
 
     | PeerEvent (_, Peer.Interested)
     | PeerEvent (_, Peer.NotInterested) ->
@@ -1311,9 +1315,7 @@ let share_torrent bt meta store pieces have peers =
         PeerMgr.handshake_ok bt.peer_mgr addr id;
         let p = Peer.welcome bt.swarm bt.push sock exts id in
         Peer.send_have_bitfield p have;
-        Hashtbl.replace peers id p;
-        update_interest pieces p;
-        update_requests pieces peers
+        Hashtbl.replace peers id p
   in
   let rec loop () =
     Lwt.bind (Lwt_stream.next bt.chan) (fun e ->
@@ -1400,12 +1402,9 @@ let rec fetch_metadata bt =
     | TorrentComplete ->
         assert false
 
-    | PeerEvent (_, Peer.Unchoked)
     | PeerEvent (_, Peer.Choked _)
     | PeerEvent (_, Peer.Interested)
-    | PeerEvent (_, Peer.NotInterested)
-    | PeerEvent (_, Peer.Have _)
-    | PeerEvent (_, Peer.HaveBitfield _) ->
+    | PeerEvent (_, Peer.NotInterested) ->
         loop ()
   in
   loop ()
