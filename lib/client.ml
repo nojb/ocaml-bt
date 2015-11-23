@@ -446,10 +446,7 @@ module Peer = struct
   let keepalive_delay = 20. (* FIXME *)
 
   type event =
-    | Interested
-    | NotInterested
     | PeerDisconnected of (int * int * int) list
-    | GotPEX of (addr * pex_flags) list * addr list
     | DHTPort of int
 
   type ut_extension =
@@ -510,16 +507,8 @@ module Peer = struct
       id : SHA1.t;
       info_hash : SHA1.t;
       peers : (SHA1.t, t) Hashtbl.t;
+      peer_man : PeerMgr.swarm;
       mutable state : swarm_state;
-    }
-
-  let create_swarm id info_hash =
-    let t, u = Lwt.wait () in
-    {
-      id;
-      info_hash;
-      peers = Hashtbl.create 0;
-      state = Incomplete (IncompleteMetadata.create (), u);
     }
 
   let id p =
@@ -624,7 +613,7 @@ module Peer = struct
     | 2 (* reject *) | _ ->
         ()
 
-  let got_ut_pex _t p data =
+  let got_ut_pex t p data =
     (* FIXME support for IPv6 *)
     let m = Bcode.decode data in
     let added = Bcode.find "added" m |> Bcode.to_cstruct in
@@ -661,7 +650,9 @@ module Peer = struct
       in
       loop 0
     in
-    p.push @@ GotPEX (List.combine added added_f, loop dropped)
+    let added = List.combine added added_f in
+    let _dropped = loop dropped in
+    List.iter (fun (addr, _) -> PeerMgr.add t.peer_man addr) added
 
   let got_ut_extension = function
     | UT_metadata -> got_ut_metadata
@@ -908,12 +899,10 @@ module Peer = struct
     | Wire.INTERESTED ->
         if not p.peer_interested then begin
           p.peer_interested <- true;
-          p.push @@ Interested
         end
     | Wire.NOT_INTERESTED ->
         if p.peer_interested then begin
           p.peer_interested <- false;
-          p.push @@ NotInterested
         end
     | Wire.HAVE i ->
         (* check for got_bitfield_already FIXME *)
@@ -1126,10 +1115,7 @@ module Peer = struct
 
   type global_event =
     | PeersReceived of addr list
-    | ConnectToPeer of addr * float
     | IncomingPeer of addr * Util.socket
-    | HandshakeFailed of addr
-    | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
     | TorrentComplete
     | PeerEvent of SHA1.t * event
 
@@ -1138,21 +1124,27 @@ module Peer = struct
     (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
     start t p sock;
     extended_handshake p;
+    begin match t.state with
+    | Complete {we_have; _} ->
+        send_have_bitfield p we_have
+    | Incomplete _ ->
+        ()
+    end;
     p
 
-  let connect t ~id ~info_hash addr timeout push =
+  let connect t addr push =
     let push = function
       | Handshake.Ok (sock, ext, peer_id) ->
           Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
             SHA1.print_hex_short peer_id;
-          Hashtbl.add t.peers peer_id (welcome t push sock ext peer_id);
-          push @@ HandshakeOk (addr, sock, ext, peer_id)
+          let p = welcome t push sock ext peer_id in
+          Hashtbl.add t.peers peer_id p;
+          PeerMgr.handshake_ok t.peer_man addr peer_id
       | Handshake.Failed ->
           Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-          push @@ HandshakeFailed addr
+          PeerMgr.handshake_failed t.peer_man addr
     in
-    (Lwt_unix.sleep timeout >>= fun () -> Handshake.outgoing ~id ~info_hash addr push; Lwt.return_unit) |>
-    Lwt.ignore_result
+    Handshake.outgoing ~id:t.id ~info_hash:t.info_hash addr push
 
   let rechoke_compare (p1, salt1) (p2, salt2) =
     if download_speed p1 <> download_speed p2 then
@@ -1216,6 +1208,28 @@ module Peer = struct
     in
     loop None rechoke_optimistic_duration
 
+  let create_swarm id info_hash =
+    let t, u = Lwt.wait () in
+    let rec swarm =
+      lazy
+        {
+          id;
+          info_hash;
+          peers = Hashtbl.create 0;
+          peer_man = Lazy.force peer_man;
+          state = Incomplete (IncompleteMetadata.create (), u);
+        }
+    and peer_man =
+      lazy
+        (PeerMgr.create (fun addr timeout ->
+            Lwt.ignore_result (
+              Lwt_unix.sleep timeout >|= fun () ->
+              connect (Lazy.force swarm) addr)
+          )
+        )
+    in
+    Lazy.force swarm
+
   let create id info_hash =
     let sw = create_swarm id info_hash in
     Lwt.ignore_result (Lwt.wrap1 the_loop sw);
@@ -1228,10 +1242,7 @@ type addr = Unix.inet_addr * int
 
 type event = Peer.global_event =
   | PeersReceived of addr list
-  | ConnectToPeer of addr * float
   | IncomingPeer of addr * Util.socket
-  | HandshakeFailed of addr
-  | HandshakeOk of addr * Util.socket * Bits.t * SHA1.t
   | TorrentComplete
   | PeerEvent of SHA1.t * Peer.event
 
@@ -1240,7 +1251,6 @@ type t =
     id : SHA1.t;
     ih : SHA1.t;
     trackers : Uri.t list;
-    peer_mgr : PeerMgr.swarm;
     swarm : Peer.swarm;
     chan : event Lwt_stream.t;
     push : event -> unit
@@ -1266,19 +1276,13 @@ let share_torrent bt meta store pieces have peers =
         raise Exit
 
     | PeersReceived addrs ->
-        List.iter (PeerMgr.add bt.peer_mgr) addrs
+        List.iter (PeerMgr.add bt.swarm.peer_man) addrs
 
-    | HandshakeFailed addr ->
-        PeerMgr.handshake_failed bt.peer_mgr addr
-
-    | PeerEvent (id, Peer.PeerDisconnected reqs) ->
-        List.iter (Peer.request_rejected pieces) reqs;
-        PeerMgr.peer_disconnected bt.peer_mgr id;
-        Hashtbl.remove peers id
+    (* | PeerEvent (id, Peer.PeerDisconnected reqs) -> *)
+    (*     List.iter (Peer.request_rejected pieces) reqs; *)
+    (*     PeerMgr.peer_disconnected bt.peer_mgr id; *)
+    (*     Hashtbl.remove peers id *)
         (* if not (am_choking peers id) && peer_interested peers id then Choker.rechoke ch; *)
-
-    | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
-        List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added
 
     | PeerEvent (_, Peer.DHTPort _) ->
         (* let addr, _ = Peer.addr p in *)
@@ -1292,18 +1296,10 @@ let share_torrent bt meta store pieces have peers =
         (* FIXME *)
         ()
 
-    | ConnectToPeer (addr, timeout) ->
-        Peer.connect bt.swarm ~id:bt.id ~info_hash:bt.ih addr timeout bt.push
-
     | IncomingPeer _ ->
         (* FIXME FIXME *)
         ()
 
-    | HandshakeOk (addr, sock, exts, id) ->
-        PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = Peer.welcome bt.swarm bt.push sock exts id in
-        Peer.send_have_bitfield p have;
-        Hashtbl.replace peers id p
   in
   let rec loop () =
     Lwt.bind (Lwt_stream.next bt.chan) (fun e ->
@@ -1342,21 +1338,7 @@ let rec fetch_metadata bt =
     (* log_event e; *)
     match e with
     | PeersReceived addrs ->
-        List.iter (PeerMgr.add bt.peer_mgr) addrs;
-        loop ()
-
-    | HandshakeOk (addr, sock, exts, id) ->
-        PeerMgr.handshake_ok bt.peer_mgr addr id;
-        let p = Peer.welcome bt.swarm bt.push sock exts id in
-        Hashtbl.replace peers id p;
-        loop ()
-
-    | HandshakeFailed addr ->
-        PeerMgr.handshake_failed bt.peer_mgr addr;
-        loop ()
-
-    | ConnectToPeer (addr, timeout) ->
-        Peer.connect bt.swarm ~id:bt.id ~info_hash:bt.ih addr timeout bt.push;
+        List.iter (PeerMgr.add bt.swarm.peer_man) addrs;
         loop ()
 
     | IncomingPeer _ ->
@@ -1364,13 +1346,8 @@ let rec fetch_metadata bt =
         loop ()
 
     | PeerEvent (id, Peer.PeerDisconnected _) ->
-        PeerMgr.peer_disconnected bt.peer_mgr id;
+        PeerMgr.peer_disconnected bt.swarm.peer_man id;
         Hashtbl.remove peers id;
-        loop ()
-    | PeerEvent (_, Peer.GotPEX (added, dropped)) ->
-        (* debug "got pex from %s added %d dropped %d" (Peer.to_string p) *)
-        (*   (List.length added) (List.length dropped); *)
-        List.iter (fun (addr, _) -> PeerMgr.add bt.peer_mgr addr) added;
         loop ()
 
     | PeerEvent (_, Peer.DHTPort i) ->
@@ -1389,9 +1366,6 @@ let rec fetch_metadata bt =
     | TorrentComplete ->
         assert false
 
-    | PeerEvent (_, Peer.Interested)
-    | PeerEvent (_, Peer.NotInterested) ->
-        loop ()
   in
   loop ()
 
@@ -1521,7 +1495,6 @@ let start bt =
 
 let create mg =
   let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in
-  let peer_mgr = PeerMgr.create (fun addr timeout -> push @@ ConnectToPeer (addr, timeout)) in
   let id = SHA1.generate ~prefix:"OCAML" () in
   let ih = mg.Magnet.xt in
   {
@@ -1531,5 +1504,4 @@ let create mg =
     swarm = Peer.create id ih;
     chan = ch;
     push;
-    peer_mgr
   }
