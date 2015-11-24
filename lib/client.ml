@@ -472,6 +472,7 @@ module Peer = struct
       mutable strikes         : int;
       mutable uploaded        : int64;
       mutable downloaded      : int64;
+      mutable last_send : float;
       upload                  : Speedometer.t;
       download                : Speedometer.t;
       requests                : (int * int * int) Lwt_sequence.t;
@@ -998,25 +999,22 @@ module Peer = struct
     let write m =
       Log.debug "[%a] <-- %a" SHA1.print_hex_short p.peer_id Wire.print m;
       let buf = Util.W.into_cstruct (Wire.writer m) buf in
-      Lwt_cstruct.complete (sock # write) buf
+      Lwt_cstruct.complete (fun buf ->
+        sock # write buf >>= fun n ->
+        if n > 0 then p.last_send <- Sys.time ();
+        Lwt.return n
+      ) buf
     in
     let rec loop () =
-      Lwt.pick
-        [ (Lwt_condition.wait p.send >>= fun () -> Lwt.return `Ok);
-          (Lwt_unix.sleep keepalive_delay >>= fun () -> Lwt.return `Timeout) ]
-      >>= function
-      | `Ok ->
-          let rec loop' () =
-            match Lwt_sequence.take_opt_l p.queue with
-            | Some m ->
-                write m >>= loop'
-            | None ->
-                Lwt.return_unit
-          in
-          loop' () >>= loop
-      | `Timeout ->
-          write Wire.KEEP_ALIVE >>=
-          loop
+      Lwt_condition.wait p.send >>= fun () ->
+      let rec loop' () =
+        match Lwt_sequence.take_opt_l p.queue with
+        | Some m ->
+            write m >>= loop'
+        | None ->
+            Lwt.return_unit
+      in
+      loop' () >>= loop
     in
     loop ()
 
@@ -1047,7 +1045,8 @@ module Peer = struct
       requests = Lwt_sequence.create ();
       peer_requests = Lwt_sequence.create ();
       send = Lwt_condition.create ();
-      queue = Lwt_sequence.create ()
+      queue = Lwt_sequence.create ();
+      last_send = min_float;
     }
 
   let welcome t push sock exts id =
@@ -1145,11 +1144,20 @@ module Peer = struct
     | Incomplete _ ->
         ()
 
+  let send_keep_alives t =
+    let now = Unix.time () in
+    let aux _ p =
+      if p.last_send +. keepalive_delay >= now then
+        send p Wire.KEEP_ALIVE
+    in
+    Hashtbl.iter aux t.peers
+
   let the_loop t =
     let rec malthusian_process () =
       update_interest t;
       update_requests t;
       update_choke_unchoke t;
+      send_keep_alives t;
       Lwt_unix.sleep 1.0 >>= malthusian_process
     in
     malthusian_process ()
