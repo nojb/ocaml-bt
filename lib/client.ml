@@ -292,9 +292,8 @@ end
 
 let listen_backlog = 5
 let listen_ports = [50000]
-let choke_timeout = 5.
-let rechoke_interval = 10.
-let rechoke_optimistic_duration = 2
+let rechoke_interval = 5.
+let optimistic_unchoke_iterations = 2
 let rechoke_slots = 10
 let block_size = 1 lsl 14 (* 16384 *)
 let max_requests = 5
@@ -503,6 +502,8 @@ module Peer = struct
       peers : (SHA1.t, t) Hashtbl.t;
       peer_man : PeerMgr.swarm;
       mutable state : swarm_state;
+      mutable optimistic_num : int;
+      mutable last_choke_unchoke : float;
     }
 
   let has p i =
@@ -823,26 +824,6 @@ module Peer = struct
       | None ->
           ()
 
-  let update_requests pieces peers =
-    Hashtbl.iter (fun _ p -> if not p.peer_choking then request p pieces) peers
-
-  let update_interest pieces p =
-    let rec loop i =
-      if i < Array.length pieces then
-        if has p i then
-          match pieces.(i).Piece.state with
-          | Piece.Active _
-          | Piece.Pending ->
-              interested p
-          | Piece.Verified ->
-              loop (i + 1)
-        else
-          loop (i + 1)
-      else
-        not_interested p
-    in
-    loop 0
-
   let request_rejected t reqs =
     match t.state with
     | Complete {pieces; _} ->
@@ -869,47 +850,20 @@ module Peer = struct
           request_rejected t reqs
         end
     | Wire.UNCHOKE ->
-        if p.peer_choking then begin
-          p.peer_choking <- false;
-          match t.state with
-          | Complete {pieces; _} ->
-              update_interest pieces p;
-              update_requests pieces t.peers
-          | Incomplete _ ->
-              ()
-        end
+        p.peer_choking <- false
     | Wire.INTERESTED ->
-        if not p.peer_interested then begin
-          p.peer_interested <- true;
-        end
+        p.peer_interested <- true
     | Wire.NOT_INTERESTED ->
-        if p.peer_interested then begin
-          p.peer_interested <- false;
-        end
+        p.peer_interested <- false
     | Wire.HAVE i ->
         (* check for got_bitfield_already FIXME *)
         Bits.resize p.have (i + 1);
-        if not (Bits.is_set p.have i) then begin
-          Bits.set p.have i;
-          match t.state with
-          | Complete {pieces; _} ->
-              update_interest pieces p;
-              update_requests pieces t.peers
-          | Incomplete _ ->
-              ()
-        end
+        Bits.set p.have i
     | Wire.BITFIELD b ->
         (* check for redefinition *)
         Bits.set_length p.have (Bits.length b);
-        Bits.blit b 0 p.have 0 (Bits.length b);
+        Bits.blit b 0 p.have 0 (Bits.length b)
         (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
-        begin match t.state with
-        | Complete {pieces; _} ->
-            update_interest pieces p;
-            update_requests pieces t.peers
-        | Incomplete _ ->
-            ()
-        end
     | Wire.REQUEST (i, off, len) ->
         if not p.am_choking then begin
           let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.peer_requests in
@@ -1135,55 +1089,70 @@ module Peer = struct
     else
       compare salt1 salt2
 
-  let rechoke peers opt nopt =
-    (* Log.info "RECHOKING"; *)
-    let opt, nopt = if nopt > 0 then opt, nopt - 1 else None, nopt in
-    let wires =
-      let add _ p wires =
-        match (* Peer.is_seeder p, *)false, opt with (* FIXME FIXME *)
-        | true, _ ->
-            choke p;
-            wires
-        | false, Some opt when SHA1.equal p.peer_id opt ->
-            wires
-        | false, _ ->
-            (p, Random.int (1 lsl 29)) :: wires
+  let update_choke_unchoke t =
+    let now = Unix.time () in
+    if t.last_choke_unchoke +. rechoke_interval >= now then begin
+      t.last_choke_unchoke <- now;
+      t.optimistic_num <-
+        if t.optimistic_num = 0 then optimistic_unchoke_iterations else t.optimistic_num - 1;
+      let wires =
+        let add _ p wires = (p, Random.int (1 lsl 29)) :: wires in
+        Hashtbl.fold add t.peers []
       in
-      Hashtbl.fold add peers []
-    in
-    let wires = List.sort rechoke_compare wires in
-    (* Log.debug "RECHOKE %d TOTAL" (List.length wires); *)
-    let rec select n acc = function
-      | (p, _) as w :: wires when n < rechoke_slots ->
-          let n = if p.peer_interested then n + 1 else n in
-          select n (w :: acc) wires
-      | wires ->
-          begin match opt with
-          | Some _ ->
-              acc, wires, opt, nopt
-          | None ->
-              let wires = List.filter (fun (p, _) -> p.peer_interested) wires in
-              if List.length wires > 0 then
-                let (p, _) as opt = List.nth wires (Random.int (List.length wires)) in
-                (opt :: acc), wires, Some p.peer_id, rechoke_optimistic_duration
-              else
-                acc, wires, None, nopt
-          end
-    in
-    let to_unchoke, to_choke, opt, nopt = select 0 [] wires in
-    (* Log.debug "RECHOKE total=%d unchoke=%d choke=%d" (Hashtbl.length peers) (List.length unchoke) *)
-    (*   (List.length choke); *)
-    List.iter (fun (p, _) -> unchoke p) to_unchoke;
-    List.iter (fun (p, _) -> choke p) to_choke;
-    (opt, nopt)
+      let wires = List.sort rechoke_compare wires in
+      let rec select n acc = function
+        | (p, _) :: wires when n < rechoke_slots ->
+            let n = if p.peer_interested then n + 1 else n in
+            select n (p :: acc) wires
+        | wires ->
+            let wires = List.filter (fun (p, _) -> p.peer_interested) wires in
+            if t.optimistic_num = 0 && List.length wires > 0 then
+              let p, _ = List.nth wires (Random.int (List.length wires)) in
+              (p :: acc), wires
+            else
+              acc, wires
+      in
+      let to_unchoke, to_choke = select 0 [] wires in
+      List.iter (fun p -> unchoke p) to_unchoke;
+      List.iter (fun (p, _) -> choke p) to_choke
+    end
+
+  let update_requests t =
+    match t.state with
+    | Complete {pieces; _} ->
+        Hashtbl.iter (fun _ p -> if not p.peer_choking then request p pieces) t.peers
+    | Incomplete _ ->
+        ()
+
+  let update_interest t =
+    match t.state with
+    | Complete {pieces; _} ->
+        let rec loop i p =
+          if i < Array.length pieces then
+            if has p i then
+              match pieces.(i).Piece.state with
+              | Piece.Active _
+              | Piece.Pending ->
+                  interested p
+              | Piece.Verified ->
+                  loop (i + 1) p
+            else
+              loop (i + 1) p
+          else
+            not_interested p
+        in
+        Hashtbl.iter (fun _ p -> loop 0 p) t.peers
+    | Incomplete _ ->
+        ()
 
   let the_loop t =
-    let rec loop opt nopt =
-      let opt, nopt = rechoke t.peers opt nopt in
-      Lwt_unix.sleep choke_timeout >>= fun () ->
-      loop opt nopt
+    let rec malthusian_process () =
+      update_interest t;
+      update_requests t;
+      update_choke_unchoke t;
+      Lwt_unix.sleep 1.0 >>= malthusian_process
     in
-    loop None rechoke_optimistic_duration
+    malthusian_process ()
 
   let load_torrent bt m =
     Store.create (Metadata.files m) >>= fun store ->
@@ -1212,6 +1181,8 @@ module Peer = struct
           peers = Hashtbl.create 0;
           peer_man = Lazy.force peer_man;
           state = Incomplete (IncompleteMetadata.create (), u);
+          optimistic_num = optimistic_unchoke_iterations;
+          last_choke_unchoke = min_float;
         }
     and peer_man =
       lazy
