@@ -500,14 +500,14 @@ module Peer = struct
     object
       method peer_joined : SHA1.t -> Unix.inet_addr -> unit
       method block_received : SHA1.t -> int -> int -> int -> unit
-      method piece_verified : SHA1.t -> int -> unit
+      method piece_verified : int -> unit
     end
 
   let dummy_listener : listener =
     object
       method peer_joined _ _ = ()
       method block_received _ _ _ _ = ()
-      method piece_verified _ _ = ()
+      method piece_verified _ = ()
     end
 
   type swarm =
@@ -815,7 +815,7 @@ module Peer = struct
                 | true ->
                     pieces.(i).Piece.state <- Piece.Verified;
                     Bits.set we_have i;
-                    t.listener # piece_verified p.peer_id i;
+                    t.listener # piece_verified i;
                     Hashtbl.iter (fun _ p -> send_have p i) t.peers;
                     Lwt.return_unit
                 (* maybe update interest ? *)
@@ -1226,7 +1226,7 @@ module Peer = struct
     object (client)
       method peer_joined _ _ = ()
       method block_received _ _ _ _ = ()
-      method piece_verified _ _ = ()
+      method piece_verified _ = ()
 
       method start =
         Lwt.ignore_result (Lwt.wrap1 the_loop sw)
