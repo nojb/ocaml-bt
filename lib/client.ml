@@ -784,39 +784,47 @@ module Peer = struct
     else
       Lwt.return false
 
-  let record_block {we_have; store; pieces} peers i off s =
-    let j = off / block_size in
-    match pieces.(i).Piece.state with
-    | Piece.Pending ->
-        Log.warn "Received block #%d for piece #%d, not requested ???" j i
-    | Piece.Verified ->
-        Log.warn "Received block #%d for piece #%d, already completed" j i
-    | Piece.Active parts ->
-        let c = parts.(j) in
-        if c >= 0 then begin
-          parts.(j) <- (-1);
-          let do_cancel _ p =
-            if requested p i j (Cstruct.len s) then
-              cancel p i j (Cstruct.len s)
-          in
-          if c > 1 then Hashtbl.iter do_cancel peers;
-          pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
-          Log.info "Received block #%d for piece #%d, have %d, missing %d"
-            j i pieces.(i).Piece.have (Array.length parts - pieces.(i).Piece.have)
-        end;
-        let off = Int64.(add pieces.(i).Piece.offset (of_int off)) in
-        Lwt.async (fun () ->
-          Store.write store off s >>= fun () ->
-          verify_piece store peers pieces.(i) >>= function
-          | true ->
-              pieces.(i).Piece.state <- Piece.Verified;
-              Bits.set we_have i;
-              Hashtbl.iter (fun _ p -> send_have p i) peers;
-              Lwt.return_unit
-              (* maybe update interest ? *)
-          | false -> (* FIXME FIXME *)
-              Lwt.return_unit
-        )
+  let record_block t p i off s =
+    match t.state with
+    | Complete {we_have; store; pieces} ->
+        if i >= 0 && i < Array.length pieces then begin
+          let j = off / block_size in
+          match pieces.(i).Piece.state with
+          | Piece.Pending ->
+              Log.warn "Received block #%d for piece #%d, not requested ???" j i
+          | Piece.Verified ->
+              Log.warn "Received block #%d for piece #%d, already completed" j i
+          | Piece.Active parts ->
+              let c = parts.(j) in
+              if c >= 0 then begin
+                parts.(j) <- (-1);
+                let do_cancel _ p =
+                  if requested p i j (Cstruct.len s) then
+                    cancel p i j (Cstruct.len s)
+                in
+                if c > 1 then Hashtbl.iter do_cancel t.peers;
+                pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
+                t.listener # block_received p.peer_id i off (Cstruct.len s);
+                Log.info "Received block #%d for piece #%d, have %d, missing %d"
+                  j i pieces.(i).Piece.have (Array.length parts - pieces.(i).Piece.have)
+              end;
+              let off = Int64.(add pieces.(i).Piece.offset (of_int off)) in
+              Lwt.async (fun () ->
+                Store.write store off s >>= fun () ->
+                verify_piece store t.peers pieces.(i) >>= function
+                | true ->
+                    pieces.(i).Piece.state <- Piece.Verified;
+                    Bits.set we_have i;
+                    t.listener # piece_verified p.peer_id i;
+                    Hashtbl.iter (fun _ p -> send_have p i) t.peers;
+                    Lwt.return_unit
+                (* maybe update interest ? *)
+                | false -> (* FIXME FIXME *)
+                    Lwt.return_unit
+              )
+        end
+    | Incomplete _ ->
+        ()
 
   let send_block store pieces p i off len =
     match pieces.(i).Piece.state with
@@ -910,15 +918,7 @@ module Peer = struct
         Bits.resize p.blame (i + 1);
         Bits.set p.blame i;
         (* TODO emit Downloaded event *)
-        begin match t.state with
-        | Incomplete _ ->
-            ()
-        | Complete c ->
-            if i >= 0 && i < Array.length c.pieces then
-              record_block c t.peers i off s
-            else
-              Log.warn "! PIECE invalid piece:%d" i
-        end
+        record_block t p i off s
     | Wire.CANCEL (i, off, len) ->
         (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
         let n =
@@ -1083,6 +1083,7 @@ module Peer = struct
           Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
             SHA1.print_hex_short peer_id;
           let p = welcome t sock ext peer_id in
+          t.listener # peer_joined peer_id (fst addr);
           Hashtbl.add t.peers peer_id p;
           PeerMgr.handshake_ok t.peer_man addr peer_id
       | Handshake.Failed ->
