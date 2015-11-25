@@ -496,6 +496,20 @@ module Peer = struct
     | Incomplete of incomplete * Cstruct.t Lwt.u
     | Complete of complete
 
+  class type listener =
+    object
+      method peer_joined : SHA1.t -> Unix.inet_addr -> unit
+      method block_received : SHA1.t -> int -> int -> int -> unit
+      method piece_verified : SHA1.t -> int -> unit
+    end
+
+  let dummy_listener : listener =
+    object
+      method peer_joined _ _ = ()
+      method block_received _ _ _ _ = ()
+      method piece_verified _ _ = ()
+    end
+
   type swarm =
     {
       id : SHA1.t;
@@ -505,6 +519,7 @@ module Peer = struct
       mutable state : swarm_state;
       mutable optimistic_num : int;
       mutable last_choke_unchoke : float;
+      mutable listener : listener;
     }
 
   let has p i =
@@ -1191,6 +1206,7 @@ module Peer = struct
           state = Incomplete (IncompleteMetadata.create (), u);
           optimistic_num = optimistic_unchoke_iterations;
           last_choke_unchoke = min_float;
+          listener = dummy_listener;
         }
     and peer_man =
       lazy
@@ -1203,10 +1219,20 @@ module Peer = struct
     in
     Lazy.force swarm
 
-  let create id info_hash =
+  class client info_hash =
+    let id = SHA1.generate ~prefix:"OCAML" () in
     let sw = create_swarm id info_hash in
-    Lwt.ignore_result (Lwt.wrap1 the_loop sw);
-    sw
+    object (client)
+      method peer_joined _ _ = ()
+      method block_received _ _ _ _ = ()
+      method piece_verified _ _ = ()
+
+      method start =
+        Lwt.ignore_result (Lwt.wrap1 the_loop sw)
+
+      initializer
+        sw.listener <- (client :> listener)
+    end
 end
 
 open Lwt.Infix
@@ -1255,12 +1281,10 @@ let start t trackers =
   start_server ();
   start_trackers t trackers
 
-type t = Peer.swarm
-
-let create mg =
-  (* let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in *)
-  let id = SHA1.generate ~prefix:"OCAML" () in
-  let info_hash = mg.Magnet.xt in
-  let sw = Peer.create id info_hash in
-  start sw mg.Magnet.tr;
-  sw
+(* let create mg = *)
+(*   (\* let ch, push = let ch, push = Lwt_stream.create () in ch, (fun x -> push (Some x)) in *\) *)
+(*   let id = SHA1.generate ~prefix:"OCAML" () in *)
+(*   let info_hash = mg.Magnet.xt in *)
+(*   let sw = Peer.create id info_hash in *)
+(*   start sw mg.Magnet.tr; *)
+(*   sw *)
