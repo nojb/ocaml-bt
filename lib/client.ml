@@ -503,7 +503,7 @@ module Peer = struct
       method piece_verified : int -> unit
     end
 
-  let dummy_listener : listener =
+  class dummy_listener : listener =
     object
       method peer_joined _ _ = ()
       method block_received _ _ _ _ = ()
@@ -1207,7 +1207,7 @@ module Peer = struct
           state = Incomplete (IncompleteMetadata.create (), u);
           optimistic_num = optimistic_unchoke_iterations;
           last_choke_unchoke = min_float;
-          listener = dummy_listener;
+          listener = new dummy_listener;
         }
     and peer_man =
       lazy
@@ -1224,9 +1224,7 @@ module Peer = struct
     let id = SHA1.generate ~prefix:"OCAML" () in
     let sw = create_swarm id info_hash in
     object (client)
-      method peer_joined _ _ = ()
-      method block_received _ _ _ _ = ()
-      method piece_verified _ = ()
+      inherit dummy_listener
 
       method start =
         Lwt.ignore_result (Lwt.wrap1 the_loop sw)
