@@ -1025,7 +1025,7 @@ module Peer = struct
         (handle_err t p sock)
     end
 
-  let create_peer peer_id sock =
+  let create_peer peer_id =
     {
       peer_id;
       am_choking = true;
@@ -1049,8 +1049,8 @@ module Peer = struct
       last_send = min_float;
     }
 
-  let welcome t push sock exts id =
-    let p = create_peer id sock in
+  let welcome t sock exts id =
+    let p = create_peer id in
     (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
     start t p sock;
     extended_handshake p;
@@ -1062,12 +1062,12 @@ module Peer = struct
     end;
     p
 
-  let connect t addr push =
+  let connect t addr =
     let push = function
       | Handshake.Ok (sock, ext, peer_id) ->
           Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
             SHA1.print_hex_short peer_id;
-          let p = welcome t push sock ext peer_id in
+          let p = welcome t sock ext peer_id in
           Hashtbl.add t.peers peer_id p;
           PeerMgr.handshake_ok t.peer_man addr peer_id
       | Handshake.Failed ->
