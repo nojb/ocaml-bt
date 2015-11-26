@@ -488,176 +488,6 @@ module Peer = struct
       queue                   : Wire.message Lwt_sequence.t;
     }
 
-  let has p i =
-    if i < 0 then invalid_arg "Peer.has";
-    i < Bits.length p.have && Bits.is_set p.have i
-
-  let download_speed p =
-    Speedometer.speed p.download
-
-  let upload_speed p =
-    Speedometer.speed p.upload
-
-  let requests p =
-    Lwt_sequence.length p.requests
-
-  let requested p i off len =
-    match Lwt_sequence.find_node_opt_l (fun (i', off', len') -> i = i' && off = off' && len = len') p.requests with
-    | None ->
-        false
-    | Some _ ->
-        true
-
-  let worked_on_piece p i =
-    if i < 0 then invalid_arg "Peer.worked_on_piece";
-    i < Bits.length p.blame && Bits.is_set p.blame i
-
-  let strike p =
-    p.strikes <- p.strikes + 1;
-    p.strikes
-
-  let send p m =
-    ignore (Lwt_sequence.add_r m p.queue);
-    Lwt_condition.signal p.send ()
-
-  let reject_metadata_request p piece =
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let m =
-      let d = [ "msg_type", Bcode.Int 2L; "piece", Bcode.Int (Int64.of_int piece) ] in
-      Bcode.encode (Bcode.Dict d)
-    in
-    send p @@ Wire.EXTENDED (id, m)
-
-  let metadata_piece len i data p =
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let m =
-      let d =
-        [ "msg_type",   Bcode.Int 1L;
-          "piece",      Bcode.Int (Int64.of_int i);
-          "total_size", Bcode.Int (Int64.of_int len) ]
-      in
-      Cs.(Bcode.encode (Bcode.Dict d) <+> data)
-    in
-    send p @@ Wire.EXTENDED (id, m)
-
-
-  let send_piece p i o buf =
-    p.uploaded <- Int64.add p.uploaded (Int64.of_int @@ Cstruct.len buf);
-    Speedometer.add p.upload (Cstruct.len buf);
-    (* TODO emit Uploaded event *)
-    send p @@ Wire.PIECE (i, o, buf)
-
-  let send_request p i ofs len =
-    if p.peer_choking then invalid_arg "Peer.request";
-    ignore (Lwt_sequence.add_r (i, ofs, len) p.requests);
-    send p @@ Wire.REQUEST (i, ofs, len)
-
-  let send_extended_handshake p =
-    let m =
-      List.map (fun (id, name) ->
-        string_of_ut_extension name, Bcode.Int (Int64.of_int id)) supported_ut_extensions
-    in
-    let m = Bcode.Dict ["m", Bcode.Dict m] in
-    Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.peer_id
-      (String.concat " " (List.map (fun (n, name) ->
-           Printf.sprintf "%s %d" (string_of_ut_extension name) n)
-           supported_ut_extensions));
-    send p @@ Wire.EXTENDED (0, Bcode.encode m)
-
-  let send_choke p =
-    if not p.am_choking then begin
-      p.am_choking <- true;
-      Lwt_sequence.iter_node_l Lwt_sequence.remove p.peer_requests;
-      send p Wire.CHOKE
-    end
-
-  let send_unchoke p =
-    if p.am_choking then begin
-      p.am_choking <- false;
-      send p Wire.UNCHOKE
-    end
-
-  let send_interested p =
-    if not p.am_interested then begin
-      p.am_interested <- true;
-      send p Wire.INTERESTED
-    end
-
-  let send_not_interested p =
-    if p.am_interested then begin
-      p.am_interested <- false;
-      send p Wire.NOT_INTERESTED
-    end
-
-  let send_have p i =
-    send p @@ Wire.HAVE i
-
-  let send_have_bitfield p bits =
-    (* check for redefined length FIXME *)
-    Bits.set_length p.have (Bits.length bits);
-    Bits.set_length p.blame (Bits.length bits);
-    Log.info "> BITFIELD id:%a have:%d total:%d" SHA1.print_hex_short p.peer_id
-      (Bits.count_ones bits) (Bits.length bits);
-    send p @@ Wire.BITFIELD bits
-
-  let send_cancel p i o l =
-    (* Log.info "> CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o l; *)
-    send p @@ Wire.CANCEL (i, o, l);
-    try
-      let n = Lwt_sequence.find_node_l (fun (i', o', l') -> i = i' && o' = o && l = l') p.requests in
-      Lwt_sequence.remove n
-    with
-    | Not_found ->
-        Log.warn "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.print_hex_short p.peer_id i o l
-
-  let send_port p i =
-    send p @@ Wire.PORT i
-
-  let send_metadata_request p i =
-    if i < 0 || not (Hashtbl.mem p.extensions UT_metadata) then invalid_arg "request_metadata_piece";
-    let id = Hashtbl.find p.extensions UT_metadata in
-    let d =
-      [
-        "msg_type", Bcode.Int 0L;
-        "piece", Bcode.Int (Int64.of_int i);
-       ]
-    in
-    send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
-
-  let send_ut_pex p added dropped =
-    let id = Hashtbl.find p.extensions UT_pex in
-    let rec c (ip, port) =
-      let cs =
-        Scanf.sscanf (Unix.string_of_inet_addr ip) "%d.%d.%d.%d"
-          (fun a b c d ->
-             let cs = Cstruct.create 6 in
-             Cstruct.set_uint8 cs 0 a; Cstruct.set_uint8 cs 1 b;
-             Cstruct.set_uint8 cs 2 a; Cstruct.set_uint8 cs 3 d;
-             cs)
-      in
-      Cstruct.BE.set_uint16 cs 4 port;
-      cs
-    in
-    let c l = Cs.concat (List.map c l) in
-    let d =
-      [
-        "added", Bcode.String (c added);
-        "added.f", Bcode.String (Cs.create_with (List.length added) 0);
-        "dropped", Bcode.String (c dropped);
-      ]
-    in
-    Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short p.peer_id
-      (List.length added) (List.length dropped);
-    send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
-
-  let send_pex pex p =
-    if Hashtbl.mem p.extensions UT_pex then begin
-      let added = List.filter (fun a -> not (List.mem a p.last_pex)) pex in
-      let dropped = List.filter (fun a -> not (List.mem a pex)) p.last_pex in
-      p.last_pex <- pex;
-      send_ut_pex p added dropped
-    end
-
   let create peer_id =
     {
       peer_id;
@@ -681,7 +511,439 @@ module Peer = struct
       queue = Lwt_sequence.create ();
       last_send = min_float;
     }
+
+  class peer ~id ~sock ~client =
+    object (peer)
+      val mutable am_choking = true
+      val mutable am_interested = false
+      val mutable choking_us = true
+      val mutable interested_in_us = false
+      val mutable last_send = min_float
+      val mutable strikes = 0
+      val mutable uploaded = 0L
+      val mutable downloaded = 0L
+      val mutable last_pex = []
+      val download = Speedometer.create ()
+      val upload = Speedometer.create ()
+      val extensions = Hashtbl.create 0
+      val blame = Bits.create 0
+      val have = Bits.create 0
+      val requests = Lwt_sequence.create ()
+      val peer_requests = Lwt_sequence.create ()
+      val send = Lwt_condition.create ()
+      val queue = Lwt_sequence.create ()
+
+      method id =
+        id
+
+      method interested_in_us =
+        interested_in_us
+
+      method choking_us =
+        choking_us
+
+      method send_port i =
+        peer # send (Wire.PORT i)
+
+      method send_have i =
+        peer # send (Wire.HAVE i)
+
+      method send_choke =
+        if not am_choking then begin
+          am_choking <- true;
+          Lwt_sequence.iter_node_l Lwt_sequence.remove peer_requests;
+          peer # send Wire.CHOKE
+        end
+
+      method send_unchoke =
+        if am_choking then begin
+          am_choking <- false;
+          peer # send Wire.UNCHOKE
+        end
+
+      method send_interested =
+        if not am_interested then begin
+          am_interested <- true;
+          peer # send Wire.INTERESTED
+        end
+
+      method send_not_interested =
+        if am_interested then begin
+          am_interested <- false;
+          peer # send Wire.NOT_INTERESTED
+        end
+
+      method send_metadata_request i =
+        if i < 0 || not (Hashtbl.mem extensions UT_metadata) then invalid_arg "request_metadata_piece";
+        let id = Hashtbl.find extensions UT_metadata in
+        let d =
+          [
+            "msg_type", Bcode.Int 0L;
+            "piece", Bcode.Int (Int64.of_int i);
+          ]
+        in
+        peer # send (Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d))
+
+      method has i =
+        0 <= i && i < Bits.length have && Bits.is_set have i
+
+      method download_speed =
+        Speedometer.speed download
+
+      method upload_speed =
+        Speedometer.speed upload
+
+      method num_requests =
+        Lwt_sequence.length requests
+
+      method requested i off len =
+        match Lwt_sequence.find_node_opt_l (fun (i', off', len') -> i = i' && off = off' && len = len') requests with
+        | None ->
+            false
+        | Some _ ->
+            true
+
+      method worked_on_piece i =
+        0 <= i && i < Bits.length blame && Bits.is_set blame i
+
+      method strike =
+        strikes <- strikes + 1;
+        strikes
+
+      method private send m =
+        ignore (Lwt_sequence.add_r m queue);
+        Lwt_condition.signal send ()
+
+      method send_keep_alive =
+        let now = Unix.time () in
+        if last_send +. keepalive_delay >= now then
+          peer # send Wire.KEEP_ALIVE
+
+      method send_metadata_rejection piece =
+        let id = Hashtbl.find extensions UT_metadata in
+        let m =
+          let d =
+            [
+              "msg_type", Bcode.Int 2L;
+              "piece", Bcode.Int (Int64.of_int piece);
+            ]
+          in
+          Bcode.encode (Bcode.Dict d)
+        in
+        peer # send (Wire.EXTENDED (id, m))
+
+      method send_metadata_piece len i data =
+        let id = Hashtbl.find extensions UT_metadata in
+        let m =
+          let d =
+            [ "msg_type",   Bcode.Int 1L;
+              "piece",      Bcode.Int (Int64.of_int i);
+              "total_size", Bcode.Int (Int64.of_int len) ]
+          in
+          Cs.(Bcode.encode (Bcode.Dict d) <+> data)
+        in
+        peer # send (Wire.EXTENDED (id, m))
+
+      method send_piece i o buf =
+        uploaded <- Int64.add uploaded (Int64.of_int @@ Cstruct.len buf);
+        Speedometer.add upload (Cstruct.len buf);
+        (* TODO emit Uploaded event *)
+        peer # send (Wire.PIECE (i, o, buf))
+
+      method send_request i ofs len =
+        if choking_us then invalid_arg "Peer.request";
+        ignore (Lwt_sequence.add_r (i, ofs, len) requests);
+        peer # send (Wire.REQUEST (i, ofs, len))
+
+      method send_extended_handshake =
+        let m =
+          List.map (fun (id, name) ->
+            string_of_ut_extension name, Bcode.Int (Int64.of_int id)) supported_ut_extensions
+        in
+        let m = Bcode.Dict ["m", Bcode.Dict m] in
+        Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short id
+          (String.concat " " (List.map (fun (n, name) ->
+               Printf.sprintf "%s %d" (string_of_ut_extension name) n)
+               supported_ut_extensions));
+        peer # send (Wire.EXTENDED (0, Bcode.encode m))
+
+      method send_have_bitfield bits =
+        (* check for redefined length FIXME *)
+        Bits.set_length have (Bits.length bits);
+        Bits.set_length blame (Bits.length bits);
+        Log.info "> BITFIELD id:%a have:%d total:%d" SHA1.print_hex_short id
+          (Bits.count_ones bits) (Bits.length bits);
+        peer # send (Wire.BITFIELD bits)
+
+      method send_cancel i o l =
+        (* Log.info "> CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o l; *)
+        peer # send (Wire.CANCEL (i, o, l));
+        try
+          let n = Lwt_sequence.find_node_l (fun (i', o', l') -> i = i' && o' = o && l = l') requests in
+          Lwt_sequence.remove n
+        with
+        | Not_found ->
+            Log.warn "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.print_hex_short id i o l
+
+      method private send_ut_pex added dropped =
+        let eid = Hashtbl.find extensions UT_pex in
+        let rec c (ip, port) =
+          let cs =
+            Scanf.sscanf (Unix.string_of_inet_addr ip) "%d.%d.%d.%d"
+              (fun a b c d ->
+                 let cs = Cstruct.create 6 in
+                 Cstruct.set_uint8 cs 0 a; Cstruct.set_uint8 cs 1 b;
+                 Cstruct.set_uint8 cs 2 a; Cstruct.set_uint8 cs 3 d;
+                 cs)
+          in
+          Cstruct.BE.set_uint16 cs 4 port;
+          cs
+        in
+        let c l = Cs.concat (List.map c l) in
+        let d =
+          [
+            "added", Bcode.String (c added);
+            "added.f", Bcode.String (Cs.create_with (List.length added) 0);
+            "dropped", Bcode.String (c dropped);
+          ]
+        in
+        Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short id
+          (List.length added) (List.length dropped);
+        peer # send (Wire.EXTENDED (eid, Bcode.encode @@ Bcode.Dict d))
+
+      method send_pex pex =
+        if Hashtbl.mem extensions UT_pex then begin
+          let added = List.filter (fun a -> not (List.mem a last_pex)) pex in
+          let dropped = List.filter (fun a -> not (List.mem a pex)) last_pex in
+          last_pex <- pex;
+          peer # send_ut_pex added dropped
+        end
+
+      method private got_ut_metadata data =
+        let m, data = Bcode.decode_partial data in
+        let msg_type = Bcode.to_int (Bcode.find "msg_type" m) in
+        let piece = Bcode.to_int (Bcode.find "piece" m) in
+        match msg_type with
+        | 0 -> (* request *)
+            client # got_metadata_request peer piece
+        | 1 -> (* data *)
+            client # got_metadata_piece peer piece data
+        | 2 (* reject *) | _ ->
+            ()
+
+      method private got_ut_pex data =
+        (* FIXME support for IPv6 *)
+        let m = Bcode.decode data in
+        let added = Bcode.find "added" m |> Bcode.to_cstruct in
+        let added_f = Bcode.find "added.f" m |> Bcode.to_cstruct in
+        let dropped = try Bcode.find "dropped" m |> Bcode.to_cstruct with _ -> Cs.empty in
+        let rec loop cs =
+          if Cstruct.len cs >= 6 then
+            let addr, cs = Cstruct.split cs 6 in
+            let ip =
+              Unix.inet_addr_of_string
+                (Printf.sprintf "%d.%d.%d.%d"
+                   (Cstruct.get_uint8 addr 0) (Cstruct.get_uint8 addr 1)
+                   (Cstruct.get_uint8 addr 2) (Cstruct.get_uint8 addr 3))
+            in
+            let port = Cstruct.BE.get_uint16 addr 4 in
+            (ip, port) :: loop cs
+          else
+            []
+        in
+        let flag n =
+          {
+            pex_encryption = n land 0x1 <> 0;
+            pex_seed = n land 0x2 <> 0;
+            pex_utp = n land 0x4 <> 0;
+            pex_holepunch = n land 0x8 <> 0;
+            pex_outgoing = n land 0x10 <> 0;
+          }
+        in
+        let added = loop added in
+        let added_f =
+          let rec loop i =
+            if i >= Cstruct.len added_f then
+              []
+            else
+              flag (Cstruct.get_uint8 added_f i) :: loop (i + 1)
+          in
+          loop 0
+        in
+        let added = List.combine added added_f in
+        let _dropped = loop dropped in
+        client # got_pex added
+
+      method private got_ut_extension = function
+        | UT_metadata -> peer # got_ut_metadata
+        | UT_pex -> peer # got_ut_pex
+
+      method private got_message m =
+        match m with
+        | Wire.KEEP_ALIVE ->
+            ()
+        | Wire.CHOKE ->
+            if not choking_us then begin
+              choking_us <- true;
+              let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) requests [] in
+              Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) requests;
+              client # got_choked peer reqs
+            end
+        | Wire.UNCHOKE ->
+            choking_us <- false
+        | Wire.INTERESTED ->
+            interested_in_us <- true
+        | Wire.NOT_INTERESTED ->
+            interested_in_us <- false
+        | Wire.HAVE i ->
+            (* check for got_bitfield_already FIXME *)
+            Bits.resize have (i + 1);
+            Bits.set have i
+        | Wire.BITFIELD b ->
+            (* check for redefinition *)
+            Bits.set_length have (Bits.length b);
+            Bits.blit b 0 have 0 (Bits.length b)
+        (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
+        | Wire.REQUEST (i, off, len) ->
+            if not am_choking then begin
+              let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) peer_requests in
+              (* Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
+              client # got_request peer i off len
+            end
+        | Wire.PIECE (i, off, s) ->
+            begin match
+              Lwt_sequence.find_node_opt_l
+                (fun (i', off', len') -> i = i' && off = off' && len' = Cstruct.len s)
+                requests
+            with
+            | None ->
+                Log.warn "! Received peer block #%d of #%d which we were not expecting"
+                  (off / (16 * 1024)) i
+            | Some n ->
+                Lwt_sequence.remove n
+            end;
+            downloaded <- Int64.add downloaded (Int64.of_int @@ Cstruct.len s);
+            Speedometer.add download (Cstruct.len s);
+            Bits.resize blame (i + 1);
+            Bits.set blame i;
+            (* TODO emit Downloaded event *)
+            client # got_block peer i off s
+        | Wire.CANCEL (i, off, len) ->
+            (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
+            let n =
+              Lwt_sequence.find_node_opt_l
+                (fun (i', off', len') -> i = i' && off = off' && len = len')
+                peer_requests
+            in
+            begin match n with
+            | Some n ->
+                (* FIXME broadcast event *)
+                Lwt_sequence.remove n
+            | None ->
+                Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
+                  SHA1.print_hex_short id i off len
+            end
+        | Wire.EXTENDED (0, s) ->
+            let bc = Bcode.decode s in
+            let m =
+              Bcode.find "m" bc |> Bcode.to_dict |> List.map (fun (name, id) -> (name, Bcode.to_int id))
+            in
+            List.iter (fun (name, id) ->
+              try
+                let name = ut_extension_of_string name in
+                if id = 0 then
+                  Hashtbl.remove extensions name
+                else
+                  Hashtbl.replace extensions name id
+              with _ ->
+                ()
+            ) m;
+            Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short id
+              (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
+            if Hashtbl.mem extensions UT_metadata then begin
+              let len = Bcode.find "metadata_size" bc |> Bcode.to_int in
+              client # got_metadata_size peer len
+            end
+        | Wire.EXTENDED (eid, data) ->
+            Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short id eid;
+            if List.mem_assoc eid supported_ut_extensions then begin
+              let ute = List.assoc eid supported_ut_extensions in
+              peer # got_ut_extension ute data
+            end
+        | Wire.PORT _ ->
+            ()
+
+      method private handle_err e =
+        Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short id (Printexc.to_string e);
+        let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) requests [] in
+        client # got_choked peer reqs;
+        client # peer_disconnected peer;
+        Lwt.catch (sock # close) (fun _ -> Lwt.return_unit)
+
+      method private reader_loop =
+        let open Lwt.Infix in
+        let buf = Cstruct.create Wire.max_packet_len in
+        let rec loop off =
+          Lwt_unix.with_timeout keepalive_delay (fun () -> sock # read (Cstruct.shift buf off)) >>= function
+          | 0 ->
+              Lwt.fail End_of_file
+          | n ->
+              let n = n + off in
+              let msgs, off = Wire.handle (Cstruct.sub buf 0 n) in
+              Cstruct.blit buf off buf 0 (n - off);
+              List.iter (fun m -> Log.debug "[%a] --> %a" SHA1.print_hex_short id Wire.print m) msgs;
+              List.iter (peer # got_message) msgs;
+              loop (n - off)
+        in
+        loop 0
+
+      method private writer_loop =
+        let open Lwt.Infix in
+        let buf = Cstruct.create Wire.max_packet_len in
+        let write m =
+          Log.debug "[%a] <-- %a" SHA1.print_hex_short id Wire.print m;
+          let buf = Util.W.into_cstruct (Wire.writer m) buf in
+          Lwt_cstruct.complete (fun buf ->
+            sock # write buf >>= fun n ->
+            if n > 0 then last_send <- Sys.time ();
+            Lwt.return n
+          ) buf
+        in
+        let rec loop () =
+          Lwt_condition.wait send >>= fun () ->
+          let rec loop' () =
+            match Lwt_sequence.take_opt_l queue with
+            | Some m ->
+                write m >>= loop'
+            | None ->
+                Lwt.return_unit
+          in
+          loop' () >>= loop
+        in
+        loop ()
+
+      initializer
+        Lwt.ignore_result begin
+          Lwt.catch
+            (fun () -> Lwt.pick [peer # reader_loop; peer # writer_loop])
+            (peer # handle_err)
+        end
+    end
 end
+
+let rechoke_compare (p1, salt1) (p2, salt2) =
+  assert false
+  (* if Peer.download_speed p1 <> Peer.download_speed p2 then *)
+  (*   compare (Peer.download_speed p2) (Peer.download_speed p1) *)
+  (* else *)
+  (* if Peer.upload_speed p1 <> Peer.upload_speed p2 then *)
+  (*   compare (Peer.upload_speed p2) (Peer.upload_speed p1) *)
+  (* else *)
+  (* if p1.Peer.am_choking <> p2.Peer.am_choking then *)
+  (*   compare p1.Peer.am_choking p2.Peer.am_choking *)
+  (* else *)
+  (*   compare salt1 salt2 *)
+
 
 module Client = struct
 
@@ -714,100 +976,6 @@ module Client = struct
       method piece_verified _ = ()
     end
 
-  type swarm =
-    {
-      id : SHA1.t;
-      info_hash : SHA1.t;
-      peers : (SHA1.t, Peer.t) Hashtbl.t;
-      peer_man : PeerMgr.swarm;
-      mutable state : swarm_state;
-      mutable optimistic_num : int;
-      mutable last_choke_unchoke : float;
-      mutable listener : listener;
-    }
-
-  let got_ut_metadata t p data =
-    let m, data = Bcode.decode_partial data in
-    let msg_type = Bcode.to_int (Bcode.find "msg_type" m) in
-    let piece = Bcode.to_int (Bcode.find "piece" m) in
-    match msg_type with
-    | 0 -> (* request *)
-        begin match t.state with
-        | Incomplete _ ->
-            Peer.reject_metadata_request p piece
-        | Complete {metadata; _} ->
-            Peer.metadata_piece
-              (Metadata.length metadata) piece
-              (Metadata.get_piece metadata piece) p
-        end
-    | 1 -> (* data *)
-        begin match t.state with
-        | Incomplete (m, gotit) ->
-            if IncompleteMetadata.add m piece data then begin
-              match IncompleteMetadata.verify m t.info_hash with
-              | Some raw ->
-                  Lwt.wakeup_later gotit raw
-                  (* debug "got full metadata"; *)
-                  (* let m = Metadata.create (Bcode.decode raw) in *)
-                  (* t.state <- Complete (m, *)
-                  (* Lwt.return m *)
-              | None ->
-                  IncompleteMetadata.reset m;
-                  Log.error "METADATA HASH CHECK FAILED"
-            end
-        | Complete _ ->
-            ()
-        end
-    | 2 (* reject *) | _ ->
-        ()
-
-  let got_ut_pex t p data =
-    (* FIXME support for IPv6 *)
-    let m = Bcode.decode data in
-    let added = Bcode.find "added" m |> Bcode.to_cstruct in
-    let added_f = Bcode.find "added.f" m |> Bcode.to_cstruct in
-    let dropped = try Bcode.find "dropped" m |> Bcode.to_cstruct with _ -> Cs.empty in
-    let rec loop cs =
-      if Cstruct.len cs >= 6 then
-        let addr, cs = Cstruct.split cs 6 in
-        let ip =
-          Unix.inet_addr_of_string
-            (Printf.sprintf "%d.%d.%d.%d"
-               (Cstruct.get_uint8 addr 0) (Cstruct.get_uint8 addr 1)
-               (Cstruct.get_uint8 addr 2) (Cstruct.get_uint8 addr 3))
-        in
-        let port = Cstruct.BE.get_uint16 addr 4 in
-        (ip, port) :: loop cs
-      else
-        []
-    in
-    let flag n =
-      {
-        pex_encryption = n land 0x1 <> 0;
-        pex_seed = n land 0x2 <> 0;
-        pex_utp = n land 0x4 <> 0;
-        pex_holepunch = n land 0x8 <> 0;
-        pex_outgoing = n land 0x10 <> 0;
-      }
-    in
-    let added = loop added in
-    let added_f =
-      let rec loop i =
-        if i >= Cstruct.len added_f then
-          []
-        else
-          flag (Cstruct.get_uint8 added_f i) :: loop (i + 1)
-      in
-      loop 0
-    in
-    let added = List.combine added added_f in
-    let _dropped = loop dropped in
-    List.iter (fun (addr, _) -> PeerMgr.add t.peer_man addr) added
-
-  let got_ut_extension = function
-    | UT_metadata -> got_ut_metadata
-    | UT_pex -> got_ut_pex
-
   open Lwt.Infix
 
   let verify_piece store peers piece =
@@ -817,432 +985,306 @@ module Client = struct
     else
       Lwt.return false
 
-  let record_block t p i off s =
-    match t.state with
-    | Complete {we_have; store; pieces} ->
-        if i >= 0 && i < Array.length pieces then begin
-          let j = off / block_size in
-          match pieces.(i).Piece.state with
-          | Piece.Pending ->
-              Log.warn "Received block #%d for piece #%d, not requested ???" j i
-          | Piece.Verified ->
-              Log.warn "Received block #%d for piece #%d, already completed" j i
-          | Piece.Active parts ->
-              let c = parts.(j) in
-              if c >= 0 then begin
-                parts.(j) <- (-1);
-                let do_cancel _ p =
-                  if Peer.requested p i j (Cstruct.len s) then
-                    Peer.send_cancel p i j (Cstruct.len s)
-                in
-                if c > 1 then Hashtbl.iter do_cancel t.peers;
-                pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
-                t.listener # block_received p.Peer.peer_id i off (Cstruct.len s);
-                Log.info "Received block #%d for piece #%d, have %d, missing %d"
-                  j i pieces.(i).Piece.have (Array.length parts - pieces.(i).Piece.have)
-              end;
-              let off = Int64.(add pieces.(i).Piece.offset (of_int off)) in
-              Lwt.async (fun () ->
-                Store.write store off s >>= fun () ->
-                verify_piece store t.peers pieces.(i) >>= function
-                | true ->
-                    pieces.(i).Piece.state <- Piece.Verified;
-                    Bits.set we_have i;
-                    t.listener # piece_verified i;
-                    Hashtbl.iter (fun _ p -> Peer.send_have p i) t.peers;
-                    Lwt.return_unit
-                (* maybe update interest ? *)
-                | false -> (* FIXME FIXME *)
-                    Lwt.return_unit
-              )
-        end
-    | Incomplete _ ->
-        ()
-
-  let send_block store pieces p i off len =
-    match pieces.(i).Piece.state with
-    | Piece.Verified ->
-        let off1 = Int64.(add pieces.(i).Piece.offset (of_int off)) in
-        Lwt.async (fun () ->
-          Store.read store off1 len >|= fun buf ->
-          Peer.send_piece p i off buf
-        )
-    | Piece.Pending
-    | Piece.Active _ ->
-        ()
-
-  let request p pieces =
-    if Peer.requests p < max_requests then
-      match Piece.request_active pieces (Peer.has p) with
-      | Some (i, j) ->
-          let off = j * block_size in
-          let len = min block_size (pieces.(i).Piece.length - off) in
-          Peer.send_request p i off len
-      | None ->
-          ()
-
-  let request_rejected t reqs =
-    match t.state with
-    | Complete {pieces; _} ->
-        let aux (i, off, _) =
-          match pieces.(i).Piece.state with
-          | Piece.Verified
-          | Piece.Pending -> ()
-          | Piece.Active parts ->
-              let j = off / block_size in
-              if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
-        in
-        List.iter aux reqs
-    | Incomplete _ ->
-        ()
-
-  let on_message t p m =
-    match m with
-    | Wire.KEEP_ALIVE -> ()
-    | Wire.CHOKE ->
-        if not p.Peer.peer_choking then begin
-          p.Peer.peer_choking <- true;
-          let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) p.Peer.requests [] in
-          Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) p.Peer.requests;
-          request_rejected t reqs
-        end
-    | Wire.UNCHOKE ->
-        p.Peer.peer_choking <- false
-    | Wire.INTERESTED ->
-        p.Peer.peer_interested <- true
-    | Wire.NOT_INTERESTED ->
-        p.Peer.peer_interested <- false
-    | Wire.HAVE i ->
-        (* check for got_bitfield_already FIXME *)
-        Bits.resize p.Peer.have (i + 1);
-        Bits.set p.Peer.have i
-    | Wire.BITFIELD b ->
-        (* check for redefinition *)
-        Bits.set_length p.Peer.have (Bits.length b);
-        Bits.blit b 0 p.Peer.have 0 (Bits.length b)
-        (* Log.info "< BITFIELD id:%s have:%d total:%d" (SHA1.to_hex_short p.id) (Bits.count_ones b) (Bits.length b); *)
-    | Wire.REQUEST (i, off, len) ->
-        if not p.Peer.am_choking then begin
-          let (_ : _ Lwt_sequence.node) = Lwt_sequence.add_r (i, off, len) p.Peer.peer_requests in
-          (* Log.info "< REQUEST id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
-          match t.state with
-          | Complete {pieces; store; _} ->
-              if i >= 0 && i < Array.length pieces then
-                send_block store pieces p i off len
-              else
-                Log.warn "! PEER REQUEST invalid piece:%d" i
-          | Incomplete _ ->
-              ()
-        end
-    | Wire.PIECE (i, off, s) ->
-        begin match
-          Lwt_sequence.find_node_opt_l
-            (fun (i', off', len') -> i = i && off = off' && len' = Cstruct.len s)
-            p.Peer.requests
-        with
-        | None ->
-            Log.warn "! Received peer block #%d of #%d which we were not expecting"
-              (off / (16 * 1024)) i
-        | Some n ->
-            Lwt_sequence.remove n
-        end;
-        p.Peer.downloaded <- Int64.add p.Peer.downloaded (Int64.of_int @@ Cstruct.len s);
-        Speedometer.add p.Peer.download (Cstruct.len s);
-        Bits.resize p.Peer.blame (i + 1);
-        Bits.set p.Peer.blame i;
-        (* TODO emit Downloaded event *)
-        record_block t p i off s
-    | Wire.CANCEL (i, off, len) ->
-        (* Log.info "< CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i off len; *)
-        let n =
-          Lwt_sequence.find_node_opt_l
-            (fun (i', off', len') -> i = i && off = off' && len = len')
-            p.Peer.peer_requests
-        in
-        begin match n with
-        | Some n ->
-            (* FIXME broadcast event *)
-            Lwt_sequence.remove n
-        | None ->
-            Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
-              SHA1.print_hex_short p.Peer.peer_id i off len
-        end
-    | Wire.EXTENDED (0, s) ->
-        let bc = Bcode.decode s in
-        let m =
-          Bcode.find "m" bc |> Bcode.to_dict |>
-          List.map (fun (name, id) -> (name, Bcode.to_int id))
-        in
-        List.iter (fun (name, id) ->
-          try
-            let name = ut_extension_of_string name in
-            if id = 0 then Hashtbl.remove p.Peer.extensions name
-            else Hashtbl.replace p.Peer.extensions name id
-          with
-            _ -> ()) m;
-        Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short p.Peer.peer_id
-          (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
-        if Hashtbl.mem p.Peer.extensions UT_metadata then begin
-          match t.state with
-          | Incomplete (m, _) ->
-              let len = Bcode.find "metadata_size" bc |> Bcode.to_int in
-              if len <= IncompleteMetadata.metadata_max_size then begin
-                try
-                  IncompleteMetadata.set_length m len;
-                  IncompleteMetadata.iter_missing (Peer.send_metadata_request p) m;
-                with
-                | _ ->
-                    IncompleteMetadata.reset m;
-              end else begin
-                Log.warn "! METADATA length %d is too large, ignoring." len;
-              end
-          | Complete _ ->
-              ()
-        end
-    | Wire.EXTENDED (id, data) ->
-        Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short p.Peer.peer_id id;
-        begin
-          try
-            let ute = List.assoc id supported_ut_extensions in
-            got_ut_extension ute t p data
-          with
-          | _ -> ()
-        end
-    | Wire.PORT _ | _ -> ()
-
-  (* Event loop *)
-
-  open Lwt.Infix
-
-  let handle_err ({peers; peer_man; _} as t) {Peer.peer_id; requests; _} sock e =
-    Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short peer_id (Printexc.to_string e);
-    let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) requests [] in
-
-    request_rejected t reqs;
-    PeerMgr.peer_disconnected peer_man peer_id;
-    Hashtbl.remove peers peer_id;
-
-    Lwt.catch (sock # close) (fun _ -> Lwt.return_unit)
-
-  let reader_loop t p sock =
-    let buf = Cstruct.create Wire.max_packet_len in
-    let rec loop off =
-      Lwt_unix.with_timeout keepalive_delay (fun () -> sock # read (Cstruct.shift buf off)) >>= function
-      | 0 ->
-          Lwt.fail End_of_file
-      | n ->
-          let n = n + off in
-          let msgs, off = Wire.handle (Cstruct.sub buf 0 n) in
-          Cstruct.blit buf off buf 0 (n - off);
-          List.iter
-            (fun m ->
-               Log.debug "[%a] --> %a" SHA1.print_hex_short p.Peer.peer_id Wire.print m) msgs;
-          List.iter (on_message t p) msgs;
-          loop (n - off)
-    in
-    loop 0
-
-  let writer_loop _t p sock =
-    let buf = Cstruct.create Wire.max_packet_len in
-    let write m =
-      Log.debug "[%a] <-- %a" SHA1.print_hex_short p.Peer.peer_id Wire.print m;
-      let buf = Util.W.into_cstruct (Wire.writer m) buf in
-      Lwt_cstruct.complete (fun buf ->
-        sock # write buf >>= fun n ->
-        if n > 0 then p.Peer.last_send <- Sys.time ();
-        Lwt.return n
-      ) buf
-    in
-    let rec loop () =
-      Lwt_condition.wait p.Peer.send >>= fun () ->
-      let rec loop' () =
-        match Lwt_sequence.take_opt_l p.Peer.queue with
-        | Some m ->
-            write m >>= loop'
-        | None ->
-            Lwt.return_unit
-      in
-      loop' () >>= loop
-    in
-    loop ()
-
-  let start t p sock =
-    Lwt.ignore_result begin
-      Lwt.catch
-        (fun () -> Lwt.pick [reader_loop t p sock; writer_loop t p sock])
-        (handle_err t p sock)
-    end
-
-  let welcome t sock exts id =
-    let p = Peer.create id in
-    (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
-    start t p sock;
-    Peer.send_extended_handshake p;
-    begin match t.state with
-    | Complete {we_have; _} ->
-        Peer.send_have_bitfield p we_have
-    | Incomplete _ ->
-        ()
-    end;
-    p
-
-  let connect t addr =
-    let push = function
-      | Handshake.Ok (sock, ext, peer_id) ->
-          Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
-            SHA1.print_hex_short peer_id;
-          let p = welcome t sock ext peer_id in
-          t.listener # peer_joined peer_id (fst addr);
-          Hashtbl.add t.peers peer_id p;
-          PeerMgr.handshake_ok t.peer_man addr peer_id
-      | Handshake.Failed ->
-          Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-          PeerMgr.handshake_failed t.peer_man addr
-    in
-    Handshake.outgoing ~id:t.id ~info_hash:t.info_hash addr push
-
-  let rechoke_compare (p1, salt1) (p2, salt2) =
-    if Peer.download_speed p1 <> Peer.download_speed p2 then
-      compare (Peer.download_speed p2) (Peer.download_speed p1)
-    else
-    if Peer.upload_speed p1 <> Peer.upload_speed p2 then
-      compare (Peer.upload_speed p2) (Peer.upload_speed p1)
-    else
-    if p1.Peer.am_choking <> p2.Peer.am_choking then
-      compare p1.Peer.am_choking p2.Peer.am_choking
-    else
-      compare salt1 salt2
-
-  let update_choke_unchoke t =
-    let now = Unix.time () in
-    if t.last_choke_unchoke +. rechoke_interval >= now then begin
-      t.last_choke_unchoke <- now;
-      t.optimistic_num <-
-        if t.optimistic_num = 0 then optimistic_unchoke_iterations else t.optimistic_num - 1;
-      let wires =
-        let add _ p wires = (p, Random.int (1 lsl 29)) :: wires in
-        Hashtbl.fold add t.peers []
-      in
-      let wires = List.sort rechoke_compare wires in
-      let rec select n acc = function
-        | (p, _) :: wires when n < rechoke_slots ->
-            let n = if p.Peer.peer_interested then n + 1 else n in
-            select n (p :: acc) wires
-        | wires ->
-            let wires = List.filter (fun (p, _) -> p.Peer.peer_interested) wires in
-            if t.optimistic_num = 0 && List.length wires > 0 then
-              let p, _ = List.nth wires (Random.int (List.length wires)) in
-              (p :: acc), wires
-            else
-              acc, wires
-      in
-      let to_unchoke, to_choke = select 0 [] wires in
-      List.iter (fun p -> Peer.send_unchoke p) to_unchoke;
-      List.iter (fun (p, _) -> Peer.send_choke p) to_choke
-    end
-
-  let update_requests t =
-    match t.state with
-    | Complete {pieces; _} ->
-        Hashtbl.iter (fun _ p -> if not p.Peer.peer_choking then request p pieces) t.peers
-    | Incomplete _ ->
-        ()
-
-  let update_interest t =
-    match t.state with
-    | Complete {pieces; _} ->
-        let rec loop i p =
-          if i < Array.length pieces then
-            if Peer.has p i then
-              match pieces.(i).Piece.state with
-              | Piece.Active _
-              | Piece.Pending ->
-                  Peer.send_interested p
-              | Piece.Verified ->
-                  loop (i + 1) p
-            else
-              loop (i + 1) p
-          else
-            Peer.send_not_interested p
-        in
-        Hashtbl.iter (fun _ p -> loop 0 p) t.peers
-    | Incomplete _ ->
-        ()
-
-  let send_keep_alives t =
-    let now = Unix.time () in
-    let aux _ p =
-      if p.Peer.last_send +. keepalive_delay >= now then
-        Peer.send p Wire.KEEP_ALIVE
-    in
-    Hashtbl.iter aux t.peers
-
-  let the_loop t =
-    let rec malthusian_process () =
-      update_interest t;
-      update_requests t;
-      update_choke_unchoke t;
-      send_keep_alives t;
-      Lwt_unix.sleep 1.0 >>= malthusian_process
-    in
-    malthusian_process ()
-
-  let load_torrent bt m =
-    Store.create (Metadata.files m) >>= fun store ->
-    let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
-    let have = Bits.create (Metadata.piece_count m) in
-    let rec loop i =
-      if i < Metadata.piece_count m then begin
-        Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
-        if SHA1.equal sha pieces.(i).Piece.hash then begin
-          pieces.(i).Piece.state <- Piece.Verified;
-          Bits.set have i
-        end;
-        loop (i + 1)
-      end else
-        Lwt.return (store, pieces, have)
-    in
-    loop 0
-
-  let create_swarm id info_hash =
+  class client info_hash =
+    let id = SHA1.generate ~prefix:"OCAML" () in
     let t, u = Lwt.wait () in
-    let rec swarm =
-      lazy
-        {
-          id;
-          info_hash;
-          peers = Hashtbl.create 0;
-          peer_man = Lazy.force peer_man;
-          state = Incomplete (IncompleteMetadata.create (), u);
-          optimistic_num = optimistic_unchoke_iterations;
-          last_choke_unchoke = min_float;
-          listener = new dummy_listener;
-        }
-    and peer_man =
-      lazy
-        (PeerMgr.create (fun addr timeout ->
-            Lwt.ignore_result (
-              Lwt_unix.sleep timeout >|= fun () ->
-              connect (Lazy.force swarm) addr)
-          )
-        )
-    in
-    Lazy.force swarm
+    object (client)
+      val peers = Hashtbl.create 0
+      val peer_man : PeerMgr.swarm = (assert false)
+      val mutable state = Incomplete (IncompleteMetadata.create (), u)
+      val mutable optimistic_num = optimistic_unchoke_iterations;
+      val mutable last_choke_unchoke = min_float
+      val mutable listener : listener = new dummy_listener
 
+      method private request p pieces =
+        if p # num_requests < max_requests then
+          match Piece.request_active pieces (p # has) with
+          | Some (i, j) ->
+              let off = j * block_size in
+              let len = min block_size (pieces.(i).Piece.length - off) in
+              p # send_request i off len
+          | None ->
+              ()
+
+      method private welcome sock exts id =
+        let p = new Peer.peer ~id ~sock ~client in
+        (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
+        p # send_extended_handshake;
+        begin match state with
+        | Complete {we_have; _} ->
+            p # send_have_bitfield we_have
+        | Incomplete _ ->
+            ()
+        end;
+        p
+
+      method private connect addr =
+        let push = function
+          | Handshake.Ok (sock, ext, peer_id) ->
+              Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
+                SHA1.print_hex_short peer_id;
+              let p = client # welcome sock ext peer_id in
+              listener # peer_joined peer_id (fst addr);
+              Hashtbl.add peers peer_id p;
+              PeerMgr.handshake_ok peer_man addr peer_id
+          | Handshake.Failed ->
+              Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+              PeerMgr.handshake_failed peer_man addr
+        in
+        Handshake.outgoing ~id ~info_hash addr push
+
+      method private update_choke_unchoke =
+        let now = Unix.time () in
+        if last_choke_unchoke +. rechoke_interval >= now then begin
+          last_choke_unchoke <- now;
+          optimistic_num <-
+            if optimistic_num = 0 then optimistic_unchoke_iterations else optimistic_num - 1;
+          let wires =
+            let add _ p wires = (p, Random.int (1 lsl 29)) :: wires in
+            Hashtbl.fold add peers []
+          in
+          let wires = List.sort rechoke_compare wires in
+          let rec select n acc = function
+            | (p, _) :: wires when n < rechoke_slots ->
+                let n = if p # interested_in_us then n + 1 else n in
+                select n (p :: acc) wires
+            | wires ->
+                let wires = List.filter (fun (p, _) -> p # interested_in_us) wires in
+                if optimistic_num = 0 && List.length wires > 0 then
+                  let p, _ = List.nth wires (Random.int (List.length wires)) in
+                  (p :: acc), wires
+                else
+                  acc, wires
+          in
+          let to_unchoke, to_choke = select 0 [] wires in
+          List.iter (fun p -> p # send_unchoke) to_unchoke;
+          List.iter (fun (p, _) -> p # send_choke) to_choke
+        end
+
+      method private update_requests =
+        match state with
+        | Complete {pieces; _} ->
+            Hashtbl.iter (fun _ p -> if not (p # choking_us) then client # request p pieces) peers
+        | Incomplete _ ->
+            ()
+
+      method private update_interest =
+        match state with
+        | Complete {pieces; _} ->
+            let rec loop i p =
+              if i < Array.length pieces then
+                if p # has i then
+                  match pieces.(i).Piece.state with
+                  | Piece.Active _
+                  | Piece.Pending ->
+                      p # send_interested
+                  | Piece.Verified ->
+                      loop (i + 1) p
+                else
+                  loop (i + 1) p
+              else
+                p # send_not_interested
+            in
+            Hashtbl.iter (fun _ p -> loop 0 p) peers
+        | Incomplete _ ->
+            ()
+
+      method private send_keep_alives =
+        let now = Unix.time () in
+        let aux _ p = p # send_keep_alive in
+        Hashtbl.iter aux peers
+
+      method private the_loop =
+        let rec malthusian_process () =
+          client # update_interest;
+          client # update_requests;
+          client # update_choke_unchoke;
+          client # send_keep_alives;
+          Lwt_unix.sleep 1.0 >>= malthusian_process
+        in
+        malthusian_process ()
+
+      method private load_torrent bt m =
+        Store.create (Metadata.files m) >>= fun store ->
+        let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
+        let have = Bits.create (Metadata.piece_count m) in
+        let rec loop i =
+          if i < Metadata.piece_count m then begin
+            Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
+            if SHA1.equal sha pieces.(i).Piece.hash then begin
+              pieces.(i).Piece.state <- Piece.Verified;
+              Bits.set have i
+            end;
+            loop (i + 1)
+          end else
+            Lwt.return (store, pieces, have)
+        in
+        loop 0
+
+      method got_request p idx off len =
+        match state with
+        | Complete {pieces; store; _} ->
+            if 0 <= idx && idx < Array.length pieces then
+              begin match pieces.(idx).Piece.state with
+              | Piece.Verified ->
+                  let off1 = Int64.(add pieces.(idx).Piece.offset (of_int off)) in
+                  Lwt.async (fun () ->
+                    Store.read store off1 len >|= fun buf ->
+                    p # send_piece idx off buf
+                  )
+              | Piece.Pending
+              | Piece.Active _ ->
+                  ()
+              end
+            else
+              Log.warn "! PEER REQUEST invalid piece:%d" idx
+        | Incomplete _ ->
+            ()
+
+      method got_metadata_size p len =
+        match state with
+        | Incomplete (m, _) ->
+            if len <= IncompleteMetadata.metadata_max_size then begin
+              try
+                IncompleteMetadata.set_length m len;
+                IncompleteMetadata.iter_missing (p # send_metadata_request) m;
+              with _ ->
+                IncompleteMetadata.reset m
+            end else
+              Log.warn "! METADATA length %d is too large, ignoring." len
+        | Complete _ ->
+            ()
+
+      method got_choked p reqs =
+        match state with
+        | Complete {pieces; _} ->
+            let aux (i, off, _) =
+              match pieces.(i).Piece.state with
+              | Piece.Verified
+              | Piece.Pending -> ()
+              | Piece.Active parts ->
+                  let j = off / block_size in
+                  if parts.(j) > 0 then parts.(j) <- parts.(j) - 1
+            in
+            List.iter aux reqs
+        | Incomplete _ ->
+            ()
+
+      method got_metadata_request p piece =
+        match state with
+        | Incomplete _ ->
+            p # send_metadata_rejection piece
+        | Complete {metadata; _} ->
+            p # send_metadata_piece
+              (Metadata.length metadata) piece
+              (Metadata.get_piece metadata piece)
+
+      method got_metadata_piece p piece data =
+        match state with
+        | Incomplete (m, gotit) ->
+            if IncompleteMetadata.add m piece data then begin
+              match IncompleteMetadata.verify m info_hash with
+              | Some raw ->
+                  Lwt.wakeup_later gotit raw
+              (* debug "got full metadata"; *)
+              (* let m = Metadata.create (Bcode.decode raw) in *)
+              (* t.state <- Complete (m, *)
+              (* Lwt.return m *)
+              | None ->
+                  IncompleteMetadata.reset m;
+                  Log.error "METADATA HASH CHECK FAILED"
+            end
+        | Complete _ ->
+            ()
+
+      method got_block p idx off s =
+        match state with
+        | Complete {we_have; store; pieces} ->
+            if 0 <= idx && idx < Array.length pieces then begin
+              let j = off / block_size in
+              match pieces.(idx).Piece.state with
+              | Piece.Pending ->
+                  Log.warn "Received block #%d for piece #%d, not requested ???" j idx
+              | Piece.Verified ->
+                  Log.warn "Received block #%d for piece #%d, already completed" j idx
+              | Piece.Active parts ->
+                  let c = parts.(j) in
+                  if c >= 0 then begin
+                    parts.(j) <- (-1);
+                    let do_cancel _ p =
+                      if p # requested idx j (Cstruct.len s) then
+                        p # send_cancel idx j (Cstruct.len s)
+                    in
+                    if c > 1 then Hashtbl.iter do_cancel peers;
+                    pieces.(idx).Piece.have <- pieces.(idx).Piece.have + 1;
+                    listener # block_received (p # id) idx off (Cstruct.len s);
+                    Log.info "Received block #%d for piece #%d, have %d, missing %d"
+                      j idx pieces.(idx).Piece.have (Array.length parts - pieces.(idx).Piece.have)
+                  end;
+                  let off = Int64.(add pieces.(idx).Piece.offset (of_int off)) in
+                  Lwt.async (fun () ->
+                    Store.write store off s >>= fun () ->
+                    verify_piece store peers pieces.(idx) >>= function
+                    | true ->
+                        pieces.(idx).Piece.state <- Piece.Verified;
+                        Bits.set we_have idx;
+                        listener # piece_verified idx;
+                        Hashtbl.iter (fun _ p -> p # send_have idx) peers;
+                        Lwt.return_unit
+                    (* maybe update interest ? *)
+                    | false -> (* FIXME FIXME *)
+                        Lwt.return_unit
+                  )
+            end
+        | Incomplete _ ->
+            ()
+
+      method got_pex added =
+        List.iter (fun (addr, _) -> PeerMgr.add peer_man addr) added
+
+      method peer_disconnected p =
+        PeerMgr.peer_disconnected peer_man (p # id);
+        Hashtbl.remove peers (p # id)
+
+  (* let create_swarm id info_hash = *)
+      (*   let t, u = Lwt.wait () in *)
+      (*   let rec swarm = *)
+      (*     lazy *)
+      (*       { *)
+      (*         id; *)
+      (*         info_hash; *)
+      (*         peers = Hashtbl.create 0; *)
+      (*         peer_man = Lazy.force peer_man; *)
+      (*         state = Incomplete (IncompleteMetadata.create (), u); *)
+      (*         optimistic_num = optimistic_unchoke_iterations; *)
+      (*         last_choke_unchoke = min_float; *)
+      (*         listener = new dummy_listener; *)
+      (*       } *)
+      (*   and peer_man = *)
+      (*     lazy *)
+      (*       (PeerMgr.create (fun addr timeout -> *)
+      (*           Lwt.ignore_result ( *)
+      (*             Lwt_unix.sleep timeout >|= fun () -> *)
+      (*             connect (Lazy.force swarm) addr) *)
+      (*         ) *)
+      (*       ) *)
+      (*   in *)
+      (*   Lazy.force swarm *)
+    end
 end
 
-class client info_hash =
-  let id = SHA1.generate ~prefix:"OCAML" () in
-  let sw = Client.create_swarm id info_hash in
-  object (client)
-    inherit Client.dummy_listener
+(* class client info_hash = *)
+(*   let id = SHA1.generate ~prefix:"OCAML" () in *)
+(*   let sw = Client.create_swarm id info_hash in *)
+(*   object (client) *)
+(*     inherit Client.dummy_listener *)
 
-    method start =
-      Lwt.ignore_result (Lwt.wrap1 Client.the_loop sw)
+(*     method start = *)
+(*       Lwt.ignore_result (Lwt.wrap1 Client.the_loop sw) *)
 
-    initializer
-      sw.Client.listener <- (client :> Client.listener)
-  end
+(*     initializer *)
+(*       sw.Client.listener <- (client :> Client.listener) *)
+(*   end *)
 
 (* open Lwt.Infix *)
 
