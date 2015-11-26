@@ -19,12 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module Peer : sig
-  class client : SHA1.t ->
-    object
-      method peer_joined : SHA1.t -> Unix.inet_addr -> unit
-      method block_received : SHA1.t -> int -> int -> int -> unit
-      method piece_verified : int -> unit
-      method start : unit
-    end
-end
+class client : SHA1.t ->
+  object
+    method peer_joined : SHA1.t -> Unix.inet_addr -> unit
+    method block_received : SHA1.t -> int -> int -> int -> unit
+    method piece_verified : int -> unit
+    method start : unit
+  end
