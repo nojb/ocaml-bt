@@ -488,6 +488,9 @@ module Peer = struct
       method id =
         id
 
+      method am_choking =
+        am_choking
+
       method interested_in_us =
         interested_in_us
 
@@ -884,17 +887,16 @@ module Peer = struct
 end
 
 let rechoke_compare (p1, salt1) (p2, salt2) =
-  assert false
-  (* if Peer.download_speed p1 <> Peer.download_speed p2 then *)
-  (*   compare (Peer.download_speed p2) (Peer.download_speed p1) *)
-  (* else *)
-  (* if Peer.upload_speed p1 <> Peer.upload_speed p2 then *)
-  (*   compare (Peer.upload_speed p2) (Peer.upload_speed p1) *)
-  (* else *)
-  (* if p1.Peer.am_choking <> p2.Peer.am_choking then *)
-  (*   compare p1.Peer.am_choking p2.Peer.am_choking *)
-  (* else *)
-  (*   compare salt1 salt2 *)
+  if p1 # download_speed <> p2 # download_speed then
+    compare (p2 # download_speed) (p1 # download_speed)
+  else
+  if p1 # upload_speed <> p2 # upload_speed then
+    compare (p2 # upload_speed) (p1 # upload_speed)
+  else
+  if p1 # am_choking <> p2 # am_choking then
+    compare (p1 # am_choking) (p2 # am_choking)
+  else
+    compare salt1 salt2
 
 module Client = struct
 
@@ -952,7 +954,6 @@ module Client = struct
         Lwt.return (store, pieces, have)
     in
     loop 0
-
 
   type peer =
     {
