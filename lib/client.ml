@@ -1042,7 +1042,7 @@ module Client = struct
       val mutable state = Incomplete (IncompleteMetadata.create (), u)
       val mutable optimistic_num = optimistic_unchoke_iterations;
       val mutable last_choke_unchoke = min_float
-      val mutable listener : listener = new dummy_listener
+      val mutable listener = new dummy_listener
 
       method private request p pieces =
         if p # num_requests < max_requests then
@@ -1142,7 +1142,7 @@ module Client = struct
         let aux _ p = p # send_keep_alive in
         Hashtbl.iter aux peers
 
-      method private the_loop =
+      method start =
         let rec malthusian_process () =
           client # update_interest;
           client # update_requests;
@@ -1150,7 +1150,7 @@ module Client = struct
           client # send_keep_alives;
           Lwt_unix.sleep 1.0 >>= malthusian_process
         in
-        malthusian_process ()
+        Lwt.async malthusian_process
 
       method got_request p idx off len =
         match state with
@@ -1277,48 +1277,25 @@ module Client = struct
         peer_man # peer_disconnected (p # id);
         Hashtbl.remove peers (p # id)
 
+      method set_listener lstnr =
+        listener <- lstnr
+
       initializer
         peer_man # set_client (client :> connecter)
-
-  (* let create_swarm id info_hash = *)
-      (*   let t, u = Lwt.wait () in *)
-      (*   let rec swarm = *)
-      (*     lazy *)
-      (*       { *)
-      (*         id; *)
-      (*         info_hash; *)
-      (*         peers = Hashtbl.create 0; *)
-      (*         peer_man = Lazy.force peer_man; *)
-      (*         state = Incomplete (IncompleteMetadata.create (), u); *)
-      (*         optimistic_num = optimistic_unchoke_iterations; *)
-      (*         last_choke_unchoke = min_float; *)
-      (*         listener = new dummy_listener; *)
-      (*       } *)
-      (*   and peer_man = *)
-      (*     lazy *)
-      (*       (PeerMgr.create (fun addr timeout -> *)
-      (*           Lwt.ignore_result ( *)
-      (*             Lwt_unix.sleep timeout >|= fun () -> *)
-      (*             connect (Lazy.force swarm) addr) *)
-      (*         ) *)
-      (*       ) *)
-      (*   in *)
-      (*   Lazy.force swarm *)
     end
 end
 
-(* class client info_hash = *)
-(*   let id = SHA1.generate ~prefix:"OCAML" () in *)
-(*   let sw = Client.create_swarm id info_hash in *)
-(*   object (client) *)
-(*     inherit Client.dummy_listener *)
+class client info_hash =
+  let cl = new Client.client info_hash in
+  object (client)
+    inherit Client.dummy_listener
 
-(*     method start = *)
-(*       Lwt.ignore_result (Lwt.wrap1 Client.the_loop sw) *)
+    method start =
+      cl # start
 
-(*     initializer *)
-(*       sw.Client.listener <- (client :> Client.listener) *)
-(*   end *)
+    initializer
+      cl # set_listener (client :> Client.listener)
+  end
 
 (* open Lwt.Infix *)
 
