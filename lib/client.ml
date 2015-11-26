@@ -449,17 +449,20 @@ let ut_extension_of_string = function
   | "ut_metadata" -> UT_metadata
   | s -> Printf.ksprintf failwith "ut_extension_of_string: %s" s
 
+type pex_flags =
+  {
+    pex_encryption : bool;
+    pex_seed : bool;
+    pex_utp : bool;
+    pex_holepunch : bool;
+    pex_outgoing : bool;
+  }
+
+let keepalive_delay = 20. (* FIXME *)
+
+type addr = Unix.inet_addr * int
+
 module Peer = struct
-  type addr = Unix.inet_addr * int
-
-  type pex_flags =
-    { pex_encryption : bool;
-      pex_seed : bool;
-      pex_utp : bool;
-      pex_holepunch : bool;
-      pex_outgoing : bool }
-
-  let keepalive_delay = 20. (* FIXME *)
 
   type t =
     {
@@ -549,7 +552,7 @@ module Peer = struct
     ignore (Lwt_sequence.add_r (i, ofs, len) p.requests);
     send p @@ Wire.REQUEST (i, ofs, len)
 
-  let extended_handshake p =
+  let send_extended_handshake p =
     let m =
       List.map (fun (id, name) ->
         string_of_ut_extension name, Bcode.Int (Int64.of_int id)) supported_ut_extensions
@@ -561,26 +564,26 @@ module Peer = struct
            supported_ut_extensions));
     send p @@ Wire.EXTENDED (0, Bcode.encode m)
 
-  let choke p =
+  let send_choke p =
     if not p.am_choking then begin
       p.am_choking <- true;
       Lwt_sequence.iter_node_l Lwt_sequence.remove p.peer_requests;
       send p Wire.CHOKE
     end
 
-  let unchoke p =
+  let send_unchoke p =
     if p.am_choking then begin
       p.am_choking <- false;
       send p Wire.UNCHOKE
     end
 
-  let interested p =
+  let send_interested p =
     if not p.am_interested then begin
       p.am_interested <- true;
       send p Wire.INTERESTED
     end
 
-  let not_interested p =
+  let send_not_interested p =
     if p.am_interested then begin
       p.am_interested <- false;
       send p Wire.NOT_INTERESTED
@@ -597,7 +600,7 @@ module Peer = struct
       (Bits.count_ones bits) (Bits.length bits);
     send p @@ Wire.BITFIELD bits
 
-  let cancel p i o l =
+  let send_cancel p i o l =
     (* Log.info "> CANCEL id:%s idx:%d off:%d len:%d" (SHA1.to_hex_short p.id) i o l; *)
     send p @@ Wire.CANCEL (i, o, l);
     try
@@ -610,12 +613,14 @@ module Peer = struct
   let send_port p i =
     send p @@ Wire.PORT i
 
-  let request_metadata_piece p i =
+  let send_metadata_request p i =
     if i < 0 || not (Hashtbl.mem p.extensions UT_metadata) then invalid_arg "request_metadata_piece";
     let id = Hashtbl.find p.extensions UT_metadata in
     let d =
-      [ "msg_type", Bcode.Int 0L;
-        "piece", Bcode.Int (Int64.of_int i) ]
+      [
+        "msg_type", Bcode.Int 0L;
+        "piece", Bcode.Int (Int64.of_int i);
+       ]
     in
     send p @@ Wire.EXTENDED (id, Bcode.encode @@ Bcode.Dict d)
 
@@ -635,9 +640,11 @@ module Peer = struct
     in
     let c l = Cs.concat (List.map c l) in
     let d =
-      [ "added", Bcode.String (c added);
+      [
+        "added", Bcode.String (c added);
         "added.f", Bcode.String (Cs.create_with (List.length added) 0);
-        "dropped", Bcode.String (c dropped) ]
+        "dropped", Bcode.String (c dropped);
+      ]
     in
     Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short p.peer_id
       (List.length added) (List.length dropped);
@@ -775,11 +782,13 @@ module Client = struct
         []
     in
     let flag n =
-      { Peer.pex_encryption = n land 0x1 <> 0;
+      {
+        pex_encryption = n land 0x1 <> 0;
         pex_seed = n land 0x2 <> 0;
         pex_utp = n land 0x4 <> 0;
         pex_holepunch = n land 0x8 <> 0;
-        pex_outgoing = n land 0x10 <> 0 }
+        pex_outgoing = n land 0x10 <> 0;
+      }
     in
     let added = loop added in
     let added_f =
@@ -824,7 +833,7 @@ module Client = struct
                 parts.(j) <- (-1);
                 let do_cancel _ p =
                   if Peer.requested p i j (Cstruct.len s) then
-                    Peer.cancel p i j (Cstruct.len s)
+                    Peer.send_cancel p i j (Cstruct.len s)
                 in
                 if c > 1 then Hashtbl.iter do_cancel t.peers;
                 pieces.(i).Piece.have <- pieces.(i).Piece.have + 1;
@@ -980,7 +989,7 @@ module Client = struct
               if len <= IncompleteMetadata.metadata_max_size then begin
                 try
                   IncompleteMetadata.set_length m len;
-                  IncompleteMetadata.iter_missing (Peer.request_metadata_piece p) m;
+                  IncompleteMetadata.iter_missing (Peer.send_metadata_request p) m;
                 with
                 | _ ->
                     IncompleteMetadata.reset m;
@@ -1018,7 +1027,7 @@ module Client = struct
   let reader_loop t p sock =
     let buf = Cstruct.create Wire.max_packet_len in
     let rec loop off =
-      Lwt_unix.with_timeout Peer.keepalive_delay (fun () -> sock # read (Cstruct.shift buf off)) >>= function
+      Lwt_unix.with_timeout keepalive_delay (fun () -> sock # read (Cstruct.shift buf off)) >>= function
       | 0 ->
           Lwt.fail End_of_file
       | n ->
@@ -1068,7 +1077,7 @@ module Client = struct
     let p = Peer.create id in
     (* if Bits.is_set exts Wire.dht_bit then Peer.send_port p 6881; (\* FIXME fixed port *\) *)
     start t p sock;
-    Peer.extended_handshake p;
+    Peer.send_extended_handshake p;
     begin match t.state with
     | Complete {we_have; _} ->
         Peer.send_have_bitfield p we_have
@@ -1128,8 +1137,8 @@ module Client = struct
               acc, wires
       in
       let to_unchoke, to_choke = select 0 [] wires in
-      List.iter (fun p -> Peer.unchoke p) to_unchoke;
-      List.iter (fun (p, _) -> Peer.choke p) to_choke
+      List.iter (fun p -> Peer.send_unchoke p) to_unchoke;
+      List.iter (fun (p, _) -> Peer.send_choke p) to_choke
     end
 
   let update_requests t =
@@ -1148,13 +1157,13 @@ module Client = struct
               match pieces.(i).Piece.state with
               | Piece.Active _
               | Piece.Pending ->
-                  Peer.interested p
+                  Peer.send_interested p
               | Piece.Verified ->
                   loop (i + 1) p
             else
               loop (i + 1) p
           else
-            Peer.not_interested p
+            Peer.send_not_interested p
         in
         Hashtbl.iter (fun _ p -> loop 0 p) t.peers
     | Incomplete _ ->
@@ -1163,7 +1172,7 @@ module Client = struct
   let send_keep_alives t =
     let now = Unix.time () in
     let aux _ p =
-      if p.Peer.last_send +. Peer.keepalive_delay >= now then
+      if p.Peer.last_send +. keepalive_delay >= now then
         Peer.send p Wire.KEEP_ALIVE
     in
     Hashtbl.iter aux t.peers
