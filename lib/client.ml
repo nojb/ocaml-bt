@@ -464,54 +464,6 @@ type addr = Unix.inet_addr * int
 
 module Peer = struct
 
-  type t =
-    {
-      peer_id : SHA1.t;
-      blame                   : Bits.t;
-      have                    : Bits.t;
-      extbits                 : Bits.t;
-      extensions              : (ut_extension, int) Hashtbl.t;
-      mutable last_pex        : addr list;
-      mutable am_choking      : bool;
-      mutable am_interested   : bool;
-      mutable peer_choking    : bool;
-      mutable peer_interested : bool;
-      mutable strikes         : int;
-      mutable uploaded        : int64;
-      mutable downloaded      : int64;
-      mutable last_send : float;
-      upload                  : Speedometer.t;
-      download                : Speedometer.t;
-      requests                : (int * int * int) Lwt_sequence.t;
-      peer_requests           : (int * int * int) Lwt_sequence.t;
-      send                    : unit Lwt_condition.t;
-      queue                   : Wire.message Lwt_sequence.t;
-    }
-
-  let create peer_id =
-    {
-      peer_id;
-      am_choking = true;
-      am_interested = false;
-      peer_choking = true;
-      peer_interested = false;
-      extbits = Bits.create (8 * 8);
-      extensions = Hashtbl.create 3;
-      uploaded = 0L;
-      downloaded = 0L;
-      download = Speedometer.create ();
-      upload = Speedometer.create ();
-      strikes = 0;
-      blame = Bits.create 0;
-      have = Bits.create 0;
-      last_pex = [];
-      requests = Lwt_sequence.create ();
-      peer_requests = Lwt_sequence.create ();
-      send = Lwt_condition.create ();
-      queue = Lwt_sequence.create ();
-      last_send = min_float;
-    }
-
   class peer ~id ~sock ~client =
     object (peer)
       val mutable am_choking = true
@@ -944,7 +896,6 @@ let rechoke_compare (p1, salt1) (p2, salt2) =
   (* else *)
   (*   compare salt1 salt2 *)
 
-
 module Client = struct
 
   type incomplete =
@@ -984,6 +935,23 @@ module Client = struct
       Lwt.return (SHA1.equal sha piece.Piece.hash)
     else
       Lwt.return false
+
+  let load_torrent m =
+    Store.create (Metadata.files m) >>= fun store ->
+    let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
+    let have = Bits.create (Metadata.piece_count m) in
+    let rec loop i =
+      if i < Metadata.piece_count m then begin
+        Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
+        if SHA1.equal sha pieces.(i).Piece.hash then begin
+          pieces.(i).Piece.state <- Piece.Verified;
+          Bits.set have i
+        end;
+        loop (i + 1)
+      end else
+        Lwt.return (store, pieces, have)
+    in
+    loop 0
 
   class client info_hash =
     let id = SHA1.generate ~prefix:"OCAML" () in
@@ -1103,23 +1071,6 @@ module Client = struct
           Lwt_unix.sleep 1.0 >>= malthusian_process
         in
         malthusian_process ()
-
-      method private load_torrent bt m =
-        Store.create (Metadata.files m) >>= fun store ->
-        let pieces = Array.init (Metadata.piece_count m) (Piece.make m) in
-        let have = Bits.create (Metadata.piece_count m) in
-        let rec loop i =
-          if i < Metadata.piece_count m then begin
-            Store.digest store pieces.(i).Piece.offset pieces.(i).Piece.length >>= fun sha ->
-            if SHA1.equal sha pieces.(i).Piece.hash then begin
-              pieces.(i).Piece.state <- Piece.Verified;
-              Bits.set have i
-            end;
-            loop (i + 1)
-          end else
-            Lwt.return (store, pieces, have)
-        in
-        loop 0
 
       method got_request p idx off len =
         match state with
