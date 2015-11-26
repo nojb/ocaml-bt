@@ -953,12 +953,92 @@ module Client = struct
     in
     loop 0
 
+
+  type peer =
+    {
+      mutable reconnect : bool;
+      mutable retries : int;
+      mutable timeout : float;
+    }
+
+  module A = struct type t = addr let equal a1 a2 = compare a1 a2 = 0 let hash = Hashtbl.hash end
+  module H = Hashtbl.Make (A)
+
+  let default_size = 50
+
+  class type connecter =
+    object
+      method connect : addr -> unit
+    end
+
+  class peer_manager ?(size = default_size) () =
+    let reconnect_wait = [1.; 5.; 15.; 30.; 60.; 120.; 300.; 600.] in
+    object (mgr)
+      val wires = Hashtbl.create 0
+      val connections = H.create 0
+      val queue = Queue.create ()
+      val peers = H.create 0
+      val mutable client = object method connect _ = () end
+
+      method set_client cl =
+        client <- cl
+
+      method private drain =
+        (* Log.debug "[PeerMgr.drain] length:%d connected:%d" (H.length sw.connections) (Hashtbl.length sw.wires); *)
+        if H.length connections < size then
+          match try Some (Queue.pop queue) with Queue.Empty -> None with
+          | None ->
+              ()
+          | Some addr ->
+              let p = H.find peers addr in
+              H.add connections addr ();
+              Lwt.ignore_result (Lwt_unix.sleep p.timeout >|= fun () -> client # connect addr)
+
+      method add addr =
+        if not (H.mem peers addr) then begin
+          (* Log.debug "SWARM ADD addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
+          H.add peers addr {reconnect = false; retries = 0; timeout = List.hd reconnect_wait};
+          Queue.push addr queue;
+          mgr # drain
+        end
+
+      method remove addr =
+        let p = H.find peers addr in
+        if not p.reconnect || p.retries >= List.length reconnect_wait then begin
+          (* Log.debug "SWARM REMOVE addr:%s port:%d" (Unix.string_of_inet_addr (fst addr)) (snd addr); *)
+          H.remove peers addr
+        end else begin
+          p.retries <- p.retries + 1;
+          p.timeout <- List.nth reconnect_wait p.retries;
+          Log.debug "Will retry to connect to %s:%d afer %.0fs"
+            (Unix.string_of_inet_addr (fst addr)) (snd addr) p.timeout;
+          Queue.push addr queue
+        end
+
+      method peer_disconnected id =
+        let addr = Hashtbl.find wires id in
+        H.remove connections addr;
+        Hashtbl.remove wires id;
+        mgr # remove addr;
+        mgr # drain
+
+      method handshake_ok addr (id : SHA1.t) =
+        Hashtbl.add wires id addr;
+        let p = H.find peers addr in
+        p.reconnect <- true
+
+      method handshake_failed addr =
+        H.remove connections addr;
+        mgr # remove addr;
+        mgr # drain
+    end
+
   class client info_hash =
     let id = SHA1.generate ~prefix:"OCAML" () in
     let t, u = Lwt.wait () in
     object (client)
       val peers = Hashtbl.create 0
-      val peer_man : PeerMgr.swarm = (assert false)
+      val peer_man = new peer_manager ()
       val mutable state = Incomplete (IncompleteMetadata.create (), u)
       val mutable optimistic_num = optimistic_unchoke_iterations;
       val mutable last_choke_unchoke = min_float
@@ -986,7 +1066,7 @@ module Client = struct
         end;
         p
 
-      method private connect addr =
+      method connect addr =
         let push = function
           | Handshake.Ok (sock, ext, peer_id) ->
               Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
@@ -994,10 +1074,10 @@ module Client = struct
               let p = client # welcome sock ext peer_id in
               listener # peer_joined peer_id (fst addr);
               Hashtbl.add peers peer_id p;
-              PeerMgr.handshake_ok peer_man addr peer_id
+              peer_man # handshake_ok addr peer_id
           | Handshake.Failed ->
               Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
-              PeerMgr.handshake_failed peer_man addr
+              peer_man # handshake_failed addr
         in
         Handshake.outgoing ~id ~info_hash addr push
 
@@ -1191,11 +1271,14 @@ module Client = struct
             ()
 
       method got_pex added =
-        List.iter (fun (addr, _) -> PeerMgr.add peer_man addr) added
+        List.iter (fun (addr, _) -> peer_man # add addr) added
 
       method peer_disconnected p =
-        PeerMgr.peer_disconnected peer_man (p # id);
+        peer_man # peer_disconnected (p # id);
         Hashtbl.remove peers (p # id)
+
+      initializer
+        peer_man # set_client (client :> connecter)
 
   (* let create_swarm id info_hash = *)
       (*   let t, u = Lwt.wait () in *)

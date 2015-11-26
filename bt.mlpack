@@ -6,7 +6,6 @@ lib/Magnet
 lib/Store
 lib/Tracker
 lib/Util
-lib/PeerMgr
 lib/Client
 lib/Handshake
 lib/DHT
