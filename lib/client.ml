@@ -19,8 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module L    = Log
-module Log  = Log.Make (struct let section = "[Client]" end)
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
@@ -155,6 +153,7 @@ module Wire : sig
     | EXTENDED of int * Cstruct.t
 
   val print : out_channel -> message -> unit
+  val sprint : unit -> message -> string
 
   val writer : message -> Util.W.t
 
@@ -185,26 +184,29 @@ end = struct
   let strl f l =
     "[" ^ String.concat " " (List.map f l) ^ "]"
 
-  let print oc x =
+  let sprint () x =
     let open Printf in
     match x with
-    | KEEP_ALIVE -> fprintf oc "keep alive"
-    | CHOKE -> fprintf oc "choke"
-    | UNCHOKE -> fprintf oc "unchoke"
-    | INTERESTED -> fprintf oc "interested"
-    | NOT_INTERESTED -> fprintf oc "not interested"
-    | HAVE i -> fprintf oc "have %d" i
-    | BITFIELD b -> fprintf oc "bitfield with %d/%d pieces" (Bits.count_ones b) (Bits.length b)
-    | REQUEST (i, off, len) -> fprintf oc "request %d off:%d len:%d" i off len
-    | PIECE (i, off, buf) -> fprintf oc "piece %d off:%d len:%d" i off (Cstruct.len buf)
-    | CANCEL (i, off, len) -> fprintf oc "cancel %d off:%d len:%d" i off len
-    | PORT port -> fprintf oc "port %d" port
-    | HAVE_ALL -> fprintf oc "have all"
-    | HAVE_NONE -> fprintf oc "have none"
-    | SUGGEST i -> fprintf oc "suggest %d" i
-    | REJECT (i, off, len) -> fprintf oc "reject %d off:%d len:%d" i off len
-    | ALLOWED pieces -> fprintf oc "allowed %s" (strl string_of_int pieces)
-    | EXTENDED (id, _) -> fprintf oc "extended %d" id
+    | KEEP_ALIVE -> "keep-alive"
+    | CHOKE -> "choke"
+    | UNCHOKE -> "unchoke"
+    | INTERESTED -> "interested"
+    | NOT_INTERESTED -> "not interested"
+    | HAVE i -> sprintf "have %d" i
+    | BITFIELD b -> sprintf "bitfield with %d/%d pieces" (Bits.count_ones b) (Bits.length b)
+    | REQUEST (i, off, len) -> sprintf "request %d %d %d" i off len
+    | PIECE (i, off, buf) -> sprintf "piece %d %d %d" i off (Cstruct.len buf)
+    | CANCEL (i, off, len) -> sprintf "cancel %d %d %d" i off len
+    | PORT i -> sprintf "port %d" i
+    | HAVE_ALL -> "have-all"
+    | HAVE_NONE -> "have-none"
+    | SUGGEST i -> sprintf "suggest %d" i
+    | REJECT (i, off, len) -> sprintf "reject %d off:%d len:%d" i off len
+    | ALLOWED pieces -> sprintf "allowed %s" (strl string_of_int pieces)
+    | EXTENDED (id, _) -> sprintf "extended %d" id
+
+  let print oc x =
+    output_string oc (sprint () x)
 
   let writer x =
     let open Util.W in
@@ -362,7 +364,7 @@ module Piece = struct
             if has i then
               match request_block parts true with
               | Some j ->
-                  Log.debug "Requesting ENDGAME block #%d of #%d" j i;
+                  Lwt_log.ign_info_f "Requesting ENDGAME block #%d of #%d" j i;
                   Some (i, j)
               | None ->
                   None
@@ -387,7 +389,7 @@ module Piece = struct
             | None ->
                 assert false
             | Some j ->
-                Log.debug "Requesting PENDING block #%d of #%d" j i;
+                Lwt_log.ign_debug_f "Requesting PENDING block #%d of #%d" j i;
                 Some (i, j)
             end
         | Active _
@@ -424,7 +426,7 @@ module Piece = struct
               | None ->
                   loop (i + 1)
               | Some j ->
-                  Log.debug "Requesting ACTIVE block #%d of #%d" j i;
+                  Lwt_log.ign_debug_f "Requesting ACTIVE block #%d of #%d" j i;
                   Some (i, j)
             else
               loop (i + 1)
@@ -616,7 +618,7 @@ module Peer = struct
             string_of_ut_extension name, Bcode.Int (Int64.of_int id)) supported_ut_extensions
         in
         let m = Bcode.Dict ["m", Bcode.Dict m] in
-        Log.info "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short id
+        Lwt_log.ign_debug_f "> EXTENDED HANDSHAKE id:%a (%s)" SHA1.sprint_hex_short id
           (String.concat " " (List.map (fun (n, name) ->
                Printf.sprintf "%s %d" (string_of_ut_extension name) n)
                supported_ut_extensions));
@@ -626,7 +628,7 @@ module Peer = struct
         (* check for redefined length FIXME *)
         Bits.set_length have (Bits.length bits);
         Bits.set_length blame (Bits.length bits);
-        Log.info "> BITFIELD id:%a have:%d total:%d" SHA1.print_hex_short id
+        Lwt_log.ign_debug_f "> BITFIELD id:%a have:%d total:%d" SHA1.sprint_hex_short id
           (Bits.count_ones bits) (Bits.length bits);
         peer # send (Wire.BITFIELD bits)
 
@@ -638,7 +640,7 @@ module Peer = struct
           Lwt_sequence.remove n
         with
         | Not_found ->
-            Log.warn "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.print_hex_short id i o l
+            Lwt_log.ign_warning_f "! REQUEST NOT FOUND id:%a idx:%d off:%d len:%d" SHA1.sprint_hex_short id i o l
 
       method private send_ut_pex added dropped =
         let eid = Hashtbl.find extensions UT_pex in
@@ -662,7 +664,7 @@ module Peer = struct
             "dropped", Bcode.String (c dropped);
           ]
         in
-        Log.info "> PEX id:%a added:%d dropped:%d" SHA1.print_hex_short id
+        Lwt_log.ign_debug_f "> PEX id:%a added:%d dropped:%d" SHA1.sprint_hex_short id
           (List.length added) (List.length dropped);
         peer # send (Wire.EXTENDED (eid, Bcode.encode @@ Bcode.Dict d))
 
@@ -772,7 +774,7 @@ module Peer = struct
                 requests
             with
             | None ->
-                Log.warn "! Received peer block #%d of #%d which we were not expecting"
+                Lwt_log.ign_warning_f "Received peer block #%d of #%d which we were not expecting"
                   (off / (16 * 1024)) i
             | Some n ->
                 Lwt_sequence.remove n
@@ -795,8 +797,8 @@ module Peer = struct
                 (* FIXME broadcast event *)
                 Lwt_sequence.remove n
             | None ->
-                Log.warn "! PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
-                  SHA1.print_hex_short id i off len
+                Lwt_log.ign_warning_f "PEER REQUEST NOT FOUND id:%a idx:%d off:%d len:%d"
+                  SHA1.sprint_hex_short id i off len
             end
         | Wire.EXTENDED (0, s) ->
             let bc = Bcode.decode s in
@@ -813,14 +815,14 @@ module Peer = struct
               with _ ->
                 ()
             ) m;
-            Log.info "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.print_hex_short id
+            Lwt_log.ign_info_f "< EXTENDED HANDSHAKE id:%a (%s)" SHA1.sprint_hex_short id
               (String.concat " " (List.map (fun (name, n) -> Printf.sprintf "%s %d" name n) m));
             if Hashtbl.mem extensions UT_metadata then begin
               let len = Bcode.find "metadata_size" bc |> Bcode.to_int in
               client # got_metadata_size peer len
             end
         | Wire.EXTENDED (eid, data) ->
-            Log.info "< EXTENDED id:%a mid:%d" SHA1.print_hex_short id eid;
+            Lwt_log.ign_info_f "< EXTENDED id:%a mid:%d" SHA1.sprint_hex_short id eid;
             if List.mem_assoc eid supported_ut_extensions then begin
               let ute = List.assoc eid supported_ut_extensions in
               peer # got_ut_extension ute data
@@ -829,7 +831,7 @@ module Peer = struct
             ()
 
       method private handle_err e =
-        Log.error "ERROR id:%a exn:%S" SHA1.print_hex_short id (Printexc.to_string e);
+        Lwt_log.ign_error_f "ERROR id:%a exn:%S" SHA1.sprint_hex_short id (Printexc.to_string e);
         let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) requests [] in
         client # got_choked peer reqs;
         client # peer_disconnected peer;
@@ -846,7 +848,9 @@ module Peer = struct
               let n = n + off in
               let msgs, off = Wire.handle (Cstruct.sub buf 0 n) in
               Cstruct.blit buf off buf 0 (n - off);
-              List.iter (fun m -> Log.debug "[%a] --> %a" SHA1.print_hex_short id Wire.print m) msgs;
+              List.iter (fun m ->
+                Lwt_log.ign_debug_f "[%a] --> %a" SHA1.sprint_hex_short id Wire.sprint m
+              ) msgs;
               List.iter (peer # got_message) msgs;
               loop (n - off)
         in
@@ -856,7 +860,7 @@ module Peer = struct
         let open Lwt.Infix in
         let buf = Cstruct.create Wire.max_packet_len in
         let write m =
-          Log.debug "[%a] <-- %a" SHA1.print_hex_short id Wire.print m;
+          Lwt_log.ign_debug_f "[%a] <-- %a" SHA1.sprint_hex_short id Wire.sprint m;
           let buf = Util.W.into_cstruct (Wire.writer m) buf in
           Lwt_cstruct.complete (fun buf ->
             sock # write buf >>= fun n ->
@@ -1011,7 +1015,7 @@ module Client = struct
         end else begin
           p.retries <- p.retries + 1;
           p.timeout <- List.nth reconnect_wait p.retries;
-          Log.debug "Will retry to connect to %s:%d afer %.0fs"
+          Lwt_log.ign_debug_f "Will retry to connect to %s:%d afer %.0fs"
             (Unix.string_of_inet_addr (fst addr)) (snd addr) p.timeout;
           Queue.push addr queue
         end
@@ -1070,14 +1074,14 @@ module Client = struct
       method connect addr =
         let push = function
           | Handshake.Ok (sock, ext, peer_id) ->
-              Log.info "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
-                SHA1.print_hex_short peer_id;
+              Lwt_log.ign_notice_f "Connected to %s:%d [%a] successfully" (Unix.string_of_inet_addr (fst addr)) (snd addr)
+                SHA1.sprint_hex_short peer_id;
               let p = client # welcome sock ext peer_id in
               listener # peer_joined peer_id (fst addr);
               Hashtbl.add peers peer_id p;
               peer_man # handshake_ok addr peer_id
           | Handshake.Failed ->
-              Log.error "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
+              Lwt_log.ign_error_f "Connection to %s:%d failed" (Unix.string_of_inet_addr (fst addr)) (snd addr);
               peer_man # handshake_failed addr
         in
         Handshake.outgoing ~id ~info_hash addr push
@@ -1169,7 +1173,7 @@ module Client = struct
                   ()
               end
             else
-              Log.warn "! PEER REQUEST invalid piece:%d" idx
+              Lwt_log.ign_warning_f "PEER REQUEST invalid piece:%d" idx
         | Incomplete _ ->
             ()
 
@@ -1183,7 +1187,7 @@ module Client = struct
               with _ ->
                 IncompleteMetadata.reset m
             end else
-              Log.warn "! METADATA length %d is too large, ignoring." len
+              Lwt_log.ign_warning_f "METADATA length %d is too large, ignoring." len
         | Complete _ ->
             ()
 
@@ -1224,7 +1228,7 @@ module Client = struct
               (* Lwt.return m *)
               | None ->
                   IncompleteMetadata.reset m;
-                  Log.error "METADATA HASH CHECK FAILED"
+                  Lwt_log.ign_error "METADATA HASH CHECK FAILED"
             end
         | Complete _ ->
             ()
@@ -1236,9 +1240,9 @@ module Client = struct
               let j = off / block_size in
               match pieces.(idx).Piece.state with
               | Piece.Pending ->
-                  Log.warn "Received block #%d for piece #%d, not requested ???" j idx
+                  Lwt_log.ign_warning_f "Received block #%d for piece #%d, not requested ???" j idx
               | Piece.Verified ->
-                  Log.warn "Received block #%d for piece #%d, already completed" j idx
+                  Lwt_log.ign_warning_f "Received block #%d for piece #%d, already completed" j idx
               | Piece.Active parts ->
                   let c = parts.(j) in
                   if c >= 0 then begin
@@ -1250,7 +1254,7 @@ module Client = struct
                     if c > 1 then Hashtbl.iter do_cancel peers;
                     pieces.(idx).Piece.have <- pieces.(idx).Piece.have + 1;
                     listener # block_received (p # id) idx off (Cstruct.len s);
-                    Log.info "Received block #%d for piece #%d, have %d, missing %d"
+                    Lwt_log.ign_notice_f "Received block #%d for piece #%d, have %d, missing %d"
                       j idx pieces.(idx).Piece.have (Array.length parts - pieces.(idx).Piece.have)
                   end;
                   let off = Int64.(add pieces.(idx).Piece.offset (of_int off)) in

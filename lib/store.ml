@@ -19,8 +19,6 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module Log = Log.Make (struct let section = "Store" end)
-
 open Lwt.Infix
 
 type t =
@@ -115,7 +113,7 @@ let open_file path size =
       if Sys.file_exists dir then
         cd dir (fun () -> loop path)
       else begin
-        Log.debug "creating directory %S" dir;
+        Lwt_log.ign_debug_f "creating directory %S" dir;
         Lwt_unix.mkdir dir directory_default_perm >>= fun () ->
         cd dir (fun () -> loop path)
       end

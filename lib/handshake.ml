@@ -19,13 +19,10 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
-module L    = Log
-module Log  = Log.Make (struct let section = "[Handshake]" end)
 module Cs   = Nocrypto.Uncommon.Cs
 
 module Encryption = struct
 
-  module Log  = L.Make (struct let section = "[Encryption]" end)
   module Dh   = Nocrypto.Dh
   module Z    = Nocrypto.Numeric.Z
   module ARC4 = Nocrypto.Cipher_stream.ARC4
@@ -353,7 +350,7 @@ let outgoing kind ~id ~info_hash addr =
         Lwt.return (sock, Cs.empty)
   in
   let connect fd =
-    Log.info "Connecting [%s] to %s:%d..." (match kind with Encrypted -> "ENCRYPTED" | Plain -> "PLAIN")
+    Lwt_log.ign_notice_f "Connecting [%s] to %s:%d..." (match kind with Encrypted -> "ENCRYPTED" | Plain -> "PLAIN")
       (Unix.string_of_inet_addr ip) port;
     let sa = Lwt_unix.ADDR_INET (ip, port) in
     Lwt_unix.connect fd sa >>= fun () ->
@@ -370,7 +367,7 @@ let outgoing ~id ~info_hash addr push =
        Lwt.wrap1 push @@ Ok (sock, ext, peer_id))
     (function
       | e ->
-          Log.error "%s" (Printexc.to_string e);
+          Lwt_log.ign_error (Printexc.to_string e);
           Lwt.wrap1 push Failed) |> Lwt.ignore_result
       (* | Unix.Unix_error (_, "connect", _) -> *)
       (*     Lwt.wrap1 push Failed *)
