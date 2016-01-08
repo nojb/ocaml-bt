@@ -19,6 +19,246 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Test = struct
+
+  let block_size = 1 lsl 14 (* 16384 *)
+
+  module Int = struct
+    type t = int
+    let compare : int -> int -> int = compare
+  end
+
+  module IntMap = Map.Make (Int)
+
+  module Bitv : sig
+    type t
+    val empty : t
+    val single : int -> t
+    val set : int -> t -> t
+    val unset : int -> t -> t
+    val is_set : int -> t -> bool
+    val count : t -> int
+  end = struct
+    module IntSet = Set.Make (Int)
+    type t = IntSet.t
+    let empty = IntSet.empty
+    let single m = IntSet.singleton m
+    let set m v = IntSet.add m v
+    let unset m v = IntSet.remove m v
+    let is_set m v = IntSet.mem m v
+    let count v = IntSet.cardinal v
+  end
+
+  (* type piece = *)
+  (*   { *)
+  (*     state : piece_state; *)
+  (*     length : int; *)
+  (*     offset : int64; *)
+  (*     have : Bitv.t; *)
+  (*     hash : SHA1.t; *)
+  (*     num_blocks : int; *)
+  (*   } *)
+
+  module SHA1Map = Map.Make (SHA1)
+
+  module Piece = struct
+    type block =
+      | Done
+      | Waiting of SHA1.t list
+    type state =
+      | Pending
+      | Active of block IntMap.t
+      | Waiting
+      | Verified
+    let length m i = Metadata.piece_length m i
+    let offset m i = assert false (* Metadata.offset m i 0 *)
+    let hash m i = assert false (* Metadata.hash m i *)
+  end
+
+  type peer =
+    {
+      am_interested : bool;
+      interested_in_us : bool;
+      am_choking : bool;
+      choking_us : bool;
+    }
+
+  type metadata =
+    {
+      name : string;
+      info_hash : SHA1.t;
+      piece_length : int;
+      total_length : int64;
+    }
+
+  type waiting = unit
+
+  type getting =
+    {
+      length : int;
+      num_pieces : int;
+      have : Bitv.t;
+      in_progress : Bitv.t;
+    }
+
+  type sharing =
+    {
+      last_rechoke : float;
+      info : metadata;
+      have : Bitv.t;
+      in_progress : Bitv.t;
+      pieces : Piece.state IntMap.t;
+      num_pieces : int;
+      have_pieces : int;
+    }
+
+  type state =
+    | Waiting of waiting
+    | Getting of getting
+    | Sharing of sharing
+
+  type context =
+    {
+      peers : peer SHA1Map.t;
+      state : state;
+    }
+
+  type event =
+    | PeerConnected of SHA1.t
+    | PeerLeft of SHA1.t
+    | BlockReceived of SHA1.t * int * int * string
+    | DigestComputed of int * SHA1.t
+    | BlockRequested of SHA1.t * int * int * int
+    | MetadataLengthReceived of SHA1.t * int
+    | MetadataBlockReceived of SHA1.t * int * string
+    | MetadataBlockRequested of SHA1.t * int
+    | PeerChoked of SHA1.t
+    | PeerInterested of SHA1.t
+    | PeerHas of SHA1.t * string
+
+  type action =
+    | SendHave of SHA1.t * Bitv.t
+    | SendBlock of SHA1.t * int64 * int
+    | WriteBlock of int64 * string
+    | ComputeDigest of int64 * int
+    | CancelBlock of SHA1.t * int * int * int
+    | SendMetadataBlock of SHA1.t * int * string
+    | ChokePeer of SHA1.t
+    | InterestingPeer of SHA1.t
+    | RequestBlock of SHA1.t * int * int * int
+    | RequestMetadataBlock of SHA1.t * int
+
+  let num_pieces_have pieces =
+    IntMap.fold (fun _ st n -> match st with Piece.Verified | Piece.Waiting -> n + 1 | _ -> n) pieces 0
+
+  let handle ev st =
+    match ev, st.state with
+    | PeerConnected id, Sharing {have; _} ->
+        let p = assert false in
+        let st = {st with peers = SHA1Map.add id p st.peers} in
+        st, [SendHave (id, have)]
+    | BlockReceived (id, idx, off, data), Sharing sh ->
+        let {pieces; info; num_pieces; _} = sh in
+        let j = off / block_size in
+        let pieces, actions =
+          match IntMap.find idx pieces with
+          | Piece.Pending
+          | Piece.Verified
+          | Piece.Waiting ->
+              pieces, []
+          | Piece.Active parts ->
+              begin match IntMap.find j parts with
+              | Piece.Waiting peers ->
+                  let parts = IntMap.add j Piece.Done parts in
+                  let peers = List.filter (fun id' -> id <> id) peers in
+                  let cancels =
+                    List.map (fun id -> CancelBlock (id, idx, off, String.length data)) peers
+                  in
+                  let off = Int64.(add (Piece.offset info idx) (of_int off)) in
+                  let pieces, actions =
+                    if num_pieces_have pieces = num_pieces then
+                      let pieces = IntMap.add idx Piece.Waiting pieces in
+                      pieces, [WriteBlock (off, data); ComputeDigest (0L, 1)] (* FIXME *)
+                    else
+                      let pieces = IntMap.add idx (Piece.Active parts) pieces in
+                      pieces, [WriteBlock (off, data)]
+                  in
+                  pieces, (actions @ cancels)
+              | Piece.Done ->
+                  pieces, []
+              | exception Not_found ->
+                  pieces, []
+              end
+        in
+        let st = {st with state = Sharing {sh with pieces}} in
+        st, actions
+    | DigestComputed (idx, hash), Sharing sh ->
+        let {pieces; have; info; _} = sh in
+        if hash = Piece.hash info idx then (* FIXME *)
+          let pieces = IntMap.add idx Piece.Verified pieces in
+          let have = Bitv.set idx have in
+          let actions =
+            SHA1Map.fold (fun id _ l -> SendHave (id, Bitv.single idx) :: l) st.peers []
+          in
+          let sh = {sh with pieces; have} in
+          {st with state = Sharing sh}, actions
+          (* maybe update interest ? *)
+        else
+          st, [] (* FIXME *)
+    (* | BlockRequested (id, idx, off, pos), Sharing sh -> *)
+    (*     begin match pieces.(idx).Piece.state with *)
+    (*     | Piece.Verified -> *)
+    (*         let off1 = Int64.(add pieces.(idx).Piece.offset (of_int off)) in *)
+    (*         Lwt.async (fun () -> *)
+    (*           Store.read store off1 len >|= fun buf -> *)
+    (*           p # send_piece idx off buf *)
+    (*         ) *)
+    (*     | Piece.Pending *)
+    (*     | Piece.Active _ -> *)
+    (*         () *)
+    (*     end *)
+    (* | MetadataLengthReceived (id, len), Getting _ -> *)
+    (*     if len <= IncompleteMetadata.metadata_max_size then begin *)
+    (*       try *)
+    (*         IncompleteMetadata.set_length m len; *)
+    (*         IncompleteMetadata.iter_missing (p # send_metadata_request) m; *)
+    (*       with _ -> *)
+    (*         IncompleteMetadata.reset m *)
+    (*     end else *)
+    (*       Lwt_log.ign_warning_f "METADATA length %d is too large, ignoring." len *)
+    (* | PeerChoked id, Sharing _ -> *)
+    (*     let aux (i, off, _) = *)
+    (*       match pieces.(i).Piece.state with *)
+    (*       | Piece.Verified *)
+    (*       | Piece.Pending -> () *)
+    (*       | Piece.Active parts -> *)
+    (*           let j = off / block_size in *)
+    (*           if parts.(j) > 0 then parts.(j) <- parts.(j) - 1 *)
+    (*     in *)
+    (*     List.iter aux reqs *)
+    (* | MetadataBlockRequested (id, idx), Sharing _ -> *)
+    (*     p # send_metadata_piece *)
+    (*       (Metadata.length metadata) piece *)
+    (*       (Metadata.get_piece metadata piece) *)
+    (* | MetadataBlockRequested (id, _), Waiting _ *)
+    (* | MetadataBlockRequested (id, _), Getting _ -> *)
+    (*     p # send_metadata_rejection piece *)
+    (* | MetadataBlockReceived (id, idx, data), Getting _ -> *)
+    (*     if IncompleteMetadata.add m piece data then begin *)
+    (*       match IncompleteMetadata.verify m info_hash with *)
+    (*       | Some raw -> *)
+    (*           Lwt.wakeup_later gotit raw *)
+    (*       (\* debug "got full metadata"; *\) *)
+    (*       (\* let m = Metadata.create (Bcode.decode raw) in *\) *)
+    (*       (\* t.state <- Complete (m, *\) *)
+    (*       (\* Lwt.return m *\) *)
+    (*       | None -> *)
+    (*           IncompleteMetadata.reset m; *)
+    (*           Lwt_log.ign_error "METADATA HASH CHECK FAILED" *)
+    (*     end *)
+
+end
+
 module ARC4 = Nocrypto.Cipher_stream.ARC4
 module Cs   = Nocrypto.Uncommon.Cs
 
