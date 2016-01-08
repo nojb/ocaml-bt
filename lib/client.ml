@@ -22,6 +22,8 @@
 module Test = struct
 
   let block_size = 1 lsl 14 (* 16384 *)
+  let metadata_max_size = 1 lsl 22
+  let metadata_block_size = 1 lsl 14
 
   module Int = struct
     type t = int
@@ -91,8 +93,6 @@ module Test = struct
       total_length : int64;
     }
 
-  type waiting = unit
-
   type getting =
     {
       length : int;
@@ -113,7 +113,7 @@ module Test = struct
     }
 
   type state =
-    | Waiting of waiting
+    | Waiting
     | Getting of getting
     | Sharing of sharing
 
@@ -138,7 +138,7 @@ module Test = struct
 
   type action =
     | SendHave of SHA1.t * Bitv.t
-    | SendBlock of SHA1.t * int64 * int
+    | SendBlock of SHA1.t * int * int * int64 * int
     | WriteBlock of int64 * string
     | ComputeDigest of int64 * int
     | CancelBlock of SHA1.t * int * int * int
@@ -205,27 +205,53 @@ module Test = struct
           (* maybe update interest ? *)
         else
           st, [] (* FIXME *)
-    (* | BlockRequested (id, idx, off, pos), Sharing sh -> *)
-    (*     begin match pieces.(idx).Piece.state with *)
-    (*     | Piece.Verified -> *)
-    (*         let off1 = Int64.(add pieces.(idx).Piece.offset (of_int off)) in *)
-    (*         Lwt.async (fun () -> *)
-    (*           Store.read store off1 len >|= fun buf -> *)
-    (*           p # send_piece idx off buf *)
-    (*         ) *)
-    (*     | Piece.Pending *)
-    (*     | Piece.Active _ -> *)
-    (*         () *)
-    (*     end *)
-    (* | MetadataLengthReceived (id, len), Getting _ -> *)
-    (*     if len <= IncompleteMetadata.metadata_max_size then begin *)
-    (*       try *)
-    (*         IncompleteMetadata.set_length m len; *)
-    (*         IncompleteMetadata.iter_missing (p # send_metadata_request) m; *)
-    (*       with _ -> *)
-    (*         IncompleteMetadata.reset m *)
-    (*     end else *)
-    (*       Lwt_log.ign_warning_f "METADATA length %d is too large, ignoring." len *)
+    | BlockRequested (id, idx, off, len), Sharing sh ->
+        let {pieces; info; _} = sh in
+        let actions =
+          match IntMap.find idx pieces with
+          | Piece.Verified ->
+              let off1 = Int64.(add (Piece.offset info idx) (of_int off)) in
+              [SendBlock (id, idx, off, off1, len)]
+          | Piece.Pending
+          | Piece.Waiting
+          | Piece.Active _ ->
+              []
+        in
+        st, actions
+    | MetadataLengthReceived (id, len), Waiting ->
+        let num_pieces = (len + metadata_block_size - 1) / metadata_block_size in
+        let get =
+          {
+            length = len;
+            num_pieces;
+            have = Bitv.empty;
+            in_progress = Bitv.empty;
+          }
+        in
+        let rec span i = if i >= num_pieces then [] else i :: span (i+1) in
+        let actions = List.map (fun i -> RequestMetadataBlock (id, i)) (span num_pieces) in
+        {st with state = Getting get}, actions
+    | MetadataLengthReceived (id, len), Getting get ->
+        if len <= metadata_max_size then
+          if get.length <> len then
+            {st with state = Waiting}, []
+          else
+            let actions =
+              let rec loop i =
+                if i >= get.num_pieces then []
+                else if not (Bitv.is_set i get.have) then
+                  RequestMetadataBlock (id, i) :: loop (i + 1)
+                else
+                  loop (i + 1)
+              in
+              loop 0
+            in
+            st, actions
+          (* with _ -> *)
+          (*   IncompleteMetadata.reset m *)
+        else
+          st, []
+          (* Lwt_log.ign_warning_f "METADATA length %d is too large, ignoring." len *)
     (* | PeerChoked id, Sharing _ -> *)
     (*     let aux (i, off, _) = *)
     (*       match pieces.(i).Piece.state with *)
