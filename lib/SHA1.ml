@@ -39,7 +39,7 @@ let compare s1 s2 =
   assert false (* FIXME FIXME *)
 
 let equal cs1 cs2 =
-  Nocrypto.Uncommon.Cs.equal cs1 cs2
+  Cstruct.equal cs1 cs2
 
 let to_raw x =
   x

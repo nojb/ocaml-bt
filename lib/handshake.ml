@@ -180,7 +180,7 @@ module Encryption = struct
           let { ARC4.key = her_key; message = vc' } =
             ARC4.decrypt ~key:her_key (Cstruct.sub buf off (Cstruct.len vc))
           in
-          if Cs.equal vc' vc then
+          if Cstruct.equal vc' vc then
             let buf = Cstruct.shift buf (Cstruct.len vc) in
             loop buf (ClientWaitCryptoSelect (my_key, her_key))
           else
@@ -300,7 +300,7 @@ let parse_handshake cs =
   match Cstruct.get_uint8 cs 0 with
   | 19 ->
       let proto' = Cstruct.sub cs 0 20 in
-      if Cs.equal proto' proto then
+      if Cstruct.equal proto' proto then
         let ext = Bits.of_cstruct @@ Cstruct.sub cs 20 8 in
         let info_hash = Cstruct.sub cs 28 20 in
         let peer_id = Cstruct.sub cs 48 20 in
