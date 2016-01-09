@@ -73,8 +73,8 @@ module Test = struct
       | Waiting
       | Verified
     let length m i = Metadata.piece_length m i
-    let offset m i = assert false (* Metadata.offset m i 0 *)
-    let hash m i = assert false (* Metadata.hash m i *)
+    let offset m i = Metadata.offset m i 0
+    let hash m i = Metadata.hash m i
   end
 
   type peer =
@@ -85,13 +85,13 @@ module Test = struct
       choking_us : bool;
     }
 
-  type metadata =
-    {
-      name : string;
-      info_hash : SHA1.t;
-      piece_length : int;
-      total_length : int64;
-    }
+  type metadata = Metadata.t
+    (* { *)
+    (*   name : string; *)
+    (*   info_hash : SHA1.t; *)
+    (*   piece_length : int; *)
+    (*   total_length : int64; *)
+    (* } *)
 
   type getting =
     {
@@ -142,11 +142,12 @@ module Test = struct
     | WriteBlock of int64 * string
     | ComputeDigest of int64 * int
     | CancelBlock of SHA1.t * int * int * int
-    | SendMetadataBlock of SHA1.t * int * string
+    | SendMetadataBlock of SHA1.t * int * int * Cstruct.t
     | ChokePeer of SHA1.t
     | InterestingPeer of SHA1.t
     | RequestBlock of SHA1.t * int * int * int
     | RequestMetadataBlock of SHA1.t * int
+    | RejectMetadataBlockRequest of SHA1.t * int
 
   let num_pieces_have pieces =
     IntMap.fold (fun _ st n -> match st with Piece.Verified | Piece.Waiting -> n + 1 | _ -> n) pieces 0
@@ -247,28 +248,36 @@ module Test = struct
               loop 0
             in
             st, actions
-          (* with _ -> *)
-          (*   IncompleteMetadata.reset m *)
         else
           st, []
           (* Lwt_log.ign_warning_f "METADATA length %d is too large, ignoring." len *)
-    (* | PeerChoked id, Sharing _ -> *)
-    (*     let aux (i, off, _) = *)
-    (*       match pieces.(i).Piece.state with *)
-    (*       | Piece.Verified *)
-    (*       | Piece.Pending -> () *)
-    (*       | Piece.Active parts -> *)
-    (*           let j = off / block_size in *)
-    (*           if parts.(j) > 0 then parts.(j) <- parts.(j) - 1 *)
-    (*     in *)
-    (*     List.iter aux reqs *)
-    (* | MetadataBlockRequested (id, idx), Sharing _ -> *)
-    (*     p # send_metadata_piece *)
-    (*       (Metadata.length metadata) piece *)
-    (*       (Metadata.get_piece metadata piece) *)
-    (* | MetadataBlockRequested (id, _), Waiting _ *)
-    (* | MetadataBlockRequested (id, _), Getting _ -> *)
-    (*     p # send_metadata_rejection piece *)
+    | PeerChoked id, Sharing _ ->
+        begin match SHA1Map.find id st.peers with
+        | {choking_us = false; _} as p ->
+            let peers = SHA1Map.add id {p with choking_us = true} st.peers in
+            (* let reqs = Lwt_sequence.fold_l (fun r l -> r :: l) requests [] in *)
+            (* Lwt_sequence.iter_node_l (fun n -> Lwt_sequence.remove n) requests; *)
+            (* let aux (i, off, _) = *)
+            (*   match pieces.(i).Piece.state with *)
+            (*   | Piece.Verified *)
+            (*   | Piece.Pending -> () *)
+            (*   | Piece.Active parts -> *)
+            (*       let j = off / block_size in *)
+            (*       if parts.(j) > 0 then parts.(j) <- parts.(j) - 1 *)
+            (* in *)
+            (* List.iter aux reqs *)
+            {st with peers}, []
+        | {choking_us = true; _} ->
+            st, []
+        | exception Not_found ->
+            st, []
+        end
+    | MetadataBlockRequested (id, idx), Sharing sh ->
+        let {info; _} = sh in
+        st, [SendMetadataBlock (id, idx, Metadata.length info, Metadata.get_piece info idx)]
+    | MetadataBlockRequested (id, idx), Waiting _
+    | MetadataBlockRequested (id, idx), Getting _ ->
+        st, [RejectMetadataBlockRequest (id, idx)]
     (* | MetadataBlockReceived (id, idx, data), Getting _ -> *)
     (*     if IncompleteMetadata.add m piece data then begin *)
     (*       match IncompleteMetadata.verify m info_hash with *)
