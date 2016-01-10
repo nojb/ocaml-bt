@@ -108,12 +108,10 @@ module Test = struct
 
   type sharing =
     {
-      last_rechoke : float;
       info : metadata;
       have : Bitv.t;
       in_progress : Bitv.t;
       pieces : Piece.state IntMap.t;
-      num_pieces : int;
       have_pieces : int;
     }
 
@@ -170,7 +168,7 @@ module Test = struct
         let st = {st with peers = SHA1Map.add id p st.peers} in
         st, [SendHave (id, have)]
     | BlockReceived (id, idx, off, data), Sharing sh ->
-        let {pieces; info; num_pieces; _} = sh in
+        let {pieces; info; _} = sh in
         let j = off / block_size in
         let pieces, actions =
           match IntMap.find idx pieces with
@@ -188,7 +186,7 @@ module Test = struct
                   in
                   (* let off = Int64.(add (Piece.offset info idx) (of_int off)) in *)
                   let pieces, actions =
-                    if num_pieces_have pieces = num_pieces then
+                    if num_pieces_have pieces = Metadata.piece_count info then
                       let pieces = IntMap.add idx Piece.Waiting pieces in
                       pieces, [WriteBlock (idx, off, data); ComputeDigest idx] (* FIXME *)
                     else
@@ -305,17 +303,27 @@ module Test = struct
           st, []
     | DigestComputed (idx, hash), Loading load ->
         (* FIXME check for done *)
-        if hash = Metadata.hash load.info idx then
-          let have = Bitv.set idx load.have in
-          let actions =
-            if idx >= Metadata.piece_count load.info then
-              []
-            else
-              [ComputeDigest (idx+1)]
+        let load =
+          if hash = Metadata.hash load.info idx then
+            let have = Bitv.set idx load.have in
+            {load with have}
+          else
+            load
+        in
+        if idx >= Metadata.piece_count load.info then
+          let pieces = IntMap.empty in (* FIXME XXX *)
+          let sh =
+            {
+              info = load.info;
+              have = load.have;
+              pieces;
+              have_pieces = 0; (* FIXME XXX *)
+              in_progress = Bitv.empty; (* FIXME XXX *)
+            }
           in
-          {st with state = Loading {load with have}}, actions
+          {st with state = Sharing sh}, []
         else
-          st, []
+          {st with state = Loading load}, [ComputeDigest (idx+1)]
 end
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
