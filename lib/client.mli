@@ -19,6 +19,13 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+module Test : sig
+  type event
+  type context
+  type action
+  val handle : event -> context -> context * action list
+end
+
 class client : SHA1.t ->
   object
     method peer_joined : SHA1.t -> Unix.inet_addr -> unit

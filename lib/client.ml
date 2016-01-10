@@ -97,8 +97,13 @@ module Test = struct
     {
       length : int;
       num_pieces : int;
+      have : string IntMap.t;
+    }
+
+  type loading =
+    {
+      info : metadata;
       have : Bitv.t;
-      in_progress : Bitv.t;
     }
 
   type sharing =
@@ -115,10 +120,12 @@ module Test = struct
   type state =
     | Waiting
     | Getting of getting
+    | Loading of loading
     | Sharing of sharing
 
   type context =
     {
+      info_hash : SHA1.t;
       peers : peer SHA1Map.t;
       state : state;
     }
@@ -135,12 +142,13 @@ module Test = struct
     | PeerChoked of SHA1.t
     | PeerInterested of SHA1.t
     | PeerHas of SHA1.t * string
+    | TorrentOpened of Bitv.t
 
   type action =
     | SendHave of SHA1.t * Bitv.t
-    | SendBlock of SHA1.t * int * int * int64 * int
-    | WriteBlock of int64 * string
-    | ComputeDigest of int64 * int
+    | SendBlock of SHA1.t * int * int * int
+    | WriteBlock of int * int * string
+    | ComputeDigest of int
     | CancelBlock of SHA1.t * int * int * int
     | SendMetadataBlock of SHA1.t * int * int * Cstruct.t
     | ChokePeer of SHA1.t
@@ -148,9 +156,12 @@ module Test = struct
     | RequestBlock of SHA1.t * int * int * int
     | RequestMetadataBlock of SHA1.t * int
     | RejectMetadataBlockRequest of SHA1.t * int
+    | OpenTorrent of metadata
 
   let num_pieces_have pieces =
-    IntMap.fold (fun _ st n -> match st with Piece.Verified | Piece.Waiting -> n + 1 | _ -> n) pieces 0
+    IntMap.fold (fun _ st n ->
+      match st with Piece.Verified | Piece.Waiting -> n + 1 | _ -> n
+    ) pieces 0
 
   let handle ev st =
     match ev, st.state with
@@ -175,14 +186,14 @@ module Test = struct
                   let cancels =
                     List.map (fun id -> CancelBlock (id, idx, off, String.length data)) peers
                   in
-                  let off = Int64.(add (Piece.offset info idx) (of_int off)) in
+                  (* let off = Int64.(add (Piece.offset info idx) (of_int off)) in *)
                   let pieces, actions =
                     if num_pieces_have pieces = num_pieces then
                       let pieces = IntMap.add idx Piece.Waiting pieces in
-                      pieces, [WriteBlock (off, data); ComputeDigest (0L, 1)] (* FIXME *)
+                      pieces, [WriteBlock (idx, off, data); ComputeDigest idx] (* FIXME *)
                     else
                       let pieces = IntMap.add idx (Piece.Active parts) pieces in
-                      pieces, [WriteBlock (off, data)]
+                      pieces, [WriteBlock (idx, off, data)]
                   in
                   pieces, (actions @ cancels)
               | Piece.Done ->
@@ -193,7 +204,7 @@ module Test = struct
         in
         let st = {st with state = Sharing {sh with pieces}} in
         st, actions
-    | DigestComputed (idx, hash), Sharing sh ->
+    | DigestComputed (idx, hash), Sharing sh -> (* idx -> off, len ---> deduce idx *)
         let {pieces; have; info; _} = sh in
         if hash = Piece.hash info idx then (* FIXME *)
           let pieces = IntMap.add idx Piece.Verified pieces in
@@ -211,8 +222,8 @@ module Test = struct
         let actions =
           match IntMap.find idx pieces with
           | Piece.Verified ->
-              let off1 = Int64.(add (Piece.offset info idx) (of_int off)) in
-              [SendBlock (id, idx, off, off1, len)]
+              (* let off1 = Int64.(add (Piece.offset info idx) (of_int off)) in *)
+              [SendBlock (id, idx, off, len)]
           | Piece.Pending
           | Piece.Waiting
           | Piece.Active _ ->
@@ -225,8 +236,7 @@ module Test = struct
           {
             length = len;
             num_pieces;
-            have = Bitv.empty;
-            in_progress = Bitv.empty;
+            have = IntMap.empty;
           }
         in
         let rec span i = if i >= num_pieces then [] else i :: span (i+1) in
@@ -240,10 +250,10 @@ module Test = struct
             let actions =
               let rec loop i =
                 if i >= get.num_pieces then []
-                else if not (Bitv.is_set i get.have) then
-                  RequestMetadataBlock (id, i) :: loop (i + 1)
+                else if IntMap.mem i get.have then
+                  loop (i+1)
                 else
-                  loop (i + 1)
+                  RequestMetadataBlock (id, i) :: loop (i + 1)
               in
               loop 0
             in
@@ -275,23 +285,37 @@ module Test = struct
     | MetadataBlockRequested (id, idx), Sharing sh ->
         let {info; _} = sh in
         st, [SendMetadataBlock (id, idx, Metadata.length info, Metadata.get_piece info idx)]
-    | MetadataBlockRequested (id, idx), Waiting _
+    | MetadataBlockRequested (id, idx), Waiting
     | MetadataBlockRequested (id, idx), Getting _ ->
         st, [RejectMetadataBlockRequest (id, idx)]
-    (* | MetadataBlockReceived (id, idx, data), Getting _ -> *)
-    (*     if IncompleteMetadata.add m piece data then begin *)
-    (*       match IncompleteMetadata.verify m info_hash with *)
-    (*       | Some raw -> *)
-    (*           Lwt.wakeup_later gotit raw *)
-    (*       (\* debug "got full metadata"; *\) *)
-    (*       (\* let m = Metadata.create (Bcode.decode raw) in *\) *)
-    (*       (\* t.state <- Complete (m, *\) *)
-    (*       (\* Lwt.return m *\) *)
-    (*       | None -> *)
-    (*           IncompleteMetadata.reset m; *)
-    (*           Lwt_log.ign_error "METADATA HASH CHECK FAILED" *)
-    (*     end *)
-
+    | MetadataBlockReceived (id, idx, data), Getting get ->
+        let have = IntMap.add idx data get.have in
+        if IntMap.cardinal get.have = get.num_pieces then
+          let raw = Bytes.create get.length in
+          IntMap.iter (fun i d ->
+            Bytes.blit d 0 raw (i * metadata_block_size) (String.length d)
+          ) have;
+          if SHA1.digest (Cstruct.of_string raw) = st.info_hash then
+            let info = Metadata.create (Bcode.decode (Cstruct.of_string raw)) in
+            let load = {info; have = Bitv.empty} in
+            {st with state = Loading load}, [OpenTorrent info; ComputeDigest 0] (* FIXME *)
+          else
+            {st with state = Waiting}, []
+        else
+          st, []
+    | DigestComputed (idx, hash), Loading load ->
+        (* FIXME check for done *)
+        if hash = Metadata.hash load.info idx then
+          let have = Bitv.set idx load.have in
+          let actions =
+            if idx >= Metadata.piece_count load.info then
+              []
+            else
+              [ComputeDigest (idx+1)]
+          in
+          {st with state = Loading {load with have}}, actions
+        else
+          st, []
 end
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
