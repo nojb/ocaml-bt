@@ -366,7 +366,7 @@ end = struct
 
   exception Error of int * string
 
-  let get_response bc =
+  let response bc =
     match find "t" bc |> to_string with
     | t ->
         let resp =
@@ -381,6 +381,26 @@ end = struct
               begin match find "e" bc with
               | List [Int n; String s] ->
                   `Error (Int64.to_int n, s)
+              | _ ->
+                  `Error (203, "")
+              end
+          | String "q" ->
+              let a = find "a" bc in
+              let id = find "id" a |> to_string in
+              begin match find "q" bc |> to_string with
+              | "ping" ->
+                  `Ping id
+              | "find_node" ->
+                  let target = find "target" a |> to_string in
+                  `Find_node (id, target)
+              | "get_peers" ->
+                  let info_hash = find "info_hash" a |> to_string in
+                  `Get_peers (id, info_hash)
+              | "announce_peer" ->
+                  let info_hash = find "info_hash" a |> to_string in
+                  let port = find "port" a |> to_int in
+                  let token = find "token" a |> to_string in
+                  `Announce_peer (id, info_hash, port, token)
               | _ ->
                   `Error (203, "")
               end
@@ -404,18 +424,29 @@ end = struct
       Lwt_unix.recvfrom fd buf 0 (Bytes.length buf) [] >>= fun (n, addr) ->
       let bc = bdecode buf in
       Format.eprintf "@[<v 2>Received Response from %s:@,%a@]@." (string_of_sockaddr addr) Bcode.pp bc;
-      match get_response bc with
+      match response bc with
       | None ->
           loop ()
       | Some (t, `Error (code, s)) ->
-          let u = Hashtbl.find in_progress t in
-          Hashtbl.remove in_progress t;
-          Lwt.wakeup_later_exn u (Error (code, s));
-          loop ()
+          begin match Hashtbl.find in_progress t with
+          | u ->
+              Hashtbl.remove in_progress t;
+              Lwt.wakeup_later_exn u (Error (code, s));
+              loop ()
+          | exception Not_found ->
+              loop ()
+          end
       | Some (t, `Ok dict) ->
-          let u = Hashtbl.find in_progress t in
-          Hashtbl.remove in_progress t;
-          Lwt.wakeup_later u dict;
+          begin match Hashtbl.find in_progress t with
+          | u ->
+              Hashtbl.remove in_progress t;
+              Lwt.wakeup_later u dict;
+              loop ()
+          | exception Not_found ->
+              loop ()
+          end
+      | Some (t, _) ->
+          Printf.eprintf "Ignoring request";
           loop ()
     in
     Lwt.ignore_result (loop ());
