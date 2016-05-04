@@ -43,6 +43,8 @@ module Routing : sig
   val add: 'a t -> string -> 'a -> unit
   val remove: 'a t -> string -> unit
   val find: 'a t -> ?k:int -> string -> 'a node list
+
+  val number_of_nodes: 'a t -> int
 end = struct
   type 'a node =
     {
@@ -98,7 +100,7 @@ end = struct
   let add table id data =
     let bi = big_int_of_id id in
     let rec add tree i =
-      if !debug then Printf.eprintf "add: %s: %i\n%!" (Big_int.string_of_big_int bi) i;
+      (* if !debug then Printf.eprintf "add: %s: %i\n%!" (Big_int.string_of_big_int bi) i; *)
       match tree with
       | Bucket (min, bucket, max) ->
           let bucket = List.filter (fun {id = id'; data = _} -> id <> id') bucket in
@@ -170,6 +172,15 @@ end = struct
       end
     in
     find k table.tree 0
+
+  let number_of_nodes table =
+    let rec count = function
+      | Bucket (_, bucket, _) ->
+          List.length bucket
+      | Node (left, right) ->
+          count left + count right
+    in
+    count table.tree
 end
 
 let random_id () =
@@ -298,7 +309,9 @@ module Bcode = struct
                 let n = int_of_string (String.sub s start (i - start)) in
                 String (String.sub s (i + 1) n), (i + n + 1)
             | _ ->
-                failwith "Bcode.decode_partial: bad string"
+                Printf.ksprintf
+                  failwith "Bcode.decode_partial: bad string: %S"
+                  (String.sub s start (String.length s - start))
           in
           loop' start
       | 'd' ->
@@ -448,6 +461,9 @@ end = struct
       | Some (t, _) ->
           Printf.eprintf "Ignoring request";
           loop ()
+      | exception e ->
+          Printf.eprintf "Error while decoding response: %s\n%!" (Printexc.to_string e);
+          loop ()
     in
     Lwt.ignore_result (loop ());
     {id; fd; in_progress; t = 0}
@@ -567,27 +583,44 @@ module Dht = struct
 
   let lookup ?(k = 8) ?(alpha = 3) dht target =
     let queried = ref [] in
-    let not_yet_queried (id, _) = List.for_all (fun (id', _) -> id <> id') !queried in
+    let not_yet_queried (id, _) = not (List.mem_assoc id !queried) in
     let rec loop nodes =
-      Lwt_list.iter_p (fun (id, addr) ->
-        queried := (id, addr) :: !queried;
-        find_node dht id addr target >>= fun nodes ->
-        let nodes = List.filter not_yet_queried nodes in
-        let nodes =
-          match nodes with
-          | [] ->
-              let nodes = Routing.find dht.table ~k target in
-              List.filter not_yet_queried (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes)
-          | _ :: _ ->
-              let nodes =
-                List.sort (fun (id1, _) (id2, _) ->
-                  Big_int.compare_big_int (Routing.distance id1 id) (Routing.distance id2 id)
-                ) nodes
-              in
-              first_n alpha nodes
-        in
-        loop nodes
-      ) nodes
+      Printf.eprintf "loop: querying %d nodes\n%!" (List.length nodes);
+      List.iter (fun (id, _) -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Routing.distance id target))) nodes;
+      Printf.eprintf "loop: number of nodes in routing table: %d\n%!" (Routing.number_of_nodes dht.table);
+      List.iter (fun node -> queried := node :: !queried) nodes;
+      let strm, push = Lwt_stream.create () in
+      let _t =
+        Lwt_list.iter_p (fun (id, addr) -> find_node dht id addr target >|= List.iter (fun node -> push (Some node))) nodes >|= fun () -> push None
+      in
+      let rec loop1 nodes =
+        if List.length nodes >= alpha then
+          loop nodes
+        else
+          Lwt_stream.get strm >>= function
+            | Some node ->
+                if not_yet_queried node then
+                  loop1 (node :: nodes)
+                else
+                  loop nodes
+            | None ->
+                if nodes = [] then begin
+                  Printf.eprintf "loop: no more nodes returned; retrying B...\n%!";
+                  let nodes = Routing.find dht.table ~k target in
+                  let nodes = List.filter not_yet_queried (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) in
+                  if nodes <> [] then loop nodes else Lwt.return_unit
+                end else
+                  loop nodes
+      in
+      loop1 []
+          (* let nodes = List.filter not_yet_queried nodes in *)
+          (* let nodes = *)
+          (*   List.sort (fun (id1, _) (id2, _) -> *)
+          (*     Big_int.compare_big_int (Routing.distance id1 target) (Routing.distance id2 target) *)
+          (*   ) nodes *)
+          (* in *)
+          (* loop seen_new (first_n alpha nodes) (i+1) *)
+        (* ) nodes *)
     in
     let nodes = Routing.find dht.table ~k:alpha target in
     loop (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) >>= fun () ->
