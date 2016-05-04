@@ -324,6 +324,8 @@ module Test = struct
           {st with state = Sharing sh}, []
         else
           {st with state = Loading load}, [ComputeDigest (idx+1)]
+    | _ ->
+        failwith "NOT IMPLEMENTED"
 end
 
 module ARC4 = Nocrypto.Cipher_stream.ARC4
@@ -963,11 +965,11 @@ module Peer = struct
           Cstruct.BE.set_uint16 cs 4 port;
           cs
         in
-        let c l = Cs.concat (List.map c l) in
+        let c l = Cstruct.concat (List.map c l) in
         let d =
           [
             "added", Bcode.String (c added);
-            "added.f", Bcode.String (Cs.create_with (List.length added) 0);
+            "added.f", Bcode.String (Cs.create ~init:0 (List.length added));
             "dropped", Bcode.String (c dropped);
           ]
         in
@@ -1136,6 +1138,8 @@ module Peer = struct
             end
         | Wire.PORT _ ->
             ()
+        | _ ->
+            failwith "Peer: NOT IMPLEMENTED"
 
       method private handle_err e =
         Lwt_log.ign_error_f "ERROR id:%a exn:%S" SHA1.sprint_hex_short id (Printexc.to_string e);
@@ -1450,7 +1454,7 @@ module Client = struct
             ()
 
       method private send_keep_alives =
-        let now = Unix.time () in
+        let _now = Unix.time () in
         let aux _ p = p # send_keep_alive in
         Hashtbl.iter aux peers
 

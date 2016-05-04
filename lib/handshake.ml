@@ -150,17 +150,18 @@ module Encryption = struct
       match st with
       | ClientWaitDh when len >= Dh.modulus_size g ->
           let yb, buf = Cstruct.split buf (Dh.modulus_size g) in
-          let shared_secret = Dh.shared g priv yb in
+          (* let shared_secret = Dh.shared g priv yb in *)
+          let shared_secret = assert false in (* FIXME *)
           let my_key = arc4 keyA shared_secret t.info_hash in
           let her_key = arc4 keyB shared_secret t.info_hash in
           let padC_len = Random.int (max_pad_len + 1) in
           let padC = generate padC_len in
           let { ARC4.key = my_key; message } =
             ARC4.encrypt ~key:my_key
-              (Cs.concat [ vc; cs_int32 (provide t.mode); cs_int16 padC_len; padC; cs_int16 0 ])
+              (Cstruct.concat [ vc; cs_int32 (provide t.mode); cs_int16 padC_len; padC; cs_int16 0 ])
           in
           let cs =
-            Cs.concat
+            Cstruct.concat
               [ SHA1.digestv [ req1; shared_secret ];
                 Cs.xor (SHA1.digestv [ req2; t.info_hash ]) (SHA1.digestv [ req3; shared_secret ]);
                 message ]
@@ -293,7 +294,7 @@ let handshake_len =
   Cstruct.len proto + 8 (* extensions *) + 20 (* info_hash *) + 20 (* peer_id *)
 
 let handshake_message ~id ~info_hash =
-  Cs.concat [ proto; extensions; SHA1.to_raw info_hash; SHA1.to_raw id ]
+  Cstruct.concat [ proto; extensions; SHA1.to_raw info_hash; SHA1.to_raw id ]
 
 let parse_handshake cs =
   if Cstruct.len cs != handshake_len then invalid_arg "parse_handshake";
