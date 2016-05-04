@@ -19,7 +19,18 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let first_n k l =
+  let rec loop i l =
+    match i >= k, l with
+    | false, []
+    | true, _ -> []
+    | false, a :: l -> a :: loop (i+1) l
+  in
+  loop 0 l
+
 module Routing : sig
+  val distance: string -> string -> Big_int.big_int
+
   type 'a node =
     {
       id: string;
@@ -30,6 +41,7 @@ module Routing : sig
 
   val create: ?k:int -> string -> 'a t
   val add: 'a t -> string -> 'a -> unit
+  val remove: 'a t -> string -> unit
   val find: 'a t -> ?k:int -> string -> 'a node list
 end = struct
   type 'a node =
@@ -57,6 +69,9 @@ end = struct
       res := Big_int.add_int_big_int (Char.code id.[i]) (Big_int.mult_int_big_int 256 !res)
     done;
     !res
+
+  let distance id1 id2 =
+    Big_int.xor_big_int (big_int_of_id id1) (big_int_of_id id2)
 
   let create ?(k = 8) id =
     assert (String.length id = 20);
@@ -109,14 +124,20 @@ end = struct
     in
     table.tree <- add table.tree 0
 
-  let truncate k l =
-    let rec loop i l =
-      match i >= k, l with
-      | false, []
-      | true, _ -> []
-      | false, a :: l -> a :: loop (i+1) l
+  let remove table id =
+    let bi = big_int_of_id id in
+    let rec remove tree i =
+      match tree with
+      | Bucket (min, bucket, max) ->
+          let bucket = List.filter (fun (node : _ node) -> node.id <> id) bucket in
+          Bucket (min, bucket, max)
+      | Node (left, right) ->
+          if nth bi i then
+            Node (left, remove right (i+1))
+          else
+            Node (remove left (i+1), right)
     in
-    loop 0 l
+    table.tree <- remove table.tree 0
 
   let find table ?(k = table.k) id =
     let id = big_int_of_id id in
@@ -131,7 +152,7 @@ end = struct
                   (Big_int.xor_big_int (big_int_of_id node1.id) id) (Big_int.xor_big_int (big_int_of_id node2.id) id)
               ) bucket
             in
-            let found = truncate k bucket in
+            let found = first_n k bucket in
             if !debug then begin
               Printf.eprintf "find: %s: %d: found %d nodes\n%!" (Big_int.string_of_big_int id) k (List.length found);
               List.iter (fun {id; data = _} -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (big_int_of_id id))) found
@@ -346,7 +367,6 @@ end = struct
   exception Error of int * string
 
   let get_response bc =
-    Format.eprintf "@[<v 2>Received Response:@,%a@]@." Bcode.pp bc;
     match find "t" bc |> to_string with
     | t ->
         let resp =
@@ -371,13 +391,20 @@ end = struct
     | exception _ ->
         None
 
+  let string_of_sockaddr = function
+    | Unix.ADDR_UNIX s -> s
+    | Unix.ADDR_INET (ip, port) ->
+        Printf.sprintf "%s:%d" (Unix.string_of_inet_addr ip) port
+
   let create id =
     let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
     let in_progress = Hashtbl.create 0 in
     let buf = Bytes.create 4096 in
     let rec loop () =
       Lwt_unix.recvfrom fd buf 0 (Bytes.length buf) [] >>= fun (n, addr) ->
-      match get_response (bdecode buf) with
+      let bc = bdecode buf in
+      Format.eprintf "@[<v 2>Received Response from %s:@,%a@]@." (string_of_sockaddr addr) Bcode.pp bc;
+      match get_response bc with
       | None ->
           loop ()
       | Some (t, `Error (code, s)) ->
@@ -414,7 +441,7 @@ end = struct
     Lwt.catch (fun () ->
       Lwt_unix.sendto rpc.fd (Bytes.of_string s) 0 (String.length s) [] addr >>= fun n ->
       assert (n = String.length s);
-      Format.eprintf "@[<v 2>Sent Query:@,%a@]@." Bcode.pp (Dict dict);
+      Format.eprintf "@[<v 2>Sent Query to %s:@,%a@]@." (string_of_sockaddr addr) Bcode.pp (Dict dict);
       w
     ) (fun e -> Hashtbl.remove rpc.in_progress t; Lwt.fail e)
 
@@ -428,7 +455,11 @@ end = struct
       else
         let id = String.sub s i 20 in
         let ip = Obj.magic (String.sub s (i+20) 4) in
-        let port = int_of_string (String.sub s (i+24) 2) in
+        let port =
+          let b1 = s.[i+24] in
+          let b2 = s.[i+25] in
+          Char.code b1 lsl 8 + Char.code b2
+        in
         (id, Unix.ADDR_INET (ip, port)) :: loop (i+26)
     in
     loop 0
@@ -439,7 +470,11 @@ end = struct
         []
       else
         let ip = Obj.magic (String.sub s i 4) in
-        let port = int_of_string (String.sub s (i+4) 2) in
+        let port =
+          let b1 = s.[i+4] in
+          let b2 = s.[i+5] in
+          Char.code b1 lsl 8 + Char.code b2
+        in
         Unix.ADDR_INET (ip, port) :: loop (i+6)
     in
     loop 0
@@ -466,17 +501,81 @@ end = struct
     Lwt.return_unit
 end
 
+module Dht = struct
+  type data =
+    {
+      addr: Unix.sockaddr;
+    }
+
+  type t =
+    {
+      id: string;
+      table: data Routing.t;
+      rpc: Rpc.t;
+    }
+
+  let create id =
+    let table = Routing.create id in
+    let rpc = Rpc.create id in
+    {id; table; rpc}
+
+  let find_node dht id addr target =
+    Lwt.try_bind
+      (fun () -> Rpc.find_node dht.rpc addr target)
+      (fun resp ->
+         Routing.add dht.table id {addr};
+         Lwt.return resp
+      )
+      (function
+        | Lwt_unix.Timeout as e ->
+            Routing.remove dht.table id;
+            Lwt.fail e
+        | e ->
+            Lwt.fail e
+      )
+
+  let lookup ?(k = 8) ?(alpha = 3) dht target =
+    let queried = ref [] in
+    let not_yet_queried (id, _) = List.for_all (fun (id', _) -> id <> id') !queried in
+    let rec loop nodes =
+      Lwt_list.iter_p (fun (id, addr) ->
+        queried := (id, addr) :: !queried;
+        find_node dht id addr target >>= fun nodes ->
+        let nodes = List.filter not_yet_queried nodes in
+        let nodes =
+          match nodes with
+          | [] ->
+              let nodes = Routing.find dht.table ~k target in
+              List.filter not_yet_queried (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes)
+          | _ :: _ ->
+              let nodes =
+                List.sort (fun (id1, _) (id2, _) ->
+                  Big_int.compare_big_int (Routing.distance id1 id) (Routing.distance id2 id)
+                ) nodes
+              in
+              first_n alpha nodes
+        in
+        loop nodes
+      ) nodes
+    in
+    let nodes = Routing.find dht.table ~k:alpha target in
+    loop (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) >>= fun () ->
+    Lwt.return (Routing.find dht.table ~k target)
+end
+
 let getaddrbyname hname =
   Lwt_unix.gethostbyname hname >>= fun he ->
   Lwt.return he.Unix.h_addr_list.(0)
 
-let () =
-  let rpc = Rpc.create (random_id ()) in
-  let t, _ = Lwt.wait () in
+let _ =
+  let selfid = random_id () in
+  let dht = Dht.create selfid in
   let t =
     getaddrbyname "router.utorrent.com" >>= fun addr ->
-    Rpc.ping rpc (Unix.ADDR_INET (addr, 6881)) >>= fun id ->
+    let addr = Unix.ADDR_INET (addr, 6881) in
+    Rpc.ping dht.Dht.rpc addr >>= fun id ->
     Printf.eprintf "Pinged!\n%!";
-    t
+    Routing.add dht.Dht.table id {Dht.addr};
+    Dht.lookup dht selfid
   in
   Lwt_main.run t
