@@ -28,6 +28,11 @@ let first_n k l =
   in
   loop 0 l
 
+let string_of_sockaddr = function
+  | Unix.ADDR_UNIX s -> s
+  | Unix.ADDR_INET (ip, port) ->
+      Printf.sprintf "%s:%d" (Unix.string_of_inet_addr ip) port
+
 module Routing : sig
   val distance: string -> string -> Big_int.big_int
 
@@ -371,7 +376,7 @@ end = struct
     {
       id: string;
       fd: Lwt_unix.file_descr;
-      in_progress: (string, (string * Bcode.t) list Lwt.u) Hashtbl.t;
+      in_progress: (string, float * (string * Bcode.t) list Lwt.u) Hashtbl.t;
       mutable t: int;
     }
 
@@ -424,11 +429,6 @@ end = struct
     | exception _ ->
         None
 
-  let string_of_sockaddr = function
-    | Unix.ADDR_UNIX s -> s
-    | Unix.ADDR_INET (ip, port) ->
-        Printf.sprintf "%s:%d" (Unix.string_of_inet_addr ip) port
-
   let create id =
     let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
     let in_progress = Hashtbl.create 0 in
@@ -442,7 +442,7 @@ end = struct
           loop ()
       | Some (t, `Error (code, s)) ->
           begin match Hashtbl.find in_progress t with
-          | u ->
+          | (_, u) ->
               Hashtbl.remove in_progress t;
               Lwt.wakeup_later_exn u (Error (code, s));
               loop ()
@@ -451,7 +451,7 @@ end = struct
           end
       | Some (t, `Ok dict) ->
           begin match Hashtbl.find in_progress t with
-          | u ->
+          | (_, u) ->
               Hashtbl.remove in_progress t;
               Lwt.wakeup_later u dict;
               loop ()
@@ -465,6 +465,17 @@ end = struct
           Printf.eprintf "Error while decoding response: %s\n%!" (Printexc.to_string e);
           loop ()
     in
+    let rec tick () =
+      Hashtbl.iter (fun t (limit, u) ->
+        if limit >= Sys.time () then begin
+          Printf.eprintf "tick: timing out %S\n%!" t;
+          Lwt.wakeup_exn u Lwt_unix.Timeout;
+          Hashtbl.remove in_progress t
+        end
+      ) in_progress;
+      Lwt_unix.sleep 1. >>= tick
+    in
+    Lwt.ignore_result (tick ());
     Lwt.ignore_result (loop ());
     {id; fd; in_progress; t = 0}
 
@@ -484,7 +495,7 @@ end = struct
     in
     let s = bencode (Dict dict) in
     let w, u = Lwt.wait () in
-    Hashtbl.add rpc.in_progress t u;
+    Hashtbl.add rpc.in_progress t (Sys.time () +. 5.0, u);
     Lwt.catch (fun () ->
       Lwt_unix.sendto rpc.fd (Bytes.of_string s) 0 (String.length s) [] addr >>= fun n ->
       assert (n = String.length s);
@@ -573,58 +584,38 @@ module Dht = struct
          Routing.add dht.table id {addr};
          Lwt.return resp
       )
-      (function
-        | Lwt_unix.Timeout as e ->
-            Routing.remove dht.table id;
-            Lwt.fail e
-        | e ->
-            Lwt.fail e
-      )
+      (fun _ -> Routing.remove dht.table id; Lwt.return_nil)
 
   let lookup ?(k = 8) ?(alpha = 3) dht target =
     let queried = ref [] in
     let not_yet_queried (id, _) = not (List.mem_assoc id !queried) in
+    let cmp (id1, _) (id2, _) = Big_int.compare_big_int (Routing.distance id1 target) (Routing.distance id2 target) in
     let rec loop nodes =
-      Printf.eprintf "loop: querying %d nodes\n%!" (List.length nodes);
+      let nodes = first_n alpha nodes in
+      Printf.eprintf "loop: querying %d nodes (%d in table)\n%!" (List.length nodes) (Routing.number_of_nodes dht.table);
       List.iter (fun (id, _) -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Routing.distance id target))) nodes;
-      Printf.eprintf "loop: number of nodes in routing table: %d\n%!" (Routing.number_of_nodes dht.table);
       List.iter (fun node -> queried := node :: !queried) nodes;
-      let strm, push = Lwt_stream.create () in
-      let _t =
-        Lwt_list.iter_p (fun (id, addr) -> find_node dht id addr target >|= List.iter (fun node -> push (Some node))) nodes >|= fun () -> push None
-      in
-      let rec loop1 nodes =
-        if List.length nodes >= alpha then
+      Lwt_list.map_p (fun (id, addr) ->
+        find_node dht id addr target >>= fun nodes ->
+        Printf.eprintf "Received %d nodes from %s (%d not yet queried)\n%!"
+          (List.length nodes) (string_of_sockaddr addr) (List.length (List.filter not_yet_queried nodes));
+        Lwt.return nodes;
+      ) nodes >|=
+      List.flatten >|=
+      List.filter not_yet_queried >|=
+      List.sort cmp >>= function
+      | [] ->
+          Printf.eprintf "loop: no more nodes returned; trying with %d closest ...\n%!" k;
+          let nodes = Routing.find dht.table ~k target in
+          prerr_endline "foo";
+          let nodes = List.filter not_yet_queried (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) in
+          if nodes <> [] then loop nodes else Lwt.return_unit
+      | _ :: _ as nodes ->
           loop nodes
-        else
-          Lwt_stream.get strm >>= function
-            | Some node ->
-                if not_yet_queried node then
-                  loop1 (node :: nodes)
-                else
-                  loop nodes
-            | None ->
-                if nodes = [] then begin
-                  Printf.eprintf "loop: no more nodes returned; retrying B...\n%!";
-                  let nodes = Routing.find dht.table ~k target in
-                  let nodes = List.filter not_yet_queried (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) in
-                  if nodes <> [] then loop nodes else Lwt.return_unit
-                end else
-                  loop nodes
-      in
-      loop1 []
-          (* let nodes = List.filter not_yet_queried nodes in *)
-          (* let nodes = *)
-          (*   List.sort (fun (id1, _) (id2, _) -> *)
-          (*     Big_int.compare_big_int (Routing.distance id1 target) (Routing.distance id2 target) *)
-          (*   ) nodes *)
-          (* in *)
-          (* loop seen_new (first_n alpha nodes) (i+1) *)
-        (* ) nodes *)
     in
     let nodes = Routing.find dht.table ~k:alpha target in
-    loop (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) >>= fun () ->
-    Lwt.return (Routing.find dht.table ~k target)
+    loop (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) >|= fun () ->
+    Routing.find dht.table ~k target
 end
 
 let getaddrbyname hname =
@@ -640,6 +631,7 @@ let _ =
     Rpc.ping dht.Dht.rpc addr >>= fun id ->
     Printf.eprintf "Pinged!\n%!";
     Routing.add dht.Dht.table id {Dht.addr};
-    Dht.lookup dht selfid
+    Dht.lookup dht selfid >|=
+    List.iter (fun {Routing.id; _} -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Routing.distance id selfid)))
   in
   Lwt_main.run t
