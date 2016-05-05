@@ -33,27 +33,83 @@ let string_of_sockaddr = function
   | Unix.ADDR_INET (ip, port) ->
       Printf.sprintf "%s:%d" (Unix.string_of_inet_addr ip) port
 
-module Routing : sig
-  val distance: string -> string -> Big_int.big_int
+module Id : sig
+  type t
+  val make: string -> t
+  val to_string: t -> string
+  val random: unit -> t
+  val hex: t -> string
+  val hex_short: t -> string
+  val to_big_int: t -> Big_int.big_int
+  val distance: t -> t -> Big_int.big_int
+end = struct
+  type t = string
 
+  let make s =
+    assert (String.length s = 20);
+    s
+
+  let to_string id =
+    id
+
+  let random () =
+    let b = Bytes.create 20 in
+    for i = 0 to 19 do
+      Bytes.set b i (Char.chr (Random.int 256))
+    done;
+    make (Bytes.unsafe_to_string b)
+
+  let hex id =
+    let b = Bytes.create 40 in
+    let to_char n =
+      if n < 10 then Char.chr (Char.code '0' + n)
+      else Char.chr (Char.code 'a' + n - 10)
+    in
+    for i = 0 to 19 do
+      let n = Char.code id.[i] in
+      let h1 = (n lsr 4) land 0xf in
+      let h2 = n land 0xf in
+      let j = 2*i in
+      Bytes.set b j (to_char h1);
+      Bytes.set b (j+1) (to_char h2)
+    done;
+    Bytes.unsafe_to_string b
+
+  let hex_short id =
+    String.sub (hex id) 0 6
+
+  let to_big_int id =
+    let res = ref Big_int.zero_big_int in
+    for i = 0 to 19 do
+      res := Big_int.add_int_big_int (Char.code id.[i]) (Big_int.mult_int_big_int 256 !res)
+    done;
+    !res
+
+  let distance id1 id2 =
+    Big_int.xor_big_int (to_big_int id1) (to_big_int id2)
+end
+
+type id = Id.t
+
+module Routing : sig
   type 'a node =
     {
-      id: string;
+      id: id;
       data: 'a;
     }
 
   type 'a t
 
-  val create: ?k:int -> string -> 'a t
-  val add: 'a t -> string -> 'a -> unit
-  val remove: 'a t -> string -> unit
-  val find: 'a t -> ?k:int -> string -> 'a node list
+  val create: ?k:int -> id -> 'a t
+  val add: 'a t -> id -> 'a -> unit
+  val remove: 'a t -> id -> unit
+  val find: 'a t -> ?k:int -> id -> 'a node list
 
   val number_of_nodes: 'a t -> int
 end = struct
   type 'a node =
     {
-      id: string;
+      id: id;
       data: 'a;
     }
 
@@ -64,25 +120,13 @@ end = struct
   type 'a t =
     {
       k: int;
-      id: Big_int.big_int;
+      id: id;
       mutable tree: 'a tree;
     }
 
   let debug = ref true
 
-  let big_int_of_id id =
-    let res = ref Big_int.zero_big_int in
-    for i = 0 to 19 do
-      res := Big_int.add_int_big_int (Char.code id.[i]) (Big_int.mult_int_big_int 256 !res)
-    done;
-    !res
-
-  let distance id1 id2 =
-    Big_int.xor_big_int (big_int_of_id id1) (big_int_of_id id2)
-
   let create ?(k = 8) id =
-    assert (String.length id = 20);
-    let id = big_int_of_id id in
     {
       k;
       id;
@@ -92,18 +136,17 @@ end = struct
   let split min bucket max =
     if !debug then Printf.eprintf "split: %s %s\n%!" (Big_int.string_of_big_int min) (Big_int.string_of_big_int max);
     let mid = Big_int.div_big_int (Big_int.add_big_int min max) (Big_int.big_int_of_int 2) in
-    let left, right = List.partition (fun {id; data = _} -> Big_int.compare_big_int (big_int_of_id id) mid <= 0) bucket in
+    let left, right = List.partition (fun {id; data = _} -> Big_int.compare_big_int (Id.to_big_int id) mid <= 0) bucket in
     Bucket (min, left, mid), Bucket (mid, right, max)
 
   let nth id i =
     Big_int.compare_big_int
-      (Big_int.and_big_int id (Big_int.power_int_positive_int 2 (160-i-1))) Big_int.zero_big_int != 0
+      (Big_int.and_big_int (Id.to_big_int id) (Big_int.power_int_positive_int 2 (160-i-1))) Big_int.zero_big_int != 0
 
   let between n1 n2 n3 =
     Big_int.compare_big_int n1 n2 <= 0 && Big_int.compare_big_int n2 n3 < 0
 
   let add table id data =
-    let bi = big_int_of_id id in
     let rec add tree i =
       (* if !debug then Printf.eprintf "add: %s: %i\n%!" (Big_int.string_of_big_int bi) i; *)
       match tree with
@@ -111,20 +154,20 @@ end = struct
           let bucket = List.filter (fun {id = id'; data = _} -> id <> id') bucket in
           if List.length bucket < table.k then
             Bucket (min, {id; data} :: bucket, max)
-          else if between min table.id max || i mod 5 != 0 then
+          else if between min (Id.to_big_int table.id) max || i mod 5 != 0 then
             let left, right = split min bucket max in
-            if nth bi i then
+            if nth id i then
               Node (left, add right (i+1))
             else
               Node (add left (i+1), right)
           else begin
             if !debug then
               Printf.eprintf "add: %s: %i: bucket %s %s full\n%!"
-                (Big_int.string_of_big_int bi) i (Big_int.string_of_big_int min) (Big_int.string_of_big_int max);
+                (Id.hex id) i (Big_int.string_of_big_int min) (Big_int.string_of_big_int max);
             tree
           end
       | Node (left, right) ->
-          if nth bi i then
+          if nth id i then
             Node (left, add right (i+1))
           else
             Node (add left (i+1), right)
@@ -132,14 +175,13 @@ end = struct
     table.tree <- add table.tree 0
 
   let remove table id =
-    let bi = big_int_of_id id in
     let rec remove tree i =
       match tree with
       | Bucket (min, bucket, max) ->
           let bucket = List.filter (fun (node : _ node) -> node.id <> id) bucket in
           Bucket (min, bucket, max)
       | Node (left, right) ->
-          if nth bi i then
+          if nth id i then
             Node (left, remove right (i+1))
           else
             Node (remove left (i+1), right)
@@ -147,7 +189,6 @@ end = struct
     table.tree <- remove table.tree 0
 
   let find table ?(k = table.k) id =
-    let id = big_int_of_id id in
     let rec find k tree i =
       if k = 0 then []
       else begin
@@ -155,14 +196,13 @@ end = struct
         | Bucket (_, bucket, _) ->
             let bucket =
               List.sort (fun (node1 : _ node) node2 ->
-                Big_int.compare_big_int
-                  (Big_int.xor_big_int (big_int_of_id node1.id) id) (Big_int.xor_big_int (big_int_of_id node2.id) id)
+                Big_int.compare_big_int (Id.distance node1.id id) (Id.distance node2.id id)
               ) bucket
             in
             let found = first_n k bucket in
             if !debug then begin
-              Printf.eprintf "find: %s: %d: found %d nodes\n%!" (Big_int.string_of_big_int id) k (List.length found);
-              List.iter (fun {id; data = _} -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (big_int_of_id id))) found
+              Printf.eprintf "find: %s: %d: found %d nodes\n%!" (Id.hex id) k (List.length found);
+              List.iter (fun {id; data = _} -> Printf.eprintf "\t%s\n%!" (Id.hex id)) found
             end;
             found
         | Node (left, right) ->
@@ -187,13 +227,6 @@ end = struct
     in
     count table.tree
 end
-
-let random_id () =
-  let bytes = Bytes.create 20 in
-  for i = 0 to 19 do
-    Bytes.set bytes i (Char.chr (Random.int 256))
-  done;
-  Bytes.to_string bytes
 
 (* let test () = *)
 (*   let my_id = random_id () in *)
@@ -364,17 +397,17 @@ open Lwt.Infix
 module Rpc : sig
   type t
 
-  val create: string -> t
+  val create: id -> t
 
-  val ping: t -> Unix.sockaddr -> string Lwt.t
-  val find_node: t -> Unix.sockaddr -> string -> (string * Unix.sockaddr) list Lwt.t
-  val get_peers: t -> Unix.sockaddr -> string ->
-    (string * [`Peers of Unix.sockaddr list | `Nodes of (string * Unix.sockaddr) list]) Lwt.t
-  val announce_peer: t -> Unix.sockaddr -> string -> int -> string -> unit Lwt.t
+  val ping: t -> Unix.sockaddr -> id Lwt.t
+  val find_node: t -> Unix.sockaddr -> id -> (id * Unix.sockaddr) list Lwt.t
+  val get_peers: t -> Unix.sockaddr -> id ->
+    (string * [`Peers of Unix.sockaddr list | `Nodes of (id * Unix.sockaddr) list]) Lwt.t
+  val announce_peer: t -> Unix.sockaddr -> id -> int -> string -> unit Lwt.t
 end = struct
   type t =
     {
-      id: string;
+      id: id;
       fd: Lwt_unix.file_descr;
       in_progress: (string, float * (string * Bcode.t) list Lwt.u) Hashtbl.t;
       mutable t: int;
@@ -383,6 +416,12 @@ end = struct
   open Bcode
 
   exception Error of int * string
+
+  type message =
+    | Ping of id
+    | Find_node of id * id
+    | Get_peers of id * id
+    | Announce_peer of id * id * int * string
 
   let response bc =
     match find "t" bc |> to_string with
@@ -404,7 +443,7 @@ end = struct
               end
           | String "q" ->
               let a = find "a" bc in
-              let id = find "id" a |> to_string in
+              let id = find "id" a |> to_string |> Id.make in
               begin match find "q" bc |> to_string with
               | "ping" ->
                   `Ping id
@@ -490,7 +529,7 @@ end = struct
         "t", String t;
         "y", String "q";
         "q", String q;
-        "a", Dict (("id", String rpc.id) :: List.map (fun (k, v) -> k, String v) a);
+        "a", Dict (("id", String (Id.to_string rpc.id)) :: List.map (fun (k, v) -> k, String v) a);
       ]
     in
     let s = bencode (Dict dict) in
@@ -504,14 +543,14 @@ end = struct
     ) (fun e -> Hashtbl.remove rpc.in_progress t; Lwt.fail e)
 
   let ping rpc addr =
-    query rpc addr "ping" [] >|= List.assoc "id" >|= to_string
+    query rpc addr "ping" [] >|= List.assoc "id" >|= to_string >|= Id.make
 
   let get_nodes s =
     let rec loop i =
       if i + 26 > String.length s then
         []
       else
-        let id = String.sub s i 20 in
+        let id = Id.make (String.sub s i 20) in
         let ip = Obj.magic (String.sub s (i+20) 4) in
         let port =
           let b1 = s.[i+24] in
@@ -538,10 +577,10 @@ end = struct
     loop 0
 
   let find_node rpc addr target =
-    query rpc addr "find_node" ["target", target] >|= List.assoc "nodes" >|= to_string >|= get_nodes
+    query rpc addr "find_node" ["target", Id.to_string target] >|= List.assoc "nodes" >|= to_string >|= get_nodes
 
   let get_peers rpc addr info_hash =
-    query rpc addr "get_peers" ["info_hash", info_hash] >|= fun resp ->
+    query rpc addr "get_peers" ["info_hash", Id.to_string info_hash] >|= fun resp ->
     let token = List.assoc "token" resp |> to_string in
     match List.assoc "values" resp with
     | String values ->
@@ -555,7 +594,7 @@ end = struct
         (token, `Nodes nodes)
 
   let announce_peer rpc addr info_hash port1 token =
-    query rpc addr "announce_peers" ["info_hash", info_hash; "port", string_of_int port1; "token", token] >>= fun _ ->
+    query rpc addr "announce_peers" ["info_hash", Id.to_string info_hash; "port", string_of_int port1; "token", token] >>= fun _ ->
     Lwt.return_unit
 end
 
@@ -567,7 +606,7 @@ module Dht = struct
 
   type t =
     {
-      id: string;
+      id: id;
       table: data Routing.t;
       rpc: Rpc.t;
     }
@@ -589,11 +628,11 @@ module Dht = struct
   let lookup ?(k = 8) ?(alpha = 3) dht target =
     let queried = ref [] in
     let not_yet_queried (id, _) = not (List.mem_assoc id !queried) in
-    let cmp (id1, _) (id2, _) = Big_int.compare_big_int (Routing.distance id1 target) (Routing.distance id2 target) in
+    let cmp (id1, _) (id2, _) = Big_int.compare_big_int (Id.distance id1 target) (Id.distance id2 target) in
     let rec loop nodes =
       let nodes = first_n alpha nodes in
       Printf.eprintf "loop: querying %d nodes (%d in table)\n%!" (List.length nodes) (Routing.number_of_nodes dht.table);
-      List.iter (fun (id, _) -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Routing.distance id target))) nodes;
+      List.iter (fun (id, _) -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Id.distance id target))) nodes;
       List.iter (fun node -> queried := node :: !queried) nodes;
       Lwt_list.map_p (fun (id, addr) ->
         find_node dht id addr target >>= fun nodes ->
@@ -623,7 +662,7 @@ let getaddrbyname hname =
   Lwt.return he.Unix.h_addr_list.(0)
 
 let _ =
-  let selfid = random_id () in
+  let selfid = Id.random () in
   let dht = Dht.create selfid in
   let t =
     getaddrbyname "router.utorrent.com" >>= fun addr ->
@@ -632,6 +671,8 @@ let _ =
     Printf.eprintf "Pinged!\n%!";
     Routing.add dht.Dht.table id {Dht.addr};
     Dht.lookup dht selfid >|=
-    List.iter (fun {Routing.id; _} -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Routing.distance id selfid)))
+    List.iter (fun {Routing.id; _} ->
+      Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Id.distance id selfid))
+    )
   in
   Lwt_main.run t
