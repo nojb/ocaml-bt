@@ -304,12 +304,6 @@ module Bcode = struct
     | _ ->
         invalid_arg "Bcode.to_string"
 
-  let to_cstruct = function
-    | String cs ->
-        cs
-    | _ ->
-        invalid_arg "Bcode.to_cstruct"
-
   let to_dict = function
     | Dict d ->
         d
@@ -417,63 +411,95 @@ end = struct
       id: id;
       fd: Lwt_unix.file_descr;
       in_progress: (string, float * (string * Bcode.t) list Lwt.u) Hashtbl.t;
-      mutable t: int;
+      mutable next_t: int;
     }
 
   open Bcode
 
-  exception Error of int * string
-
-  type message =
+  type query =
     | Ping of id
     | Find_node of id * id
     | Get_peers of id * id
     | Announce_peer of id * id * int * string
 
-  let response bc =
-    match find "t" bc |> to_string with
-    | t ->
-        let resp =
-          match find "y" bc with
-          | String "r" ->
-              begin match find "r" bc with
-              | exception Not_found -> `Error (203, "")
-              | Dict dict -> `Ok dict
-              | _ -> `Error (203, "")
-              end
-          | String "e" ->
-              begin match find "e" bc with
-              | List [Int n; String s] ->
-                  `Error (Int64.to_int n, s)
-              | _ ->
-                  `Error (203, "")
-              end
-          | String "q" ->
-              let a = find "a" bc in
-              let id = find "id" a |> to_string |> Id.make in
-              begin match find "q" bc |> to_string with
-              | "ping" ->
-                  `Ping id
-              | "find_node" ->
-                  let target = find "target" a |> to_string in
-                  `Find_node (id, target)
-              | "get_peers" ->
-                  let info_hash = find "info_hash" a |> to_string in
-                  `Get_peers (id, info_hash)
-              | "announce_peer" ->
-                  let info_hash = find "info_hash" a |> to_string in
-                  let port = find "port" a |> to_int in
-                  let token = find "token" a |> to_string in
-                  `Announce_peer (id, info_hash, port, token)
-              | _ ->
-                  `Error (203, "")
-              end
-          | _ ->
-              `Error (203, "")
-        in
-        Some (t, resp)
-    | exception _ ->
-        None
+  type message =
+    | Query of query
+    | Response of (string * Bcode.t) list
+    | Error of int * string
+
+  let decode bc =
+    let t = find "t" bc |> to_string in
+    let msg =
+      match find "y" bc |> to_string with
+      | "r" ->
+          Response (find "r" bc |> to_dict)
+      | "e" ->
+          let code, s =
+            match find "e" bc |> to_list with
+            | [Int n; String s] ->
+                Int64.to_int n, s
+            | _ ->
+                failwith "Unexpected error format"
+          in
+          Error (code, s)
+      | "q" ->
+          let a = find "a" bc in
+          let id = find "id" a |> to_string |> Id.make in
+          let query =
+            match find "q" bc |> to_string with
+            | "ping" ->
+                Ping id
+            | "find_node" ->
+                let target = find "target" a |> to_string |> Id.make in
+                Find_node (id, target)
+            | "get_peers" ->
+                let info_hash = find "info_hash" a |> to_string |> Id.make in
+                Get_peers (id, info_hash)
+            | "announce_peer" ->
+                let info_hash = find "info_hash" a |> to_string |> Id.make in
+                let port = find "port" a |> to_int in
+                let token = find "token" a |> to_string in
+                Announce_peer (id, info_hash, port, token)
+            | s ->
+                Printf.ksprintf failwith "Unexpected query type: %s" s
+          in
+          Query query
+      | s ->
+          Printf.ksprintf failwith "Unexpected message type: %s" s
+    in
+    t, msg
+
+  let encode t msg =
+    let dict =
+      match msg with
+      | Response dict ->
+          ("y", String "r") :: dict
+      | Query q ->
+          let a =
+            match q with
+            | Ping id ->
+                ["id", String (Id.to_string id)]
+            | Find_node (id, target) ->
+                ["id", String (Id.to_string id); "target", String (Id.to_string target)]
+            | Get_peers (id, info_hash) ->
+                ["id", String (Id.to_string id); "info_hash", String (Id.to_string info_hash)]
+            | Announce_peer (id, info_hash, port, token) ->
+                ["id", String (Id.to_string id); "info_hash", String (Id.to_string info_hash);
+                 "port", Int (Int64.of_int port); "token", String token]
+          in
+          let q =
+            match q with
+            | Ping _ -> "ping"
+            | Find_node _ -> "find_node"
+            | Get_peers _ -> "get_peers"
+            | Announce_peer _ -> "announce_peer"
+          in
+          ["y", String "q"; "q", String q; "a", Dict a]
+      | Error (code, s) ->
+          ["y", String "e"; "e", List [Int (Int64.of_int code); String s]]
+    in
+    let dict = ("t", String t) :: dict in
+    Dict dict
 
   let create id =
     let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
@@ -482,75 +508,66 @@ end = struct
     let rec loop () =
       Lwt_unix.recvfrom fd buf 0 (Bytes.length buf) [] >>= fun (n, addr) ->
       let bc = bdecode buf in
-      Format.eprintf "@[<v 2>Received Response from %s:@,%a@]@." (string_of_sockaddr addr) Bcode.pp bc;
-      match response bc with
-      | None ->
-          loop ()
-      | Some (t, `Error (code, s)) ->
+      Format.eprintf "@[<v 2>Received Response from %s:@,%a@]@."
+        (string_of_sockaddr addr) Bcode.pp bc;
+      begin match decode bc with
+      | t, Error (code, s) ->
           begin match Hashtbl.find in_progress t with
           | (_, u) ->
               Hashtbl.remove in_progress t;
-              Lwt.wakeup_later_exn u (Error (code, s));
-              loop ()
+              Lwt.wakeup_later_exn u (Failure (Printf.sprintf "%d: %s" code s))
           | exception Not_found ->
-              loop ()
+              Printf.eprintf "Orphaned response\n%!"
           end
-      | Some (t, `Ok dict) ->
+      | t, Response dict ->
           begin match Hashtbl.find in_progress t with
           | (_, u) ->
               Hashtbl.remove in_progress t;
-              Lwt.wakeup_later u dict;
-              loop ()
+              Lwt.wakeup_later u dict
           | exception Not_found ->
-              loop ()
+              Printf.eprintf "Orphaned response\n%!"
           end
-      | Some (t, _) ->
-          Printf.eprintf "Ignoring request";
-          loop ()
+      | t, Query _ ->
+          Printf.eprintf "Ignoring request\n%!"
       | exception e ->
-          Printf.eprintf "Error while decoding response: %s\n%!" (Printexc.to_string e);
-          loop ()
+          Printf.eprintf "Error while decoding response: %s\n%!" (Printexc.to_string e)
+      end;
+      loop ()
     in
     let rec tick () =
+      let now = Sys.time () in
       Hashtbl.iter (fun t (limit, u) ->
-        if limit >= Sys.time () then begin
+        if limit >= now then begin
           Printf.eprintf "tick: timing out %S\n%!" t;
-          Lwt.wakeup_exn u Lwt_unix.Timeout;
-          Hashtbl.remove in_progress t
+          Hashtbl.remove in_progress t;
+          Lwt.wakeup_later_exn u Lwt_unix.Timeout
         end
       ) in_progress;
       Lwt_unix.sleep 1. >>= tick
     in
     Lwt.ignore_result (tick ());
     Lwt.ignore_result (loop ());
-    {id; fd; in_progress; t = 0}
+    {id; fd; in_progress; next_t = 0}
 
-  let query rpc addr q a =
+  let query rpc addr q =
     let t =
-      let t = rpc.t in
-      rpc.t <- rpc.t + 1;
+      let t = rpc.next_t in
+      rpc.next_t <- rpc.next_t + 1;
       string_of_int t
     in
-    let dict =
-      [
-        "t", String t;
-        "y", String "q";
-        "q", String q;
-        "a", Dict (("id", String (Id.to_string rpc.id)) :: List.map (fun (k, v) -> k, String v) a);
-      ]
-    in
-    let s = bencode (Dict dict) in
+    let bc = encode t (Query q) in
+    let s = bencode bc in
     let w, u = Lwt.wait () in
     Hashtbl.add rpc.in_progress t (Sys.time () +. 5.0, u);
     Lwt.catch (fun () ->
       Lwt_unix.sendto rpc.fd (Bytes.of_string s) 0 (String.length s) [] addr >>= fun n ->
       assert (n = String.length s);
-      Format.eprintf "@[<v 2>Sent Query to %s:@,%a@]@." (string_of_sockaddr addr) Bcode.pp (Dict dict);
+      Format.eprintf "@[<v 2>Sent Query to %s:@,%a@]@." (string_of_sockaddr addr) Bcode.pp bc;
       w
     ) (fun e -> Hashtbl.remove rpc.in_progress t; Lwt.fail e)
 
   let ping rpc addr =
-    query rpc addr "ping" [] >|= List.assoc "id" >|= to_string >|= Id.make
+    query rpc addr (Ping rpc.id) >|= List.assoc "id" >|= to_string >|= Id.make
 
   let get_nodes s =
     let rec loop i =
@@ -584,10 +601,10 @@ end = struct
     loop 0
 
   let find_node rpc addr target =
-    query rpc addr "find_node" ["target", Id.to_string target] >|= List.assoc "nodes" >|= to_string >|= get_nodes
+    query rpc addr (Find_node (rpc.id, target)) >|= List.assoc "nodes" >|= to_string >|= get_nodes
 
   let get_peers rpc addr info_hash =
-    query rpc addr "get_peers" ["info_hash", Id.to_string info_hash] >|= fun resp ->
+    query rpc addr (Get_peers (rpc.id, info_hash)) >|= fun resp ->
     let token = List.assoc "token" resp |> to_string in
     match List.assoc "values" resp with
     | String values ->
@@ -600,8 +617,8 @@ end = struct
         let nodes = get_nodes nodes in
         (token, `Nodes nodes)
 
-  let announce_peer rpc addr info_hash port1 token =
-    query rpc addr "announce_peers" ["info_hash", Id.to_string info_hash; "port", string_of_int port1; "token", token] >>= fun _ ->
+  let announce_peer rpc addr info_hash port token =
+    query rpc addr (Announce_peer (rpc.id, info_hash, port, token)) >>= fun _ ->
     Lwt.return_unit
 end
 
@@ -680,7 +697,7 @@ let _ =
     Rpc.ping dht.Dht.rpc addr >>= fun id ->
     Printf.eprintf "Pinged!\n%!";
     Routing.add dht.Dht.table id {Dht.addr};
-    Dht.lookup ~alpha:5 dht selfid >|=
+    Dht.lookup dht selfid >|=
     List.iter (fun {Routing.id; _} ->
       Printf.eprintf "\t%a\n%!" Z.output (Id.distance id selfid)
     )
