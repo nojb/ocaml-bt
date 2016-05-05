@@ -40,8 +40,9 @@ module Id : sig
   val random: unit -> t
   val hex: t -> string
   val hex_short: t -> string
-  val to_big_int: t -> Big_int.big_int
-  val distance: t -> t -> Big_int.big_int
+  val output: out_channel -> t -> unit
+  val to_z: t -> Z.t
+  val distance: t -> t -> Z.t
 end = struct
   type t = string
 
@@ -78,15 +79,19 @@ end = struct
   let hex_short id =
     String.sub (hex id) 0 6
 
-  let to_big_int id =
-    let res = ref Big_int.zero_big_int in
+  let output oc id =
+    Printf.fprintf oc "%s" (hex id)
+
+  let to_z id =
+    let res = ref Z.zero in
     for i = 0 to 19 do
-      res := Big_int.add_int_big_int (Char.code id.[i]) (Big_int.mult_int_big_int 256 !res)
+      let c = Char.code id.[i] in
+      res := Z.(~$c + !res lsl 8)
     done;
     !res
 
   let distance id1 id2 =
-    Big_int.xor_big_int (to_big_int id1) (to_big_int id2)
+    Z.logxor (to_z id1) (to_z id2)
 end
 
 type id = Id.t
@@ -114,7 +119,7 @@ end = struct
     }
 
   type 'a tree =
-    | Bucket of Big_int.big_int * 'a node list * Big_int.big_int
+    | Bucket of Z.t * 'a node list * Z.t
     | Node of 'a tree * 'a tree
 
   type 'a t =
@@ -130,31 +135,33 @@ end = struct
     {
       k;
       id;
-      tree = Bucket (Big_int.zero_big_int, [], Big_int.power_int_positive_int 2 160);
+      tree = Bucket (Z.zero, [], Z.(~$1 lsl 160));
     }
 
-  let split min bucket max =
-    if !debug then Printf.eprintf "split: %s %s\n%!" (Big_int.string_of_big_int min) (Big_int.string_of_big_int max);
-    let mid = Big_int.div_big_int (Big_int.add_big_int min max) (Big_int.big_int_of_int 2) in
-    let left, right = List.partition (fun {id; data = _} -> Big_int.compare_big_int (Id.to_big_int id) mid <= 0) bucket in
-    Bucket (min, left, mid), Bucket (mid, right, max)
+  let split lz bucket rz =
+    if !debug then
+      Printf.eprintf "split: %a %a\n%!" Z.output lz Z.output rz;
+    let mz = Z.((lz + rz) / ~$2) in
+    let left, right =
+      List.partition (fun {id; data = _} -> Id.to_z id <= mz) bucket
+    in
+    Bucket (lz, left, mz), Bucket (mz, right, rz)
 
   let nth id i =
-    Big_int.compare_big_int
-      (Big_int.and_big_int (Id.to_big_int id) (Big_int.power_int_positive_int 2 (160-i-1))) Big_int.zero_big_int != 0
+    let i = 160-i-1 in
+    Z.(Id.to_z id land (~$1 lsl i)) <> Z.zero
 
   let between n1 n2 n3 =
-    Big_int.compare_big_int n1 n2 <= 0 && Big_int.compare_big_int n2 n3 < 0
+    n1 <= n2 && n2 < n3
 
   let add table id data =
     let rec add tree i =
-      (* if !debug then Printf.eprintf "add: %s: %i\n%!" (Big_int.string_of_big_int bi) i; *)
       match tree with
       | Bucket (min, bucket, max) ->
           let bucket = List.filter (fun {id = id'; data = _} -> id <> id') bucket in
           if List.length bucket < table.k then
             Bucket (min, {id; data} :: bucket, max)
-          else if between min (Id.to_big_int table.id) max || i mod 5 != 0 then
+          else if between min (Id.to_z table.id) max || i mod 5 != 0 then
             let left, right = split min bucket max in
             if nth id i then
               Node (left, add right (i+1))
@@ -162,8 +169,8 @@ end = struct
               Node (add left (i+1), right)
           else begin
             if !debug then
-              Printf.eprintf "add: %s: %i: bucket %s %s full\n%!"
-                (Id.hex id) i (Big_int.string_of_big_int min) (Big_int.string_of_big_int max);
+              Printf.eprintf "add: %a: %i: bucket %a %a full\n%!"
+                Id.output id i Z.output min Z.output max;
             tree
           end
       | Node (left, right) ->
@@ -196,13 +203,13 @@ end = struct
         | Bucket (_, bucket, _) ->
             let bucket =
               List.sort (fun (node1 : _ node) node2 ->
-                Big_int.compare_big_int (Id.distance node1.id id) (Id.distance node2.id id)
+                Z.compare (Id.distance node1.id id) (Id.distance node2.id id)
               ) bucket
             in
             let found = first_n k bucket in
             if !debug then begin
-              Printf.eprintf "find: %s: %d: found %d nodes\n%!" (Id.hex id) k (List.length found);
-              List.iter (fun {id; data = _} -> Printf.eprintf "\t%s\n%!" (Id.hex id)) found
+              Printf.eprintf "find: %a: %d: found %d nodes\n%!" Id.output id k (List.length found);
+              List.iter (fun {id; data = _} -> Printf.eprintf "\t%a\n%!" Id.output id) found
             end;
             found
         | Node (left, right) ->
@@ -628,18 +635,21 @@ module Dht = struct
   let lookup ?(k = 8) ?(alpha = 3) dht target =
     let queried = ref [] in
     let not_yet_queried (id, _) = not (List.mem_assoc id !queried) in
-    let cmp (id1, _) (id2, _) = Big_int.compare_big_int (Id.distance id1 target) (Id.distance id2 target) in
+    let cmp (id1, _) (id2, _) = Z.compare (Id.distance id1 target) (Id.distance id2 target) in
     let rec loop nodes =
       let nodes = first_n alpha nodes in
-      Printf.eprintf "loop: querying %d nodes (%d in table)\n%!" (List.length nodes) (Routing.number_of_nodes dht.table);
-      List.iter (fun (id, _) -> Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Id.distance id target))) nodes;
+      Printf.eprintf "loop: querying %d nodes (%d in table)\n%!"
+        (List.length nodes) (Routing.number_of_nodes dht.table);
+      List.iter (fun (id, _) -> Printf.eprintf "\t%a\n%!" Z.output (Id.distance id target)) nodes;
       List.iter (fun node -> queried := node :: !queried) nodes;
-      Lwt_list.map_p (fun (id, addr) ->
+      let find_node (id, addr) =
         find_node dht id addr target >>= fun nodes ->
         Printf.eprintf "Received %d nodes from %s (%d not yet queried)\n%!"
-          (List.length nodes) (string_of_sockaddr addr) (List.length (List.filter not_yet_queried nodes));
-        Lwt.return nodes;
-      ) nodes >|=
+          (List.length nodes) (string_of_sockaddr addr)
+          (List.length (List.filter not_yet_queried nodes));
+        Lwt.return nodes
+      in
+      Lwt_list.map_p find_node nodes >|=
       List.flatten >|=
       List.filter not_yet_queried >|=
       List.sort cmp >>= function
@@ -670,9 +680,9 @@ let _ =
     Rpc.ping dht.Dht.rpc addr >>= fun id ->
     Printf.eprintf "Pinged!\n%!";
     Routing.add dht.Dht.table id {Dht.addr};
-    Dht.lookup dht selfid >|=
+    Dht.lookup ~alpha:5 dht selfid >|=
     List.iter (fun {Routing.id; _} ->
-      Printf.eprintf "\t%s\n%!" (Big_int.string_of_big_int (Id.distance id selfid))
+      Printf.eprintf "\t%a\n%!" Z.output (Id.distance id selfid)
     )
   in
   Lwt_main.run t
