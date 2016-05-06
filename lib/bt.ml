@@ -396,22 +396,25 @@ module Bcode = struct
     let bc, _ = loop 0 in
     bc
 
-  let bencode bc =
-    let rec loop buf = function
-      | Int n ->
-          Printf.bprintf buf "i%Lde" n
-      | String s ->
-          Printf.bprintf buf "%d:%s" (String.length s) s
-      | List l ->
-          let aux buf l = List.iter (loop buf) l in
-          Printf.bprintf buf "l%ae" aux l
-      | Dict d ->
-          let aux buf l = List.iter (fun (k, v) -> Printf.bprintf buf "%d:%s%a" (String.length k) k loop v) l in
-          Printf.bprintf buf "d%ae" aux d
-    in
-    let buf = Buffer.create 0 in
-    loop buf bc;
-    Buffer.contents buf
+  let bencode =
+    let b = Buffer.create 0 in
+    fun bc ->
+      let rec loop b = function
+        | Int n ->
+            Printf.bprintf b "i%Lde" n
+        | String s ->
+            Printf.bprintf b "%d:%s" (String.length s) s
+        | List l ->
+            let aux b l = List.iter (loop b) l in
+            Printf.bprintf b "l%ae" aux l
+        | Dict d ->
+            let aux b l = List.iter (fun (k, v) -> Printf.bprintf b "%d:%s%a" (String.length k) k loop v) l in
+            Printf.bprintf b "d%ae" aux d
+      in
+      loop b bc;
+      let s = Buffer.contents b in
+      Buffer.clear b;
+      s
 end
 
 open Lwt.Infix
@@ -515,6 +518,17 @@ module Dht = struct
       mutable next_t: int;
     }
 
+  let handle_query dht addr q =
+    match q with
+    | Wire.Ping _ ->
+        prerr_endline "Received PING"
+    | Find_node _ ->
+        prerr_endline "Received FIND_NODE"
+    | Get_peers _ ->
+        prerr_endline "Received GET_PEERS"
+    | Announce_peer _ ->
+        prerr_endline "Received ANNOUNCE_PEER"
+
   let create id =
     let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
     let table = Routing.create id in
@@ -542,14 +556,13 @@ module Dht = struct
           | exception Not_found ->
               Printf.eprintf "Orphaned response\n%!"
           end
-      | t, Query _ ->
-          Printf.eprintf "Ignoring request\n%!"
+      | t, Query q ->
+          handle_query (Lazy.force dht) addr q
       | exception e ->
           Printf.eprintf "Error while decoding response: %s\n%!" (Printexc.to_string e)
       end;
       loop ()
-    in
-    let rec tick () =
+    and tick () =
       let now = Sys.time () in
       Hashtbl.iter (fun t (limit, u) ->
         if limit >= now then begin
@@ -559,10 +572,14 @@ module Dht = struct
         end
       ) in_progress;
       Lwt_unix.sleep 1. >>= tick
+    and dht =
+      lazy begin
+        Lwt.ignore_result (tick ());
+        Lwt.ignore_result (loop ());
+        {id; fd; table; in_progress; next_t = 0}
+      end
     in
-    Lwt.ignore_result (tick ());
-    Lwt.ignore_result (loop ());
-    {id; fd; table; in_progress; next_t = 0}
+    Lazy.force dht
 
   let query rpc addr q =
     let t =
