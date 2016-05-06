@@ -1,7 +1,4 @@
 S lib
 B _build/**
-PKG nocrypto
-PKG cstruct
-PKG lwt
-PKG uri
-PKG cohttp
+PKG lwt zarith
+FLG -w -40

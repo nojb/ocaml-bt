@@ -1,3 +1,4 @@
 true: package(lwt.unix), package(zarith)
 true: bin_annot
 true: debug
+true: warning(-40)

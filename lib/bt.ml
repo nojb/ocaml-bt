@@ -19,6 +19,8 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
 
+let debug = ref true
+
 let first_n k l =
   let rec loop i l =
     match i >= k, l with
@@ -96,6 +98,39 @@ end
 
 type id = Id.t
 
+let sockaddr_of_network s i =
+  assert (String.length s >= i+6);
+  let a = Char.code s.[i+0] in
+  let b = Char.code s.[i+1] in
+  let c = Char.code s.[i+2] in
+  let d = Char.code s.[i+3] in
+  let e = Char.code s.[i+4] in
+  let f = Char.code s.[i+5] in
+  let ip = Unix.inet_addr_of_string (Printf.sprintf "%d.%d.%d.%d" a b c d) in
+  let port = (e lsl 8) lor f in
+  Unix.ADDR_INET (ip, port)
+
+let get_nodes s =
+  let rec loop i =
+    if i + 26 > String.length s then
+      []
+    else
+      let id = Id.make (String.sub s i 20) in
+      let addr = sockaddr_of_network s (i+20) in
+      (id, addr) :: loop (i+26)
+  in
+  loop 0
+
+let get_peers s =
+  let rec loop i =
+    if i + 6 > String.length s then
+      []
+    else
+      let addr = sockaddr_of_network s i in
+      addr :: loop (i+6)
+  in
+  loop 0
+
 module Routing : sig
   type 'a node =
     {
@@ -128,8 +163,6 @@ end = struct
       id: id;
       mutable tree: 'a tree;
     }
-
-  let debug = ref true
 
   let create ?(k = 8) id =
     {
@@ -234,18 +267,6 @@ end = struct
     in
     count table.tree
 end
-
-(* let test () = *)
-(*   let my_id = random_id () in *)
-(*   let tbl = Routing.create my_id in *)
-(*   for i = 1 to 10 do *)
-(*     let id = random_id () in *)
-(*     Routing.add tbl id i *)
-(*   done; *)
-(*   Routing.find tbl my_id *)
-
-(* let () = *)
-(*   ignore (test ()) *)
 
 module Bcode = struct
   type t =
@@ -395,122 +416,116 @@ end
 
 open Lwt.Infix
 
-module Rpc : sig
-  type t
+module Dht = struct
+  module Wire = struct
+    type query =
+      | Ping of id
+      | Find_node of id * id
+      | Get_peers of id * id
+      | Announce_peer of id * id * int * string
 
-  val create: id -> t
+    type message =
+      | Query of query
+      | Response of (string * Bcode.t) list
+      | Error of int * string
 
-  val ping: t -> Unix.sockaddr -> id Lwt.t
-  val find_node: t -> Unix.sockaddr -> id -> (id * Unix.sockaddr) list Lwt.t
-  val get_peers: t -> Unix.sockaddr -> id ->
-    (string * [`Peers of Unix.sockaddr list | `Nodes of (id * Unix.sockaddr) list]) Lwt.t
-  val announce_peer: t -> Unix.sockaddr -> id -> int -> string -> unit Lwt.t
-end = struct
+    let decode bc =
+      let open Bcode in
+      let t = find "t" bc |> to_string in
+      let msg =
+        match find "y" bc |> to_string with
+        | "r" ->
+            Response (find "r" bc |> to_dict)
+        | "e" ->
+            let code, s =
+              match find "e" bc |> to_list with
+              | [Int n; String s] ->
+                  Int64.to_int n, s
+              | _ ->
+                  failwith "Unexpected error format"
+            in
+            Error (code, s)
+        | "q" ->
+            let a = find "a" bc in
+            let id = find "id" a |> to_string |> Id.make in
+            let query =
+              match find "q" bc |> to_string with
+              | "ping" ->
+                  Ping id
+              | "find_node" ->
+                  let target = find "target" a |> to_string |> Id.make in
+                  Find_node (id, target)
+              | "get_peers" ->
+                  let info_hash = find "info_hash" a |> to_string |> Id.make in
+                  Get_peers (id, info_hash)
+              | "announce_peer" ->
+                  let info_hash = find "info_hash" a |> to_string |> Id.make in
+                  let port = find "port" a |> to_int in
+                  let token = find "token" a |> to_string in
+                  Announce_peer (id, info_hash, port, token)
+              | s ->
+                  Printf.ksprintf failwith "Unexpected query type: %s" s
+            in
+            Query query
+        | s ->
+            Printf.ksprintf failwith "Unexpected message type: %s" s
+      in
+      t, msg
+
+    let encode t msg =
+      let open Bcode in
+      let dict =
+        match msg with
+        | Response dict ->
+            ("y", String "r") :: dict
+        | Query q ->
+            let a =
+              match q with
+              | Ping id ->
+                  ["id", String (Id.to_string id)]
+              | Find_node (id, target) ->
+                  ["id", String (Id.to_string id); "target", String (Id.to_string target)]
+              | Get_peers (id, info_hash) ->
+                  ["id", String (Id.to_string id); "info_hash", String (Id.to_string info_hash)]
+              | Announce_peer (id, info_hash, port, token) ->
+                  ["id", String (Id.to_string id); "info_hash", String (Id.to_string info_hash);
+                   "port", Int (Int64.of_int port); "token", String token]
+            in
+            let q =
+              match q with
+              | Ping _ -> "ping"
+              | Find_node _ -> "find_node"
+              | Get_peers _ -> "get_peers"
+              | Announce_peer _ -> "announce_peer"
+            in
+            ["y", String "q"; "q", String q; "a", Dict a]
+        | Error (code, s) ->
+            ["y", String "e"; "e", List [Int (Int64.of_int code); String s]]
+      in
+      let dict = ("t", String t) :: dict in
+      Dict dict
+  end
+
   type t =
     {
       id: id;
+      table: Unix.sockaddr Routing.t;
       fd: Lwt_unix.file_descr;
       in_progress: (string, float * (string * Bcode.t) list Lwt.u) Hashtbl.t;
       mutable next_t: int;
     }
 
-  open Bcode
-
-  type query =
-    | Ping of id
-    | Find_node of id * id
-    | Get_peers of id * id
-    | Announce_peer of id * id * int * string
-
-  type message =
-    | Query of query
-    | Response of (string * Bcode.t) list
-    | Error of int * string
-
-  let decode bc =
-    let t = find "t" bc |> to_string in
-    let msg =
-      match find "y" bc |> to_string with
-      | "r" ->
-          Response (find "r" bc |> to_dict)
-      | "e" ->
-          let code, s =
-            match find "e" bc |> to_list with
-            | [Int n; String s] ->
-                Int64.to_int n, s
-            | _ ->
-                failwith "Unexpected error format"
-          in
-          Error (code, s)
-      | "q" ->
-          let a = find "a" bc in
-          let id = find "id" a |> to_string |> Id.make in
-          let query =
-            match find "q" bc |> to_string with
-            | "ping" ->
-                Ping id
-            | "find_node" ->
-                let target = find "target" a |> to_string |> Id.make in
-                Find_node (id, target)
-            | "get_peers" ->
-                let info_hash = find "info_hash" a |> to_string |> Id.make in
-                Get_peers (id, info_hash)
-            | "announce_peer" ->
-                let info_hash = find "info_hash" a |> to_string |> Id.make in
-                let port = find "port" a |> to_int in
-                let token = find "token" a |> to_string in
-                Announce_peer (id, info_hash, port, token)
-            | s ->
-                Printf.ksprintf failwith "Unexpected query type: %s" s
-          in
-          Query query
-      | s ->
-          Printf.ksprintf failwith "Unexpected message type: %s" s
-    in
-    t, msg
-
-  let encode t msg =
-    let dict =
-      match msg with
-      | Response dict ->
-          ("y", String "r") :: dict
-      | Query q ->
-          let a =
-            match q with
-            | Ping id ->
-                ["id", String (Id.to_string id)]
-            | Find_node (id, target) ->
-                ["id", String (Id.to_string id); "target", String (Id.to_string target)]
-            | Get_peers (id, info_hash) ->
-                ["id", String (Id.to_string id); "info_hash", String (Id.to_string info_hash)]
-            | Announce_peer (id, info_hash, port, token) ->
-                ["id", String (Id.to_string id); "info_hash", String (Id.to_string info_hash);
-                 "port", Int (Int64.of_int port); "token", String token]
-          in
-          let q =
-            match q with
-            | Ping _ -> "ping"
-            | Find_node _ -> "find_node"
-            | Get_peers _ -> "get_peers"
-            | Announce_peer _ -> "announce_peer"
-          in
-          ["y", String "q"; "q", String q; "a", Dict a]
-      | Error (code, s) ->
-          ["y", String "e"; "e", List [Int (Int64.of_int code); String s]]
-    in
-    let dict = ("t", String t) :: dict in
-    Dict dict
-
   let create id =
     let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_DGRAM 0 in
+    let table = Routing.create id in
     let in_progress = Hashtbl.create 0 in
     let buf = Bytes.create 4096 in
     let rec loop () =
       Lwt_unix.recvfrom fd buf 0 (Bytes.length buf) [] >>= fun (n, addr) ->
-      let bc = bdecode buf in
+      let bc = Bcode.bdecode buf in
       Format.eprintf "@[<v 2>Received Response from %s:@,%a@]@."
         (string_of_sockaddr addr) Bcode.pp bc;
-      begin match decode bc with
+      begin match Wire.decode bc with
       | t, Error (code, s) ->
           begin match Hashtbl.find in_progress t with
           | (_, u) ->
@@ -547,7 +562,7 @@ end = struct
     in
     Lwt.ignore_result (tick ());
     Lwt.ignore_result (loop ());
-    {id; fd; in_progress; next_t = 0}
+    {id; fd; table; in_progress; next_t = 0}
 
   let query rpc addr q =
     let t =
@@ -555,8 +570,8 @@ end = struct
       rpc.next_t <- rpc.next_t + 1;
       string_of_int t
     in
-    let bc = encode t (Query q) in
-    let s = bencode bc in
+    let bc = Wire.encode t (Query q) in
+    let s = Bcode.bencode bc in
     let w, u = Lwt.wait () in
     Hashtbl.add rpc.in_progress t (Sys.time () +. 5.0, u);
     Lwt.catch (fun () ->
@@ -567,51 +582,37 @@ end = struct
     ) (fun e -> Hashtbl.remove rpc.in_progress t; Lwt.fail e)
 
   let ping rpc addr =
-    query rpc addr (Ping rpc.id) >|= List.assoc "id" >|= to_string >|= Id.make
+    query rpc addr (Ping rpc.id) >|= List.assoc "id" >|= Bcode.to_string >|= Id.make
 
-  let get_nodes s =
-    let rec loop i =
-      if i + 26 > String.length s then
-        []
-      else
-        let id = Id.make (String.sub s i 20) in
-        let ip = Obj.magic (String.sub s (i+20) 4) in
-        let port =
-          let b1 = s.[i+24] in
-          let b2 = s.[i+25] in
-          Char.code b1 lsl 8 + Char.code b2
-        in
-        (id, Unix.ADDR_INET (ip, port)) :: loop (i+26)
-    in
-    loop 0
-
-  let get_peers s =
-    let rec loop i =
-      if i + 6 > String.length s then
-        []
-      else
-        let ip = Obj.magic (String.sub s i 4) in
-        let port =
-          let b1 = s.[i+4] in
-          let b2 = s.[i+5] in
-          Char.code b1 lsl 8 + Char.code b2
-        in
-        Unix.ADDR_INET (ip, port) :: loop (i+6)
-    in
-    loop 0
+  let ping dht addr =
+    Lwt.try_bind
+      (fun () -> ping dht addr)
+      (fun id ->
+         Routing.add dht.table id addr;
+         Lwt.return_unit
+      )
+      (fun _ -> Lwt.return_unit)
 
   let find_node rpc addr target =
-    query rpc addr (Find_node (rpc.id, target)) >|= List.assoc "nodes" >|= to_string >|= get_nodes
+    query rpc addr (Find_node (rpc.id, target)) >|= List.assoc "nodes" >|= Bcode.to_string >|= get_nodes
+
+  let find_node dht id addr target =
+    Lwt.try_bind
+      (fun () -> find_node dht addr target)
+      (fun resp ->
+         Routing.add dht.table id addr;
+         Lwt.return resp
+      )
+      (fun _ -> Routing.remove dht.table id; Lwt.return_nil)
 
   let get_peers rpc addr info_hash =
+    let open Bcode in
     query rpc addr (Get_peers (rpc.id, info_hash)) >|= fun resp ->
     let token = List.assoc "token" resp |> to_string in
-    match List.assoc "values" resp with
-    | String values ->
+    match List.assoc "values" resp |> to_string with
+    | values ->
         let peers = get_peers values in
         (token, `Peers peers)
-    | _ ->
-        failwith ""
     | exception Not_found ->
         let nodes = List.assoc "nodes" resp |> to_string in
         let nodes = get_nodes nodes in
@@ -620,34 +621,6 @@ end = struct
   let announce_peer rpc addr info_hash port token =
     query rpc addr (Announce_peer (rpc.id, info_hash, port, token)) >>= fun _ ->
     Lwt.return_unit
-end
-
-module Dht = struct
-  type data =
-    {
-      addr: Unix.sockaddr;
-    }
-
-  type t =
-    {
-      id: id;
-      table: data Routing.t;
-      rpc: Rpc.t;
-    }
-
-  let create id =
-    let table = Routing.create id in
-    let rpc = Rpc.create id in
-    {id; table; rpc}
-
-  let find_node dht id addr target =
-    Lwt.try_bind
-      (fun () -> Rpc.find_node dht.rpc addr target)
-      (fun resp ->
-         Routing.add dht.table id {addr};
-         Lwt.return resp
-      )
-      (fun _ -> Routing.remove dht.table id; Lwt.return_nil)
 
   let lookup ?(k = 8) ?(alpha = 3) dht target =
     let queried = ref [] in
@@ -674,13 +647,13 @@ module Dht = struct
           Printf.eprintf "loop: no more nodes returned; trying with %d closest ...\n%!" k;
           let nodes = Routing.find dht.table ~k target in
           prerr_endline "foo";
-          let nodes = List.filter not_yet_queried (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) in
+          let nodes = List.filter not_yet_queried (List.map (fun {Routing.id; data} -> id, data) nodes) in
           if nodes <> [] then loop nodes else Lwt.return_unit
       | _ :: _ as nodes ->
           loop nodes
     in
     let nodes = Routing.find dht.table ~k:alpha target in
-    loop (List.map (fun node -> node.Routing.id, node.Routing.data.addr) nodes) >|= fun () ->
+    loop (List.map (fun {Routing.id; data} -> id, data) nodes) >|= fun () ->
     Routing.find dht.table ~k target
 end
 
@@ -694,9 +667,8 @@ let _ =
   let t =
     getaddrbyname "router.utorrent.com" >>= fun addr ->
     let addr = Unix.ADDR_INET (addr, 6881) in
-    Rpc.ping dht.Dht.rpc addr >>= fun id ->
+    Dht.ping dht addr >>= fun () ->
     Printf.eprintf "Pinged!\n%!";
-    Routing.add dht.Dht.table id {Dht.addr};
     Dht.lookup dht selfid >|=
     List.iter (fun {Routing.id; _} ->
       Printf.eprintf "\t%a\n%!" Z.output (Id.distance id selfid)
