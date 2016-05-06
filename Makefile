@@ -1,7 +1,7 @@
 OCAMLBUILD = ocamlbuild -classic-display -use-ocamlfind
 
 all:
-	$(OCAMLBUILD) lib/client.byte
+	$(OCAMLBUILD) lib/bt.native
 
 clean:
 	$(OCAMLBUILD) -clean
