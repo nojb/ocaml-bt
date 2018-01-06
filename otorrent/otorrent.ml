@@ -28,12 +28,9 @@ module Log = Log.Make (struct let section = "[Driver]" end)
 
 open Cmdliner
 
-let default =
-  "magnet:?xt=urn:btih:2cfcb66cac39ad302adb06075511ac151636b19e&dn=Last.Knights.2015.HDRip.XViD-ETRG+&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Fexodus.desync.com%3A6969"
-
 let magnet =
   let doc = "Magnet link of the torrent(s) to download" in
-  Arg.(value & pos 0 (some string) (Some default) & info [] ~docv:"MAGNET" ~doc)
+  Arg.(value & pos 0 (some string) None & info [] ~docv:"MAGNET" ~doc)
 
 open Lwt.Infix
 
