@@ -1,0 +1,4 @@
+(library
+ (name bt)
+ (modules bencode sexp metainfo tracker)
+ (libraries eio sha))

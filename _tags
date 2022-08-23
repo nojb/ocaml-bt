@@ -1,8 +1,0 @@
-true: package(nocrypto)
-true: package(cstruct), package(cstruct.lwt)
-true: package(lwt)
-true: package(uri)
-true: package(cohttp)
-true: bin_annot
-<otorrent/otorrent.*>: package(cmdliner)
-true: debug

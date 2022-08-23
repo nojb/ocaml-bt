@@ -1,9 +1,11 @@
-OCAMLBUILD = ocamlbuild -classic-display -use-ocamlfind
-
+.PHONY: all
 all:
-	$(OCAMLBUILD) lib/client.byte
+	dune build
 
+.PHONY: fmt
+fmt:
+	dune fmt
+
+.PHONY: clean
 clean:
-	$(OCAMLBUILD) -clean
-
-.PHONY: all clean
+	dune clean

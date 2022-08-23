@@ -1,7 +1,1 @@
-*.torrent
-_build/
-setup.data
-setup.log
-*.docdir
-*.native
-*.byte
+_build

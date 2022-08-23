@@ -21,15 +21,22 @@
 
 module Test : sig
   type event
+
   type context
+
   type action
+
   val handle : event -> context -> context * action list
 end
 
-class client : SHA1.t ->
-  object
-    method peer_joined : SHA1.t -> Unix.inet_addr -> unit
-    method block_received : SHA1.t -> int -> int -> int -> unit
-    method piece_verified : int -> unit
-    method start : unit
-  end
+class client :
+  SHA1.t
+  -> object
+       method peer_joined : SHA1.t -> Unix.inet_addr -> unit
+
+       method block_received : SHA1.t -> int -> int -> int -> unit
+
+       method piece_verified : int -> unit
+
+       method start : unit
+     end

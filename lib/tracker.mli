@@ -1,32 +1,26 @@
-(* The MIT License (MIT)
+module Event : sig
+  type t = Started | Completed | Stopped
+end
 
-   Copyright (c) 2013-2015 Nicolas Ojeda Bar <n.oje.bar@gmail.com>
+module Response : sig
+  module Peer : sig
+    type t = { id : string; ip : string; port : int }
+  end
 
-   Permission is hereby granted, free of charge, to any person obtaining a copy
-   of this software and associated documentation files (the "Software"), to deal
-   in the Software without restriction, including without limitation the rights
-   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-   copies of the Software, and to permit persons to whom the Software is
-   furnished to do so, subject to the following conditions:
+  type ok = { interval : int; peers : Peer.t list }
 
-   The above copyright notice and this permission notice shall be included in all
-   copies or substantial portions of the Software.
+  type t = Failure of string | Ok of ok
 
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-   FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. *)
+  val to_sexp : t Sexp.Encoder.t
+end
 
-(** Tracker *)
-
-type event =
-  [ `Started
-  | `Stopped
-  | `Completed
-  | `None ]
-
-type addr = Unix.inet_addr * int
-
-val announce : info_hash:SHA1.t -> SHA1.t -> Uri.t -> (float * addr list) Lwt.t
+val announce :
+  info_hash:string ->
+  peer_id:string ->
+  port:int ->
+  uploaded:int ->
+  downloaded:int ->
+  left:int ->
+  ?event:Event.t ->
+  url:string ->
+  Response.t
