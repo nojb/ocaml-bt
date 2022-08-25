@@ -21,8 +21,8 @@ let rec decode s i =
         if i = String.length s then raise Exit;
         match s.[i] with
         | 'e' -> (Int accu, i + 1)
-        | '0' .. '9' as n ->
-            loop ((10 * accu) + (Char.code n - Char.code '0')) (i + 1)
+        | '0' .. '9' as c ->
+            loop ((10 * accu) + (Char.code c - Char.code '0')) (i + 1)
         | _ -> raise Exit
       in
       loop 0 (i + 1)
@@ -40,8 +40,8 @@ let rec decode s i =
       let rec loop accu i =
         if i = String.length s then raise Exit;
         match s.[i] with
-        | '0' .. '9' as n ->
-            loop ((10 * accu) + Char.code n - Char.code '0') (i + 1)
+        | '0' .. '9' as c ->
+            loop ((10 * accu) + Char.code c - Char.code '0') (i + 1)
         | ':' -> (String (String.sub s (i + 1) accu), i + 1 + accu)
         | _ -> raise Exit
       in
@@ -115,6 +115,8 @@ module Decoder = struct
     | Dict l as x -> (
         match List.assoc s l with x -> p x | exception Not_found -> q x)
     | _ -> raise Exit
+
+  let if_list p q = function List l -> List.map p l | _ as x -> q x
 
   let value t = t
 

@@ -4,10 +4,13 @@ end
 
 module Response : sig
   module Peer : sig
-    type t = { id : string; ip : string; port : int }
+    type t = {
+      ip : [ `Ipaddr of Unix.inet_addr | `Name of string ];
+      port : int;
+    }
   end
 
-  type ok = { interval : int; peers : Peer.t list }
+  type ok = { interval : int; peers : Peer.t list; peers6 : Peer.t list }
 
   type t = Failure of string | Ok of ok
 
@@ -15,6 +18,7 @@ module Response : sig
 end
 
 val announce :
+  net:Eio.Net.t ->
   info_hash:string ->
   peer_id:string ->
   port:int ->
@@ -22,5 +26,5 @@ val announce :
   downloaded:int ->
   left:int ->
   ?event:Event.t ->
-  url:string ->
+  string ->
   Response.t

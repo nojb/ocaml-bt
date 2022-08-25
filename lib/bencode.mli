@@ -25,6 +25,8 @@ module Decoder : sig
 
   val if_member : string -> 'a t -> 'a t -> 'a t
 
+  val if_list : 'a t -> 'a list t -> 'a list t
+
   val value : bencode t
 
   val query : 'a t -> bencode -> 'a option
