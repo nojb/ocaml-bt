@@ -81,19 +81,17 @@ let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
   done;
   Eio.Fiber.both
     (fun () ->
-       Eio.Fiber.iter
-         (fun peer ->
-            start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
-              ~results)
-         peers
-    )
+      Eio.Fiber.iter
+        (fun peer ->
+          start_download_worker ~net ~clock ~info_hash ~peer_id ~peer
+            ~work_queue ~results)
+        peers)
     (fun () ->
-       let completed = ref 0 in
-       while !completed < num_pieces do
-         let piece, _buf = Eio.Stream.take results in
-         (* let ofs = Metainfo.piece_offset meta piece.Piece.index in *)
-         completed := !completed + 1;
-         let percent = float !completed /. float num_pieces in
-         Eio.traceln "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.index
-       done
-    )
+      let completed = ref 0 in
+      while !completed < num_pieces do
+        let piece, _buf = Eio.Stream.take results in
+        (* let ofs = Metainfo.piece_offset meta piece.Piece.index in *)
+        completed := !completed + 1;
+        let percent = float !completed /. float num_pieces in
+        Eio.traceln "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.index
+      done)
