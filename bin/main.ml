@@ -1,9 +1,7 @@
 open Bt
 
-let ( / ) = Eio.Path.( / )
-
 let read_torrent_file ~dir path =
-  let s = Eio.Path.load (dir / path) in
+  let s = Eio.Path.load Eio.Path.(dir / path) in
   let t =
     match Bencode.decode s with
     | Some t -> t
