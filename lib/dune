@@ -1,4 +1,4 @@
 (library
  (name bt)
- (modules bencode sexp metainfo tracker)
+ (modules bencode sexp metainfo tracker peer)
  (libraries eio eio.unix sha))
