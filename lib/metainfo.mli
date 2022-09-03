@@ -13,3 +13,4 @@ val to_sexp : t Sexp.Encoder.t
 val decoder : t Bencode.Decoder.t
 val length : t -> int
 val piece_length : t -> int -> int
+val piece_offset : t -> int -> int
