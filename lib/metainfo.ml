@@ -65,5 +65,8 @@ let decoder =
   in
   { announce; comment; files; piece_length; pieces; info_hash }
 
-let total_length t =
+let length t =
   List.fold_left (fun accu { length; _ } -> accu + length) 0 t.files
+
+let piece_length t i =
+  min t.piece_length (length t - t.piece_length * i)
