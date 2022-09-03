@@ -11,7 +11,6 @@ module Response : sig
   end
 
   type ok = { interval : int; peers : Peer.t list; peers6 : Peer.t list }
-
   type t = Failure of string | Ok of ok
 
   val to_sexp : t Sexp.Encoder.t

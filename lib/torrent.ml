@@ -1,36 +1,70 @@
 module Piece = struct
-  type t =
-    {
-      index: int;
-      hash: string;
-      length: int;
-    }
+  type t = { index : int; hash : string; length : int }
 end
 
-(* let download_from_peer ~peer ~work_queue ~results = *)
-(*   let peer = Peer.run ~net ~clock ~info_hash ~peer_id peer in *)
-(*   Peer.send_unchoke peer; *)
-(*   Peer.send_interested peer; *)
-(*   let rec loop () = *)
-(*     let piece = Eio.Stream.take work_queue in *)
-(*     if not (Peer.has_piece peer index) then Eio.Stream.add work_queue piece *)
-(*     else *)
-(*       let res = try_download_from_peer ~peer ~piece ~results in *)
+let check_integriy piece data =
+  piece.Piece.hash = Sha1.to_bin (Sha1.string data)
 
-let download_from_peer ~net ~clock ~info_hash ~peer_id ~peer ~work_queue:_ ~results:_ =
+let max_block_size = 16384
+let max_backlog = 5
+
+let attempt_download_piece peer piece =
+  let downloaded = ref 0 in
+  let requested = ref 0 in
+  let backlog = ref 0 in
+  let buf = Bytes.create piece.Piece.length in
+  while !downloaded < piece.Piece.length do
+    if not (Peer.choked peer) then
+      while !backlog < max_backlog && !requested < piece.Piece.length do
+        let block_size = min max_block_size (piece.Piece.length - !requested) in
+        Peer.send_request peer ~i:piece.Piece.index ~ofs:!requested
+          ~len:block_size;
+        requested := !requested + block_size;
+        backlog := !backlog + 1
+      done;
+    match Peer.read_message peer with
+    | Peer.Message.Piece { i = _; ofs; data } ->
+        let len = String.length data in
+        Bytes.blit_string data 0 buf ofs len;
+        downloaded := !downloaded + len;
+        backlog := !backlog - 1
+    | _ -> ()
+  done;
+  Bytes.unsafe_to_string buf
+
+let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
+    ~results =
   Eio.Switch.run @@ fun sw ->
   match peer.Tracker.Response.Peer.ip with
-  | `Ipaddr addr ->
-      let peer = Peer.run ~net ~clock ~sw ~info_hash ~peer_id addr peer.Tracker.Response.Peer.port in
-      begin match peer with
+  | `Ipaddr addr -> (
+      let peer =
+        Peer.run ~net ~clock ~sw ~info_hash ~peer_id addr
+          peer.Tracker.Response.Peer.port
+      in
+      match peer with
       | Error err ->
-          Format.printf "Connection to %s failed: %s.@." (Unix.string_of_inet_addr addr)
+          Format.printf "Connection to %s failed: %s.@."
+            (Unix.string_of_inet_addr addr)
             (Peer.string_of_error err)
-      | Ok _peer ->
-          Format.printf "Connection to %s OK.@." (Unix.string_of_inet_addr addr)
-      end
-  | `Name _ ->
-      ()
+      | Ok peer ->
+          Format.printf "Completed handshake with %s.@."
+            (Unix.string_of_inet_addr addr);
+          Peer.send_unchoke peer;
+          Peer.send_interested peer;
+          let rec loop () =
+            let piece = Eio.Stream.take work_queue in
+            if not (Peer.has_piece peer piece.Piece.index) then (
+              Eio.Stream.add work_queue piece;
+              loop ())
+            else
+              let buf = attempt_download_piece peer piece in
+              if check_integriy piece buf then
+                Eio.Stream.add results (piece, buf)
+              else Eio.Stream.add work_queue piece;
+              loop ()
+          in
+          loop ())
+  | `Name _ -> ()
 
 let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
   let num_pieces = Array.length meta.Metainfo.pieces in
@@ -39,6 +73,10 @@ let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
   for index = 0 to num_pieces - 1 do
     let hash = meta.Metainfo.pieces.(index) in
     let length = Metainfo.piece_length meta index in
-    Eio.Stream.add work_queue {Piece.index; hash; length}
+    Eio.Stream.add work_queue { Piece.index; hash; length }
   done;
-  Eio.Fiber.iter (fun peer -> download_from_peer ~net ~clock ~info_hash ~peer_id ~peer ~work_queue ~results) peers
+  Eio.Fiber.iter
+    (fun peer ->
+      start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
+        ~results)
+    peers

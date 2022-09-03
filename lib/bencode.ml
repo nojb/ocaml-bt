@@ -97,13 +97,10 @@ let encode t =
 
 module Decoder = struct
   type bencode = t
-
   type 'a t = bencode -> 'a
 
   let int = function Int n -> n | _ -> raise Exit
-
   let string = function String s -> s | _ -> raise Exit
-
   let list p = function List l -> List.map p l | _ -> raise Exit
 
   let member s p = function
@@ -117,14 +114,11 @@ module Decoder = struct
     | _ -> raise Exit
 
   let if_list p q = function List l -> List.map p l | _ as x -> q x
-
   let value t = t
-
   let query p t = match p t with x -> Some x | exception Exit -> None
 
   module O = struct
     let ( let+ ) p f t = f (p t)
-
     let ( and+ ) p q t = (p t, q t)
   end
 end

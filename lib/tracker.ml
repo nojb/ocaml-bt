@@ -50,7 +50,6 @@ module Response = struct
   end
 
   type ok = { interval : int; peers : Peer.t list; peers6 : Peer.t list }
-
   type t = Failure of string | Ok of ok
 
   let to_sexp t =

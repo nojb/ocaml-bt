@@ -2,23 +2,15 @@ type t = Atom of string | List of t list
 
 module Encoder = struct
   type sexp = t
-
   type 'a t = 'a -> sexp
 
   let int n = Atom (string_of_int n)
-
   let string s = Atom s
-
   let list t l = List (List.map t l)
-
   let pair t u (x, y) = List [ t x; u y ]
-
   let array t a = List (List.map t (Array.to_list a))
-
   let record l = List (List.map (fun (k, v) -> List [ string k; v ]) l)
-
   let variant s ts = List (string s :: ts)
-
   let run t x = t x
 end
 
