@@ -1,9 +1,9 @@
 module Piece = struct
-  type t = { index : int; hash : string; length : int }
+  type t = { i : int; hash : string; len : int }
 end
 
-let check_integriy piece data =
-  piece.Piece.hash = Sha1.to_bin (Sha1.string data)
+let check_integriy piece buf =
+  piece.Piece.hash = Sha1.to_bin (Sha1.string buf)
 
 let max_block_size = 16384
 let max_backlog = 5
@@ -12,13 +12,13 @@ let attempt_download_piece ~clock ~peer ~piece =
   let downloaded = ref 0 in
   let requested = ref 0 in
   let backlog = ref 0 in
-  let buf = Bytes.create piece.Piece.length in
+  let buf = Bytes.create piece.Piece.len in
   Eio.Time.with_timeout_exn clock 30.0 @@ fun () ->
-  while !downloaded < piece.Piece.length do
+  while !downloaded < piece.Piece.len do
     if not (Peer.choked peer) then
-      while !backlog < max_backlog && !requested < piece.Piece.length do
-        let block_size = min max_block_size (piece.Piece.length - !requested) in
-        Peer.send_request peer ~i:piece.Piece.index ~ofs:!requested
+      while !backlog < max_backlog && !requested < piece.Piece.len do
+        let block_size = min max_block_size (piece.Piece.len - !requested) in
+        Peer.send_request peer ~i:piece.Piece.i ~ofs:!requested
           ~len:block_size;
         requested := !requested + block_size;
         backlog := !backlog + 1
@@ -54,16 +54,16 @@ let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
           Peer.send_interested peer;
           let rec loop () =
             let piece = Eio.Stream.take work_queue in
-            if not (Peer.has_piece peer piece.Piece.index) then (
+            if not (Peer.has_piece peer piece.Piece.i) then (
               Eio.Stream.add work_queue piece;
               loop ())
             else
               let buf = attempt_download_piece ~clock ~peer ~piece in
               if check_integriy piece buf then (
-                Eio.traceln "Downloaded piece #%d" piece.Piece.index;
+                Eio.traceln "Downloaded piece #%d" piece.Piece.i;
                 Eio.Stream.add results (piece, buf))
               else (
-                Eio.traceln "Piece #%d failed integrity check" piece.Piece.index;
+                Eio.traceln "Piece #%d failed integrity check" piece.Piece.i;
                 Eio.Stream.add work_queue piece);
               loop ()
           in
@@ -71,13 +71,13 @@ let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
   | `Name _ -> ()
 
 let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
-  let num_pieces = Array.length meta.Metainfo.pieces in
+  let num_pieces = Array.length meta.Meta.pieces in
   let work_queue = Eio.Stream.create num_pieces in
   let results = Eio.Stream.create 100 in
-  for index = 0 to num_pieces - 1 do
-    let hash = meta.Metainfo.pieces.(index) in
-    let length = Metainfo.piece_length meta index in
-    Eio.Stream.add work_queue { Piece.index; hash; length }
+  for i = 0 to num_pieces - 1 do
+    let hash = meta.Meta.pieces.(i) in
+    let len = Meta.piece_length meta i in
+    Eio.Stream.add work_queue { Piece.i; hash; len }
   done;
   Eio.Fiber.both
     (fun () ->
@@ -93,5 +93,5 @@ let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
         (* let ofs = Metainfo.piece_offset meta piece.Piece.index in *)
         completed := !completed + 1;
         let percent = float !completed /. float num_pieces in
-        Eio.traceln "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.index
+        Eio.traceln "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.i
       done)
