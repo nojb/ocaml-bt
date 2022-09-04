@@ -60,7 +60,6 @@ let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
             else
               let buf = attempt_download_piece ~clock ~peer ~piece in
               if check_integriy piece buf then (
-                Eio.traceln "Downloaded piece #%d" piece.Piece.i;
                 Eio.Stream.add results (piece, buf))
               else (
                 Eio.traceln "Piece #%d failed integrity check" piece.Piece.i;
