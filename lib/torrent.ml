@@ -44,12 +44,12 @@ let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
       in
       match peer with
       | Error err ->
-          Eio.traceln "Connection to %s failed: %s"
-            (Unix.string_of_inet_addr addr)
-            (Peer.string_of_error err)
+          Logs.debug
+            (fun f -> f "Connection to %s failed: %s"
+                (Unix.string_of_inet_addr addr)
+                (Peer.string_of_error err))
       | Ok peer ->
-          Eio.traceln "Completed handshake with %s"
-            (Unix.string_of_inet_addr addr);
+          Logs.debug (fun f -> f "Completed handshake with %s" (Unix.string_of_inet_addr addr));
           Peer.send_unchoke peer;
           Peer.send_interested peer;
           let rec loop () =
@@ -62,7 +62,7 @@ let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
               if check_integriy piece buf then (
                 Eio.Stream.add results (piece, buf))
               else (
-                Eio.traceln "Piece #%d failed integrity check" piece.Piece.i;
+                Logs.warn (fun f -> f "Piece #%d failed integrity check" piece.Piece.i);
                 Eio.Stream.add work_queue piece);
               loop ()
           in
@@ -92,5 +92,5 @@ let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
         (* let ofs = Metainfo.piece_offset meta piece.Piece.index in *)
         completed := !completed + 1;
         let percent = float !completed /. float num_pieces in
-        Eio.traceln "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.i
+        Logs.app (fun f -> f "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.i)
       done)

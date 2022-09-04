@@ -166,19 +166,20 @@ let string_of_error = function
 
 let connect ~sw ~net ~clock addr port =
   let stream = `Tcp (Eio_unix.Ipaddr.of_unix addr, port) in
-  Eio.traceln ~__POS__ "Connecting to %s" (Unix.string_of_inet_addr addr);
+  Logs.debug (fun f -> f "Connecting to %s" (Unix.string_of_inet_addr addr));
   match
     Eio.Time.with_timeout_exn clock 3.0 (fun () ->
         Eio.Net.connect ~sw net stream)
   with
   | flow ->
-      Eio.traceln ~__POS__ "Connected to %s%!" (Unix.string_of_inet_addr addr);
+      Logs.debug (fun f -> f "Connected to %s%!" (Unix.string_of_inet_addr addr));
       Ok (flow :> Eio.Net.stream_socket)
   | exception Eio.Time.Timeout -> Error (`Connect_failed `Timeout)
   | exception exn ->
-      Eio.traceln ~__POS__ "Connection to %s failed: %s%!"
-        (Unix.string_of_inet_addr addr)
-        (Printexc.to_string exn);
+      Logs.debug (fun f ->
+        f "Connection to %s failed: %s%!"
+          (Unix.string_of_inet_addr addr)
+          (Printexc.to_string exn));
       Error (`Connect_failed (`Exn exn))
 
 let complete_handshake ~clock ~flow ~info_hash ~peer_id =
