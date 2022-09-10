@@ -71,16 +71,17 @@ let start_download_worker ~sw ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
   | `Name _ -> ()
 
 let piece_bounds ~piece_offset ~piece_length files =
-  let rec loop file_ofs buf_ofs len = function
+  let rec loop piece_ofs buf_ofs buf_len = function
     | [] -> assert false
     | (file, file_length) :: files ->
-        let rem = file_length - file_ofs in
-        if rem <= 0 then
-          loop (- rem) 0 len files
-        else if len <= rem then
-          [file, file_ofs, buf_ofs, len]
+        let file_rem = file_length - piece_ofs in
+        if file_rem <= 0 then
+          loop (- file_rem) buf_ofs buf_len files
+        else if buf_len <= file_rem then
+          [file, piece_ofs, buf_ofs, buf_len]
         else
-          (file, file_ofs, buf_ofs, rem) :: loop 0 (buf_ofs + rem) (len - rem) files
+          (file, piece_ofs, buf_ofs, file_rem) ::
+            loop 0 (buf_ofs + file_rem) (buf_len - file_rem) files
   in
   loop piece_offset 0 piece_length files
 
