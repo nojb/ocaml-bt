@@ -34,7 +34,8 @@ let anon ~env ~rng path =
   | Failure s -> failwith s
   | Ok { Tracker.Response.interval = _; peers; peers6 = _ } ->
       let clock = Eio.Stdenv.clock env in
-      Torrent.download ~net ~clock ~info_hash ~peer_id ~meta ~peers
+      let fs = Eio.Stdenv.fs env in
+      Torrent.download ~net ~clock ~fs ~info_hash ~peer_id ~meta ~peers
 
 let anon path =
   let rng = Random.State.make_self_init () in

@@ -33,9 +33,10 @@ let attempt_download_piece ~clock ~peer ~piece =
   done;
   Bytes.unsafe_to_string buf
 
-let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
+let start_download_worker ~sw ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
     ~results =
-  Eio.Switch.run @@ fun sw ->
+  let on_error exn = raise exn in (* FIXME *)
+  Eio.Fiber.fork_sub ~sw ~on_error @@ fun sw ->
   match peer.Tracker.Response.Peer.ip with
   | `Ipaddr addr -> (
       let peer =
@@ -69,27 +70,57 @@ let start_download_worker ~net ~clock ~info_hash ~peer_id ~peer ~work_queue
           loop ())
   | `Name _ -> ()
 
-let download ~net ~clock ~info_hash ~peer_id ~meta ~peers =
+let piece_bounds ~piece_offset ~piece_length files =
+  let rec loop file_ofs buf_ofs len = function
+    | [] -> assert false
+    | (file, file_length) :: files ->
+        let rem = file_length - file_ofs in
+        if rem <= 0 then
+          loop (- rem) 0 len files
+        else if len <= rem then
+          [file, file_ofs, buf_ofs, len]
+        else
+          (file, file_ofs, buf_ofs, rem) :: loop 0 (buf_ofs + rem) (len - rem) files
+  in
+  loop piece_offset 0 piece_length files
+
+let download ~net ~clock ~fs ~info_hash ~peer_id ~meta ~peers =
   let num_pieces = Array.length meta.Meta.pieces in
   let work_queue = Eio.Stream.create num_pieces in
   let results = Eio.Stream.create 100 in
+  Eio.Switch.run @@ fun sw ->
+  let files =
+    List.map (fun file ->
+      Eio.Path.open_out ~sw ~create:(`If_missing 0o600) Eio.Path.(fs / file.Meta.path)
+    ) meta.Meta.files
+  in
   for i = 0 to num_pieces - 1 do
     let hash = meta.Meta.pieces.(i) in
     let len = Meta.piece_length meta i in
-    Eio.Stream.add work_queue { Piece.i; hash; len }
+    Eio.Stream.add work_queue { Piece.i; hash; len };
   done;
   Eio.Fiber.both
     (fun () ->
       Eio.Fiber.iter
         (fun peer ->
-          start_download_worker ~net ~clock ~info_hash ~peer_id ~peer
+          start_download_worker ~sw ~net ~clock ~info_hash ~peer_id ~peer
             ~work_queue ~results)
         peers)
     (fun () ->
       let completed = ref 0 in
       while !completed < num_pieces do
-        let piece, _buf = Eio.Stream.take results in
-        (* let ofs = Metainfo.piece_offset meta piece.Piece.index in *)
+        let piece, buf = Eio.Stream.take results in
+        let bounds =
+          let piece_offset = Meta.piece_offset meta piece.Piece.i in
+          let piece_length = Meta.piece_length meta piece.Piece.i in
+          let files = List.map2 (fun file {Meta.length; _} -> file, length) files meta.Meta.files in
+          piece_bounds ~piece_offset ~piece_length files
+        in
+        let buf = Cstruct.of_string buf in
+        List.iter (fun (file, file_offset, ofs, len) ->
+          let file_offset = Optint.Int63.of_int file_offset in
+          Eio.Fs.pwrite_exact file ~file_offset (Cstruct.sub buf ofs len)
+        ) bounds;
         completed := !completed + 1;
         let percent = float !completed /. float num_pieces in
         Logs.app (fun f -> f "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.i)
