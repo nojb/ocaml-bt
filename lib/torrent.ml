@@ -123,6 +123,6 @@ let download ~net ~clock ~cwd ~info_hash ~peer_id ~meta ~peers =
           Eio.Fs.pwrite_exact file ~file_offset (Cstruct.sub buf ofs len)
         ) bounds;
         completed := !completed + 1;
-        let percent = float !completed /. float num_pieces in
+        let percent = float !completed /. float num_pieces *. 100.0 in
         Logs.app (fun f -> f "(%0.2f%%) Downloaded piece #%d" percent piece.Piece.i)
       done)
