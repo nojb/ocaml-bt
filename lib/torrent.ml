@@ -85,14 +85,14 @@ let piece_bounds ~piece_offset ~piece_length files =
   in
   loop piece_offset 0 piece_length files
 
-let download ~net ~clock ~fs ~info_hash ~peer_id ~meta ~peers =
+let download ~net ~clock ~cwd ~info_hash ~peer_id ~meta ~peers =
   let num_pieces = Array.length meta.Meta.pieces in
   let work_queue = Eio.Stream.create num_pieces in
   let results = Eio.Stream.create 100 in
   Eio.Switch.run @@ fun sw ->
   let files =
     List.map (fun file ->
-      Eio.Path.open_out ~sw ~create:(`If_missing 0o600) Eio.Path.(fs / file.Meta.path)
+      Eio.Path.open_out ~sw ~create:(`If_missing 0o600) Eio.Path.(cwd / file.Meta.path)
     ) meta.Meta.files
   in
   for i = 0 to num_pieces - 1 do
