@@ -172,14 +172,15 @@ let connect ~sw ~net ~clock addr port =
         Eio.Net.connect ~sw net stream)
   with
   | flow ->
-      Logs.debug (fun f -> f "Connected to %s%!" (Unix.string_of_inet_addr addr));
+      Logs.debug (fun f ->
+          f "Connected to %s%!" (Unix.string_of_inet_addr addr));
       Ok (flow :> Eio.Net.stream_socket)
   | exception Eio.Time.Timeout -> Error (`Connect_failed `Timeout)
   | exception exn ->
       Logs.debug (fun f ->
-        f "Connection to %s failed: %s%!"
-          (Unix.string_of_inet_addr addr)
-          (Printexc.to_string exn));
+          f "Connection to %s failed: %s%!"
+            (Unix.string_of_inet_addr addr)
+            (Printexc.to_string exn));
       Error (`Connect_failed (`Exn exn))
 
 let complete_handshake ~clock ~flow ~info_hash ~peer_id =
